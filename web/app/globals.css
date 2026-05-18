@@ -1,0 +1,25 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --color-primary: #1A3A5C;
+  --color-primary-light: #2E5F8C;
+  --color-accent: #F0A500;
+  --color-background: #F4F6F9;
+  --color-surface: #FFFFFF;
+  --color-text-primary: #0F1C2E;
+  --color-text-secondary: #4A5568;
+  --color-text-muted: #9AA5B4;
+  --color-border: #D1D9E0;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: var(--color-background);
+  color: var(--color-text-primary);
+  font-family: var(--font-inter), system-ui, -apple-system, sans-serif;
+}

@@ -1,0 +1,250 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ─── Enums ────────────────────────────────────────────────────────────────────
+
+enum Persona {
+  HOMEOWNER
+  SUBCONTRACTOR
+  DEVELOPER
+  LENDER
+}
+
+enum AlertType {
+  LICENCE_CHANGE
+  INSOLVENCY_EVENT
+  COURT_DECISION
+  ATO_DEBT_FLAG
+  QBCC_ADJUDICATION
+  FWO_ENFORCEMENT
+}
+
+enum PaymentType {
+  RECHECK_SINGLE
+  RECHECK_5PACK
+  DEEP_CHECK_SINGLE
+  DEEP_CHECK_5PACK
+  MONITORING_MONTHLY
+}
+
+// ─── Users ────────────────────────────────────────────────────────────────────
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  name          String?
+  passwordHash  String?
+  googleId      String?   @unique
+  persona       Persona?
+  state         String?   // AU state/territory code: QLD | NSW | VIC | WA | SA | TAS | NT | ACT
+  emailVerified DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // Relations
+  accounts       Account[]
+  sessions       Session[]
+  searches       Search[]
+  watchlist      WatchlistItem[]
+  timelines      ProjectTimeline[]
+  monitoring     MonitoringSubscription[]
+  alerts         Alert[]
+  packBalance    PackBalance?
+  payments       Payment[]
+  emailSequences EmailSequenceState[]
+
+  @@index([email])
+}
+
+// NextAuth adapter tables
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// ─── Searches & Reports ───────────────────────────────────────────────────────
+
+model Search {
+  id           String   @id @default(cuid())
+  userId       String?
+  user         User?    @relation(fields: [userId], references: [id])
+
+  // Entity identifiers
+  entityAbn    String?
+  entityName   String
+
+  // Context captured at search time
+  persona      Persona?
+  projectType  String?  // new_build | renovation | commercial | subdivision | other
+  projectStage String?  // not_signed | about_to_sign | contracted | underway
+  projectState String?
+
+  // Report data (written once stream completes)
+  reportJson        Json?    // full structured { key: SearchResult } map
+  riskSummary       String?  // Claude-generated markdown commentary
+  isDeepCheck       Boolean  @default(false)
+
+  // Contract upload path
+  contractExtracted Json?    // extracted fields from contract upload
+
+  createdAt DateTime @default(now())
+
+  // Relations
+  shareableLink ShareableLink?
+  timeline      ProjectTimeline?
+  watchedBy     WatchlistItem[]
+
+  @@index([entityAbn])
+  @@index([userId])
+  @@index([createdAt])
+}
+
+model ShareableLink {
+  id        String   @id @default(cuid())
+  searchId  String   @unique
+  search    Search   @relation(fields: [searchId], references: [id])
+  token     String   @unique @default(cuid())
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([token])
+}
+
+// ─── Watchlist ────────────────────────────────────────────────────────────────
+
+model WatchlistItem {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  entityAbn    String
+  entityName   String
+  lastSearchId String?
+  lastSearch   Search?  @relation(fields: [lastSearchId], references: [id])
+  createdAt    DateTime @default(now())
+
+  @@unique([userId, entityAbn])
+}
+
+// ─── Project Timeline ─────────────────────────────────────────────────────────
+
+model ProjectTimeline {
+  id                 String    @id @default(cuid())
+  userId             String
+  user               User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  searchId           String    @unique
+  search             Search    @relation(fields: [searchId], references: [id])
+  projectValue       String?   // under_100k | 100k_500k | 500k_2m | 2m_plus
+  projectState       String?
+  contractSignedDate DateTime?
+  startDate          DateTime?
+  completionDate     DateTime?
+  paymentSchedule    Json?     // [{ label: string, date: DateTime, amountCents: number }]
+  financeArranged    Boolean?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+}
+
+// ─── Monitoring ───────────────────────────────────────────────────────────────
+
+model MonitoringSubscription {
+  id               String   @id @default(cuid())
+  userId           String
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  entityAbn        String
+  entityName       String
+  active           Boolean  @default(true)
+  stripeSubId      String?  @unique
+  nextDailyCheck   DateTime
+  nextWeeklyCheck  DateTime
+  nextMonthlyCheck DateTime
+  createdAt        DateTime @default(now())
+
+  @@unique([userId, entityAbn])
+}
+
+model Alert {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  entityAbn   String
+  entityName  String
+  alertType   AlertType
+  description String
+  read        Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+
+  @@index([userId, read])
+}
+
+// ─── Payments & Entitlements ──────────────────────────────────────────────────
+
+model PackBalance {
+  id         String   @id @default(cuid())
+  userId     String   @unique
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  freeChecks Int      @default(0)
+  deepChecks Int      @default(0)
+  updatedAt  DateTime @updatedAt
+}
+
+model Payment {
+  id              String      @id @default(cuid())
+  userId          String
+  user            User        @relation(fields: [userId], references: [id])
+  stripePaymentId String      @unique
+  amountCents     Int
+  paymentType     PaymentType
+  metadata        Json?       // e.g. { entityAbn, searchId }
+  createdAt       DateTime    @default(now())
+}
+
+// ─── Email Sequences ──────────────────────────────────────────────────────────
+
+model EmailSequenceState {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  searchId    String?
+  sequenceKey String   // BEFORE_SIGN | DURING_BUILD | SUBCONTRACTOR | FINDINGS | CLEAN | RECHECK_30D | RECHECK_90D | PAYMENT_DUE
+  step        Int      @default(0)
+  nextSendAt  DateTime
+  completed   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  @@index([nextSendAt, completed])
+}

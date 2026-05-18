@@ -82,3 +82,83 @@ All scrapers follow the same return shape: `{ source, jurisdiction, category, re
 2. Import and add it to the `searches` array in `server/index.js` with a unique `key`
 3. Add a matching entry to `INITIAL_SEARCHES` in `src/screens/SearchingScreen.tsx`
 4. Consume it in `ReportScreen.tsx` via `byKey(results, 'mySource')` and pass to a `<ReportSection>`
+
+---
+
+## Phase 1a — Next.js scaffold (complete)
+
+The `web/` directory contains the Next.js 14 app (App Router). Key conventions set in this phase:
+
+### Running the web app
+
+```bash
+# Terminal 3 — Next.js dev server (port 3000)
+cd web && npm run dev
+```
+
+All three processes (Express :3001, Expo, Next.js :3000) are independent. The Next.js app talks to Express at `SCRAPING_SERVICE_URL` (env var, defaults to `http://localhost:3001` server-side).
+
+### Type checking (web)
+
+```bash
+cd web && npx tsc --noEmit
+```
+
+### Key files
+
+- `web/prisma/schema.prisma` — PostgreSQL schema (Prisma 5). Run `npx prisma generate` after any schema change; run `npx prisma db push` to sync a dev database.
+- `web/lib/db.ts` — Prisma client singleton (safe for Next.js hot-reload via `globalThis` cache)
+- `web/app/layout.tsx` + `web/app/providers.tsx` — root layout with Inter font; `Providers` is a client component wrapping NextAuth `SessionProvider`
+- `web/app/globals.css` — Tailwind directives + CSS custom properties for brand colours
+- `web/tailwind.config.ts` — Tailwind extended with all brand colours from `src/theme.ts`
+- `web/.env.local.example` — copy to `.env.local` and fill in all values before running
+
+### Package versions
+
+- `next`: 14.2.35 (patched 14.x; do not upgrade to 15/16 without updating App Router conventions)
+- `prisma` / `@prisma/client`: 5.x
+- `next-auth`: 4.x with `@auth/prisma-adapter`
+- `@react-email/components`: 1.x + `react-email`: 6.x
+
+---
+
+## Phase 1b — Shared types, theme, and API client (complete)
+
+### Key files
+
+- `web/src/theme.ts` — web port of `src/theme.ts`; `lineHeight` values are CSS strings (e.g. `'36px'`) not React Native numbers; `shadows` are CSS `box-shadow` strings not RN shadow objects
+- `web/src/types/index.ts` — port of mobile types plus `Persona` enum (`HOMEOWNER | SUBCONTRACTOR | DEVELOPER | LENDER`) and `RiskGroupResult` / `RiskGroupTrigger` / `RiskGroupId` types (consumed by Phase 2 risk engine)
+- `web/lib/api.ts` — browser-safe port of `runDueDiligence()` and `checkServer()`; resolves `SERVER_URL` from `NEXT_PUBLIC_SCRAPING_SERVICE_URL` first (required for browser-side streaming), then `SCRAPING_SERVICE_URL` (server-side), then `http://localhost:3001`
+
+### Conventions
+
+Both env vars must be set for full functionality: `NEXT_PUBLIC_SCRAPING_SERVICE_URL` for client components that stream NDJSON directly from the browser, and `SCRAPING_SERVICE_URL` for server-side Route Handlers that proxy to Express.
+
+---
+
+## Phase 1c — Home screen (complete)
+
+### Key files
+
+- `web/app/page.tsx` — React Server Component (no `'use client'`); delegates all interactivity to `<SearchBar />`; includes a stub "upload contract" button (not yet wired)
+- `web/components/SearchBar.tsx` — `'use client'` form component; `formatABN()` auto-formats input as `XX XXX XXX XXX` on every keystroke; validates that at least one of company name or ABN is provided; on submit, strips ABN formatting to raw digits before pushing to `/search?companyName=...&abn=...&licenceNumber=...`
+
+### Conventions
+
+Keep `page.tsx` as a Server Component and extract any interactive UI into dedicated `'use client'` components in `web/components/`. Search params are passed as URL query params to `/search` — the Searching screen reads them from `useSearchParams()`.
+
+---
+
+## Phase 1d — Searching screen (complete)
+
+### Key files
+
+- `web/app/search/page.tsx` — Server Component wrapper; exists solely to wrap `SearchContent` in `<Suspense>` (required by Next.js 14 for any client component using `useSearchParams()`)
+- `web/app/search/SearchContent.tsx` — `'use client'` component with all stream logic; checks server health, marks all rows `searching`, then calls `runDueDiligence()` from `web/lib/api.ts` and merges each NDJSON result into the row list by `key`
+- `web/components/SearchProgressItem.tsx` — single source row; four visual states: idle (gray ring), searching (CSS `animate-spin` spinner), done-with-results (green filled ring + checkmark + count badge), done-empty (gray ring), error (red ✕)
+
+### Conventions
+
+- `INITIAL_SEARCHES` in `SearchContent.tsx` must stay in sync with the 14 keys emitted by `server/index.js`; the list is the source of display order
+- When all searches complete, results are stored in `sessionStorage` under `kyb_preview_results` and `kyb_preview_input` (JSON), then the router pushes to `/report/preview` — Phase 1e reads these keys when `searchId === 'preview'`; Phase 1f replaces this with the database-backed flow
+- `BuilderInput.acn`, `.tradingName`, and `.directors` are not captured in the Phase 1c search form; they default to `''` / `[]` in `SearchContent` and may be added to the form later without breaking this screen
