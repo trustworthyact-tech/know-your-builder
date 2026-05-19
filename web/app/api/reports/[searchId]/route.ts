@@ -18,6 +18,7 @@ export async function GET(
       projectStage: true,
       projectState: true,
       reportJson: true,
+      riskSummary: true,
       isDeepCheck: true,
       createdAt: true,
     },

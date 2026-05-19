@@ -2,9 +2,11 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { BuilderInput, SearchResult, ResultItem, SearchStatus } from '@/src/types';
+import { BuilderInput, SearchResult, ResultItem, SearchStatus, RiskGroupResult } from '@/src/types';
 import { ReportSection } from '@/components/ReportSection';
 import { RiskBadge, RiskLevel } from '@/components/RiskBadge';
+import { RiskSummaryPanel } from '@/components/RiskSummaryPanel';
+import { riskGrouper } from '@/lib/riskGrouper';
 
 interface Props {
   searchId: string;
@@ -19,15 +21,22 @@ const TOC_SECTIONS = [
   { id: 's86', short: '8.6 Manual Review' },
 ] as const;
 
-function sectionRisk(items: ResultItem[], statuses: SearchStatus[]): RiskLevel {
-  if (statuses.length > 0 && statuses.every((s) => s === 'error')) return 'unavailable';
-  return items.length > 0 ? 'findings' : 'clear';
+function isAllErrored(statuses: SearchStatus[]): boolean {
+  return statuses.length > 0 && statuses.every((s) => s === 'error');
 }
 
-function courtRisk(items: ResultItem[], statuses: SearchStatus[]): RiskLevel {
-  if (statuses.length > 0 && statuses.every((s) => s === 'error')) return 'unavailable';
-  if (items.length >= 6) return 'significant';
-  return items.length > 0 ? 'findings' : 'clear';
+// Returns the highest risk level triggered by any group with a trigger pointing to sectionAnchor,
+// falling back to the baseline when no group applies.
+function deriveRiskLevel(
+  groups: RiskGroupResult[],
+  sectionAnchor: string,
+  baseline: RiskLevel
+): RiskLevel {
+  if (baseline === 'unavailable') return 'unavailable';
+  const matching = groups.filter((g) => g.triggers.some((t) => t.anchor === sectionAnchor));
+  if (matching.length === 0) return baseline;
+  if (matching.some((g) => g.severity === 'significant')) return 'significant';
+  return 'findings';
 }
 
 function entityInitials(name: string): string {
@@ -43,6 +52,7 @@ function entityInitials(name: string): string {
 export function ReportContent({ searchId }: Props) {
   const [results, setResults] = useState<SearchResult[] | null>(null);
   const [input, setInput] = useState<BuilderInput | null>(null);
+  const [riskGroups, setRiskGroups] = useState<RiskGroupResult[]>([]);
   const [loadError, setLoadError] = useState('');
 
   useEffect(() => {
@@ -51,8 +61,12 @@ export function ReportContent({ searchId }: Props) {
         const rawResults = sessionStorage.getItem('kyb_preview_results');
         const rawInput = sessionStorage.getItem('kyb_preview_input');
         if (rawResults && rawInput) {
-          setResults(JSON.parse(rawResults));
+          const parsed: SearchResult[] = JSON.parse(rawResults);
+          setResults(parsed);
           setInput(JSON.parse(rawInput));
+          const findingsMap: Record<string, SearchResult> = {};
+          for (const r of parsed) findingsMap[r.key] = r;
+          setRiskGroups(riskGrouper(findingsMap));
         } else {
           setLoadError('No report data found. Please run a new search.');
         }
@@ -75,6 +89,16 @@ export function ReportContent({ searchId }: Props) {
             tradingName: '',
             directors: [],
           });
+          // Use stored risk summary when available; fall back to client-side computation
+          if (data.riskSummary) {
+            try {
+              setRiskGroups(JSON.parse(data.riskSummary) as RiskGroupResult[]);
+            } catch {
+              setRiskGroups(riskGrouper(findings));
+            }
+          } else {
+            setRiskGroups(riskGrouper(findings));
+          }
         })
         .catch(() => {
           setLoadError('Report not found or could not be loaded. Please run a new search.');
@@ -147,6 +171,35 @@ export function ReportContent({ searchId }: Props) {
   ];
   const courtItems: ResultItem[] = austliiResults.flatMap((r) => r.results ?? []);
   const linkItems: ResultItem[] = links?.results ?? [];
+
+  // Section risk levels — derived from risk groups, falling back to scraper-status baseline
+  const s81Risk = deriveRiskLevel(
+    riskGroups,
+    '#s81',
+    isAllErrored([abn?.status ?? 'done']) ? 'unavailable' : 'clear'
+  );
+  const s82Risk = deriveRiskLevel(
+    riskGroups,
+    '#s82',
+    isAllErrored([qbcc?.status ?? 'done']) ? 'unavailable' : 'clear'
+  );
+  const s83Risk = deriveRiskLevel(
+    riskGroups,
+    '#s83',
+    isAllErrored([paymentTimes?.status ?? 'done', modernSlavery?.status ?? 'done'])
+      ? 'unavailable'
+      : 'clear'
+  );
+  const s84Risk = deriveRiskLevel(
+    riskGroups,
+    '#s84',
+    isAllErrored([qbcc?.status ?? 'done']) ? 'unavailable' : 'clear'
+  );
+  const s85Risk = deriveRiskLevel(
+    riskGroups,
+    '#s85',
+    isAllErrored(austliiResults.map((r) => r.status)) ? 'unavailable' : 'clear'
+  );
 
   // Synthetic SearchResult objects for sections that split one source across sections
   const licenceSearch: SearchResult = {
@@ -261,7 +314,7 @@ export function ReportContent({ searchId }: Props) {
             </div>
             <div className="flex-1 text-center px-3">
               <p className="text-xs text-text-muted mb-1">Risk indicator</p>
-              <RiskBadge level={courtRisk(courtItems, austliiResults.map((r) => r.status))} />
+              <RiskBadge level={s85Risk} />
             </div>
           </div>
 
@@ -270,13 +323,16 @@ export function ReportContent({ searchId }: Props) {
           </p>
         </div>
 
+        {/* Risk Summary panel */}
+        <RiskSummaryPanel groups={riskGroups} />
+
         {/* 8.1 Identity & Corporate Structure */}
         <ReportSection
           id="s81"
           title="8.1 Identity & Corporate Structure"
           icon="🏢"
           searchResults={abn ? [abn] : []}
-          riskLevel={sectionRisk(identityItems, [abn?.status ?? 'done'])}
+          riskLevel={s81Risk}
           resultsOverride={identityItems}
         />
 
@@ -286,7 +342,7 @@ export function ReportContent({ searchId }: Props) {
           title="8.2 Licences & Registrations"
           icon="🏗"
           searchResults={qbcc ? [licenceSearch] : []}
-          riskLevel={sectionRisk(licenceItems, [qbcc?.status ?? 'done'])}
+          riskLevel={s82Risk}
           resultsOverride={licenceItems}
         />
 
@@ -296,10 +352,7 @@ export function ReportContent({ searchId }: Props) {
           title="8.3 Financial Risk Signals"
           icon="💳"
           searchResults={[paymentTimes, modernSlavery].filter(Boolean) as SearchResult[]}
-          riskLevel={sectionRisk(financialItems, [
-            paymentTimes?.status ?? 'done',
-            modernSlavery?.status ?? 'done',
-          ])}
+          riskLevel={s83Risk}
           resultsOverride={financialItems}
         />
 
@@ -309,7 +362,7 @@ export function ReportContent({ searchId }: Props) {
           title="8.4 Payment & Subcontractor Disputes"
           icon="📋"
           searchResults={qbcc ? [adjSearch] : []}
-          riskLevel={sectionRisk(adjItems, [qbcc?.status ?? 'done'])}
+          riskLevel={s84Risk}
           resultsOverride={adjItems}
         />
 
@@ -319,7 +372,7 @@ export function ReportContent({ searchId }: Props) {
           title="8.5 Courts & Legal Proceedings"
           icon="⚖️"
           searchResults={[courtSearch]}
-          riskLevel={courtRisk(courtItems, austliiResults.map((r) => r.status))}
+          riskLevel={s85Risk}
           resultsOverride={courtItems}
           showJurisdiction
         />
