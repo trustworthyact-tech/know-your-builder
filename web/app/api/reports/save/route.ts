@@ -1,0 +1,108 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { prisma } from '@/lib/db';
+import { getResend } from '@/lib/resend';
+import { render } from '@react-email/components';
+import { ReportEmail } from '@/emails/ReportEmail';
+import { Persona, SearchResult } from '@/src/types';
+
+interface SaveBody {
+  entityName: string;
+  entityAbn?: string;
+  persona: Persona;
+  projectType?: string;
+  projectStage?: string;
+  projectState?: string;
+  findings: Record<string, SearchResult>;
+  isDeepCheck: boolean;
+  email?: string;
+}
+
+export async function POST(req: NextRequest) {
+  let body: SaveBody;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
+  }
+
+  const {
+    entityName,
+    entityAbn,
+    persona,
+    projectType,
+    projectStage,
+    projectState,
+    findings,
+    isDeepCheck,
+    email,
+  } = body;
+
+  if (!entityName) {
+    return NextResponse.json({ error: 'entityName is required' }, { status: 400 });
+  }
+
+  // Persist the Search row. Risk grouping is stubbed until Phase 2 (riskSummary = null).
+  let search;
+  try {
+    search = await prisma.search.create({
+      data: {
+        entityName,
+        entityAbn: entityAbn || null,
+        persona: persona ?? null,
+        projectType: projectType || null,
+        projectStage: projectStage || null,
+        projectState: projectState || null,
+        reportJson: findings as object,
+        isDeepCheck,
+        riskSummary: null,
+      },
+    });
+  } catch (err) {
+    console.error('[reports/save] DB error:', err);
+    return NextResponse.json({ error: 'Failed to save report' }, { status: 500 });
+  }
+
+  // Send report email (best-effort — never fail the response if email fails)
+  if (email) {
+    try {
+      const results = Object.values(findings);
+      const nonLinkResults = results.filter((r) => r.key !== 'links');
+      const totalHits = nonLinkResults.reduce((n, r) => n + (r.results?.length ?? 0), 0);
+      const courtHits = results
+        .filter((r) => r.key.startsWith('austlii_'))
+        .reduce((n, r) => n + (r.results?.length ?? 0), 0);
+      const hasFindings = totalHits > 0;
+
+      const appUrl = process.env.NEXTAUTH_URL ?? 'http://localhost:3000';
+      const reportUrl = `${appUrl}/report/${search.id}`;
+      const generatedAt = new Date().toLocaleDateString('en-AU', {
+        day: '2-digit',
+        month: 'long',
+        year: 'numeric',
+      });
+
+      const html = await render(
+        ReportEmail({
+          entityName,
+          searchId: search.id,
+          totalHits,
+          courtHits,
+          hasFindings,
+          reportUrl,
+          generatedAt,
+        })
+      );
+
+      await getResend().emails.send({
+        from: process.env.FROM_EMAIL ?? 'noreply@knowyourbuilder.com.au',
+        to: email,
+        subject: `Your Know Your Builder report — ${entityName}`,
+        html,
+      });
+    } catch (err) {
+      console.error('[reports/save] Email send error:', err);
+    }
+  }
+
+  return NextResponse.json({ searchId: search.id });
+}

@@ -4,7 +4,9 @@ import { useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { runDueDiligence, checkServer } from '@/lib/api';
 import { SearchProgressItem } from '@/components/SearchProgressItem';
-import { BuilderInput, SearchResult } from '@/src/types';
+import { PersonaSelector } from '@/components/PersonaSelector';
+import { EmailGate, EmailGateData } from '@/components/EmailGate';
+import { BuilderInput, Persona, SearchResult } from '@/src/types';
 
 // Must mirror the keys emitted by server/index.js exactly — order sets display order.
 const INITIAL_SEARCHES: SearchResult[] = [
@@ -24,6 +26,20 @@ const INITIAL_SEARCHES: SearchResult[] = [
   { key: 'links',          label: 'Additional Database Links',               status: 'idle' },
 ];
 
+type Step = 'persona' | 'email-gate' | 'server-check' | 'running' | 'saving' | 'done' | 'error';
+
+function loadPersona(): Persona | null {
+  try {
+    const stored = localStorage.getItem('kyb_persona');
+    if (stored && Object.values(Persona).includes(stored as Persona)) {
+      return stored as Persona;
+    }
+  } catch {
+    // localStorage unavailable (SSR guard)
+  }
+  return null;
+}
+
 export function SearchContent() {
   const router = useRouter();
   const params = useSearchParams();
@@ -37,10 +53,23 @@ export function SearchContent() {
     directors:     [],
   };
 
+  const entityLabel = input.companyName || input.abn || 'this builder';
+
+  const [step, setStep] = useState<Step>('persona');
+  const [persona, setPersona] = useState<Persona | null>(null);
+  const [gateData, setGateData] = useState<EmailGateData | null>(null);
   const [searches, setSearches] = useState<SearchResult[]>(INITIAL_SEARCHES);
-  const [phase, setPhase] = useState<'server-check' | 'running' | 'done' | 'error'>('server-check');
   const [errorMsg, setErrorMsg] = useState('');
   const resultsRef = useRef<SearchResult[]>([]);
+
+  // Check localStorage for a saved persona on mount
+  useEffect(() => {
+    const saved = loadPersona();
+    if (saved) {
+      setPersona(saved);
+      setStep('email-gate');
+    }
+  }, []);
 
   const doneCount = searches.filter((s) => s.status === 'done' || s.status === 'error').length;
   const total = INITIAL_SEARCHES.length;
@@ -57,7 +86,23 @@ export function SearchContent() {
     }
   };
 
-  useEffect(() => {
+  const handlePersonaSelect = (selected: Persona) => {
+    try {
+      localStorage.setItem('kyb_persona', selected);
+    } catch {
+      // ignore
+    }
+    setPersona(selected);
+    setStep('email-gate');
+  };
+
+  const handleEmailGateSubmit = (data: EmailGateData) => {
+    setGateData(data);
+    runSearch(data);
+  };
+
+  const runSearch = (gate: EmailGateData) => {
+    setStep('server-check');
     let cancelled = false;
 
     async function run() {
@@ -65,22 +110,24 @@ export function SearchContent() {
       if (cancelled) return;
 
       if (!serverOk) {
-        setPhase('error');
+        setStep('error');
         setErrorMsg(
           'Cannot reach the search server at localhost:3001.\n\nStart it with:\n  cd server && node index.js'
         );
         return;
       }
 
-      setPhase('running');
+      setStep('running');
       setSearches((prev) => prev.map((s) => ({ ...s, status: 'searching' })));
 
       try {
         await runDueDiligence(input, updateSearch);
-        if (!cancelled) setPhase('done');
+        if (cancelled) return;
+        setStep('saving');
+        await saveReport(gate);
       } catch (err: unknown) {
         if (!cancelled) {
-          setPhase('error');
+          setStep('error');
           setErrorMsg(
             err instanceof Error ? err.message : 'An unexpected error occurred'
           );
@@ -90,18 +137,76 @@ export function SearchContent() {
 
     run();
     return () => { cancelled = true; };
-  }, []);
+  };
 
-  // Auto-navigate when done; results persisted in sessionStorage for Phase 1e/1f
-  useEffect(() => {
-    if (phase !== 'done') return;
-    sessionStorage.setItem('kyb_preview_results', JSON.stringify(resultsRef.current));
-    sessionStorage.setItem('kyb_preview_input', JSON.stringify(input));
-    const timer = setTimeout(() => router.push('/report/preview'), 1200);
-    return () => clearTimeout(timer);
-  }, [phase]);
+  const saveReport = async (gate: EmailGateData) => {
+    const findings: Record<string, SearchResult> = {};
+    for (const r of resultsRef.current) {
+      findings[r.key] = r;
+    }
 
-  const goToReport = () => {
+    const entityName =
+      resultsRef.current.find((r) => r.key === 'abn')?.results?.[0]?.title ||
+      input.companyName ||
+      input.abn ||
+      'Unknown';
+
+    try {
+      const res = await fetch('/api/reports/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          entityName,
+          entityAbn: input.abn || undefined,
+          persona,
+          projectType: gate.projectType || undefined,
+          projectState: gate.projectState || undefined,
+          findings,
+          isDeepCheck: gate.isDeepCheck,
+          email: gate.email,
+        }),
+      });
+
+      if (!res.ok) throw new Error('Failed to save report');
+      const { searchId } = await res.json();
+      setStep('done');
+      router.push(`/report/${searchId}`);
+    } catch {
+      // Fallback: navigate to preview using sessionStorage so the report is still viewable
+      sessionStorage.setItem('kyb_preview_results', JSON.stringify(resultsRef.current));
+      sessionStorage.setItem('kyb_preview_input', JSON.stringify(input));
+      setStep('done');
+      router.push('/report/preview');
+    }
+  };
+
+  // ── Render pre-search steps ──────────────────────────────────────────────────
+
+  if (step === 'persona') {
+    return <PersonaSelector onSelect={handlePersonaSelect} />;
+  }
+
+  if (step === 'email-gate' && persona) {
+    return (
+      <EmailGate
+        persona={persona}
+        entityName={entityLabel}
+        onSubmit={handleEmailGateSubmit}
+      />
+    );
+  }
+
+  // ── Render search progress ───────────────────────────────────────────────────
+
+  const statusLabel = () => {
+    if (step === 'server-check') return 'Connecting to server…';
+    if (step === 'error') return 'Error';
+    if (step === 'saving') return 'Saving report…';
+    if (step === 'done') return 'Complete — loading report…';
+    return `${doneCount} of ${total} searches complete`;
+  };
+
+  const goToPreview = () => {
     sessionStorage.setItem('kyb_preview_results', JSON.stringify(resultsRef.current));
     sessionStorage.setItem('kyb_preview_input', JSON.stringify(input));
     router.push('/report/preview');
@@ -122,23 +227,15 @@ export function SearchContent() {
           <div className="mt-4 h-1.5 bg-white/20 rounded-full overflow-hidden">
             <div
               className="h-full bg-accent rounded-full transition-[width] duration-500 ease-out"
-              style={{ width: `${progressPct}%` }}
+              style={{ width: `${step === 'saving' || step === 'done' ? 100 : progressPct}%` }}
             />
           </div>
-          <p className="mt-2 text-xs text-white/70">
-            {phase === 'server-check'
-              ? 'Connecting to server…'
-              : phase === 'error'
-              ? 'Error'
-              : phase === 'done'
-              ? 'Complete — loading report…'
-              : `${doneCount} of ${total} searches complete`}
-          </p>
+          <p className="mt-2 text-xs text-white/70">{statusLabel()}</p>
         </div>
       </div>
 
       <div className="max-w-xl mx-auto">
-        {phase === 'error' ? (
+        {step === 'error' ? (
           <div className="flex flex-col items-center px-8 py-16 text-center">
             <span className="text-5xl mb-4">⚠️</span>
             <h2 className="text-lg font-semibold text-danger mb-3">Server Not Running</h2>
@@ -160,10 +257,11 @@ export function SearchContent() {
               ))}
             </div>
 
-            {phase === 'done' && (
+            {/* Fallback button while saving (in case navigation is slow) */}
+            {(step === 'saving' || step === 'done') && gateData === null && (
               <div className="px-4 py-4">
                 <button
-                  onClick={goToReport}
+                  onClick={goToPreview}
                   className="w-full bg-primary text-white text-sm font-semibold py-4 rounded-xl shadow-md hover:bg-primary-light transition"
                 >
                   View Report →

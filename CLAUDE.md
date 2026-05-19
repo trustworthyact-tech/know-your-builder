@@ -162,3 +162,44 @@ Keep `page.tsx` as a Server Component and extract any interactive UI into dedica
 - `INITIAL_SEARCHES` in `SearchContent.tsx` must stay in sync with the 14 keys emitted by `server/index.js`; the list is the source of display order
 - When all searches complete, results are stored in `sessionStorage` under `kyb_preview_results` and `kyb_preview_input` (JSON), then the router pushes to `/report/preview` — Phase 1e reads these keys when `searchId === 'preview'`; Phase 1f replaces this with the database-backed flow
 - `BuilderInput.acn`, `.tradingName`, and `.directors` are not captured in the Phase 1c search form; they default to `''` / `[]` in `SearchContent` and may be added to the form later without breaking this screen
+
+---
+
+## Phase 1e — Report screen (complete)
+
+### Key files
+
+- `web/app/report/[searchId]/page.tsx` — Server Component shell; wraps `ReportContent` in `<Suspense>`; `params.searchId` is passed as a prop (Next.js 14 — not async)
+- `web/app/report/[searchId]/ReportContent.tsx` — `'use client'` component; reads `sessionStorage` for `searchId === 'preview'`; computes per-section risk levels; renders six-section report with sticky ToC
+- `web/components/ReportSection.tsx` — `'use client'` section wrapper; collapsible on mobile (open by default); `resultsOverride` prop bypasses deriving results from `searchResults[].results`; `showJurisdiction` prop passes through to `ResultCard`
+- `web/components/ResultCard.tsx` — `'use client'` expandable card; shows metadata table and source link when expanded; `showJurisdiction` badge rendered above title
+- `web/components/RiskBadge.tsx` — pure presentational badge; `RiskLevel` type exported for use by other components; icon + label always shown together (never colour alone)
+
+### Conventions
+
+- **QBCC split**: The `qbcc` SearchResult carries both `licenceResults` (section 8.2) and `adjudicationResults` (section 8.4). `ReportContent` creates synthetic SearchResult descriptors for each sub-section and passes `resultsOverride` to `ReportSection` — do not use `qbcc.results` directly in sections 8.2 or 8.4.
+- **Courts (8.5)**: A single synthetic `courtSearch` SearchResult provides the summary and one "Verify at AustLII" link; `resultsOverride={courtItems}` combines all 9 jurisdiction results; `showJurisdiction` shows the per-result jurisdiction badge.
+- **Risk levels in Phase 1e**: Computed with a simple heuristic (`findings` if any results, `clear` if none, `unavailable` if all scrapers errored, `significant` if court hits ≥ 6). Phase 2 replaces this with the deterministic `riskGrouper`.
+- **`/report/preview` route**: The empty `web/app/report/preview/` placeholder directory was removed; the `[searchId]` dynamic route now handles it cleanly.
+
+---
+
+## Phase 1f — Persona selection + email gate + report persistence + email delivery (complete)
+
+### Key files
+
+- `web/components/PersonaSelector.tsx` — four persona icon cards (2×2 grid); `onSelect: (persona: Persona) => void`; no async work — purely UI
+- `web/components/EmailGate.tsx` — email input (required), AU state dropdown, project type dropdown, deep check checkbox; `onSubmit: (data: EmailGateData) => void`
+- `web/lib/resend.ts` — Resend client singleton (same `globalThis` pattern as Prisma)
+- `web/emails/ReportEmail.tsx` — React Email template; takes `entityName`, hit counts, `reportUrl`; rendered to HTML server-side in the save route
+- `web/app/api/reports/save/route.ts` — `POST /api/reports/save`: persists `Search` row with `reportJson`, sends report email via Resend; `riskSummary` is `null` (stubbed until Phase 2)
+- `web/app/api/reports/[searchId]/route.ts` — `GET /api/reports/:searchId`: returns search + reportJson for `ReportContent` to consume
+
+### Conventions
+
+- **Pre-search wizard in `SearchContent`**: The component is a three-step wizard — `persona` → `email-gate` → search running. Persona is persisted to `localStorage` under `kyb_persona` so the selector is skipped on return visits. Steps are controlled by a `step: Step` state string.
+- **Saving after stream**: When the NDJSON stream completes, `SearchContent` calls `POST /api/reports/save` and navigates to `/report/[searchId]`. If the save fails, it falls back to the existing `sessionStorage` + `/report/preview` path so the user still sees their report.
+- **Email is best-effort**: The save route never fails the response due to an email send error — Resend failures are logged and swallowed.
+- **`ReportContent` DB load**: For `searchId !== 'preview'`, `ReportContent` fetches `GET /api/reports/:searchId`, converts `reportJson` (`Record<string, SearchResult>`) to a `SearchResult[]`, and re-hydrates `BuilderInput` from `entityName` / `entityAbn`.
+- **Anonymous searches**: `Search.userId` is `null` for all Phase 1f searches (no auth yet). Phase 3a wires the session userId in after NextAuth is added.
+- **`RESEND_API_KEY` and `FROM_EMAIL`**: Must be set in `web/.env.local` for email delivery to work. The save route degrades gracefully if these are unset (email is skipped, report still saved).
