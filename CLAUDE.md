@@ -304,3 +304,24 @@ Keep `page.tsx` as a Server Component and extract any interactive UI into dedica
 - **`onComplete` is a Phase 4b hook**: `HomeSearch` currently receives the `UploadResult` but does nothing with it; Phase 4b wires it to `POST /api/extract` and the `ExtractionConfirmCard`.
 - **R2 lifecycle**: Cloudflare R2 does not support per-object TTL via the S3 API. A bucket-level lifecycle rule (prefix `contracts/`, expire after 1 day) is the safety net; Phase 4b's extractor calls `deleteFromR2` immediately after extraction so objects rarely survive longer than seconds.
 - **`R2_BUCKET_CONTRACTS` env var** (not `R2_BUCKET_NAME`) — matches the key already in `.env.local.example` and `.env.local`.
+
+---
+
+## Phase 4b — Claude extraction + confirmation card + clause opt-in (complete)
+
+### Key files
+
+- `web/lib/contractExtractor.ts` — `extractFromContract(r2Key, fileType): Promise<ContractExtraction>`; fetches file from R2 via presigned URL, sends PDF as a `document` block or image as a `vision` block to `claude-opus-4-7`, parses the JSON response; DOCX returns empty fields with `confidence: 'low'` (no native parse support)
+- `web/app/api/extract/route.ts` — `POST /api/extract`: accepts `{ r2Key, fileType }`; calls `extractFromContract`; always calls `deleteFromR2` after extraction (both success and error paths); returns `ContractExtraction` JSON
+- `web/components/ExtractionConfirmCard.tsx` — `'use client'`; editable controlled inputs for `builderName`, `abn`, `licenceNumber`; shows low-confidence warning banner when `confidence === 'low'`; clause opt-in checkbox (wired, marked "coming soon"); exports `ConfirmData` interface
+- `web/components/HomeSearch.tsx` — extended from 2-state to 4-state view machine: `'search' | 'upload' | 'extracting' | 'confirm'`; on confirm navigates to `/search?companyName=...&abn=...&licenceNumber=...`
+- `web/src/types/index.ts` — added `ContractExtraction` interface (`builderName`, `abn`, `licenceNumber`, `contractValue?`, `projectAddress?`, `confidence: 'high' | 'medium' | 'low'`)
+
+### Conventions
+
+- **Extraction lives in the Next.js app, not the Express server**: the spec placed this in `server/scrapers/contractExtractor.js` but the Express server has no `@anthropic-ai/sdk` or AWS SDK. Since the upload route is already a Next.js route and the web app has both packages, extraction follows the same pattern. Do not move it to the Express server without installing those dependencies there.
+- **`DocumentBlockParam` is not in `@anthropic-ai/sdk` v0.29.0's union type**: the PDF `document` block is cast via `any` in `contractExtractor.ts`. This is intentional — the runtime supports it; the types do not. Do not attempt to type it as `Anthropic.MessageParam['content'][number]` directly.
+- **R2 object is always deleted after extraction**: `deleteFromR2` is called unconditionally in `route.ts` — on success, and in the error path before returning 500. A `.catch(() => {})` on the success-path call ensures a delete failure never breaks the response.
+- **DOCX is not supported for extraction**: `fileType === 'docx'` short-circuits and returns `{ confidence: 'low', builderName: '', abn: '', licenceNumber: '' }`. The low-confidence warning in `ExtractionConfirmCard` prompts the user to fill in fields manually.
+- **`ANTHROPIC_API_KEY` is required in `web/.env.local`**: without it `new Anthropic()` has no credentials and extraction returns 500. The route degrades gracefully — the UI drops back to the manual search view with an error message.
+- **Clause opt-in is wired but inert**: `wantClauseAnalysis` is captured in `ConfirmData` but not acted on in Phase 4b. It is available for Phase 4c to persist to `Search.contractExtracted` or trigger clause analysis.
