@@ -1,4 +1,4 @@
-import { SearchBar } from '@/components/SearchBar';
+import { HomeSearch } from '@/components/HomeSearch';
 
 const CHECKLIST = [
   ['🏛', 'ABR, ASIC & company notices'],
@@ -24,19 +24,8 @@ export default function HomePage() {
           </p>
         </div>
 
-        {/* Search form */}
-        <SearchBar />
-
-        {/* Contract upload stub */}
-        <div className="mt-4 text-center">
-          <button
-            type="button"
-            className="text-sm text-primary-light font-medium underline underline-offset-2 hover:text-primary transition"
-            aria-label="Upload a building contract to extract builder details automatically"
-          >
-            Or upload your contract to auto-fill →
-          </button>
-        </div>
+        {/* Search form + contract upload toggle */}
+        <HomeSearch />
 
         {/* What we check */}
         <div className="mt-8 bg-surface rounded-2xl p-6 border border-border shadow-sm">

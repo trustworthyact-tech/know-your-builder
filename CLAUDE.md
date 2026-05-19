@@ -140,7 +140,7 @@ Both env vars must be set for full functionality: `NEXT_PUBLIC_SCRAPING_SERVICE_
 
 ### Key files
 
-- `web/app/page.tsx` — React Server Component (no `'use client'`); delegates all interactivity to `<SearchBar />`; includes a stub "upload contract" button (not yet wired)
+- `web/app/page.tsx` — React Server Component (no `'use client'`); delegates all interactivity to `<HomeSearch />`
 - `web/components/SearchBar.tsx` — `'use client'` form component; `formatABN()` auto-formats input as `XX XXX XXX XXX` on every keystroke; validates that at least one of company name or ABN is provided; on submit, strips ABN formatting to raw digits before pushing to `/search?companyName=...&abn=...&licenceNumber=...`
 
 ### Conventions
@@ -284,3 +284,23 @@ Keep `page.tsx` as a Server Component and extract any interactive UI into dedica
 - **Share upsert always updates `expiresAt`**: `update: { expiresAt }` ensures a previously-created link is refreshed to a full 30-day window on every Share button click. Do not use `update: {}` in the share route.
 - **PDF cookie forwarding**: check for `__Secure-next-auth.session-token` first (HTTPS/production), fall back to `next-auth.session-token` (HTTP/dev). Pass `domain` from `new URL(NEXTAUTH_URL).hostname`.
 - **`puppeteer` is in `dependencies`** (not devDependencies) — it is used at runtime in the PDF API route.
+
+---
+
+## Phase 4a — File upload + R2 storage (complete)
+
+### Key files
+
+- `web/lib/r2.ts` — S3-compatible R2 client; exports `uploadToR2`, `deleteFromR2`, `getPresignedUrl`; uses `globalThis` singleton pattern (same as `db.ts` and `resend.ts`); reads `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_CONTRACTS` from env
+- `web/app/api/upload/route.ts` — `POST /api/upload`: accepts `multipart/form-data` with a `file` field; validates MIME type (PDF/DOCX/JPG/PNG) and size (≤ 10 MB) server-side; stores object under `contracts/<uuid>.<ext>`; returns `{ r2Key, fileType, warning? }` where `warning` is set for image uploads
+- `web/components/ContractUpload.tsx` — `'use client'` drag-and-drop zone; validates file type/size client-side before any network call; uses `XMLHttpRequest` (not `fetch`) for real upload progress via `xhr.upload.onprogress`; props: `onComplete(result: UploadResult)` and `onCancel()`
+- `web/components/HomeSearch.tsx` — `'use client'` wrapper that owns the `'search' | 'upload'` view toggle; keeps `page.tsx` a pure Server Component
+
+### Conventions
+
+- **`page.tsx` stays a Server Component**: the `HomeSearch` wrapper owns all client-side state for the search/upload toggle; extracted following the same pattern as `SearchContent`, `ReportContent`, etc.
+- **Client-side validation mirrors server-side**: `ContractUpload` rejects disallowed MIME types and files > 10 MB before sending — the API route enforces the same rules as a second line of defence.
+- **Use `XMLHttpRequest` for file uploads** when upload progress is needed — `fetch` does not expose `upload.onprogress`.
+- **`onComplete` is a Phase 4b hook**: `HomeSearch` currently receives the `UploadResult` but does nothing with it; Phase 4b wires it to `POST /api/extract` and the `ExtractionConfirmCard`.
+- **R2 lifecycle**: Cloudflare R2 does not support per-object TTL via the S3 API. A bucket-level lifecycle rule (prefix `contracts/`, expire after 1 day) is the safety net; Phase 4b's extractor calls `deleteFromR2` immediately after extraction so objects rarely survive longer than seconds.
+- **`R2_BUCKET_CONTRACTS` env var** (not `R2_BUCKET_NAME`) — matches the key already in `.env.local.example` and `.env.local`.
