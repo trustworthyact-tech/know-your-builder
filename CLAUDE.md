@@ -179,7 +179,7 @@ Keep `page.tsx` as a Server Component and extract any interactive UI into dedica
 
 - **QBCC split**: The `qbcc` SearchResult carries both `licenceResults` (section 8.2) and `adjudicationResults` (section 8.4). `ReportContent` creates synthetic SearchResult descriptors for each sub-section and passes `resultsOverride` to `ReportSection` — do not use `qbcc.results` directly in sections 8.2 or 8.4.
 - **Courts (8.5)**: A single synthetic `courtSearch` SearchResult provides the summary and one "Verify at AustLII" link; `resultsOverride={courtItems}` combines all 9 jurisdiction results; `showJurisdiction` shows the per-result jurisdiction badge.
-- **Risk levels in Phase 1e**: Computed with a simple heuristic (`findings` if any results, `clear` if none, `unavailable` if all scrapers errored, `significant` if court hits ≥ 6). Phase 2 replaces this with the deterministic `riskGrouper`.
+- **Risk levels in Phase 1e**: Computed with a simple heuristic (`findings` if any results, `clear` if none, `unavailable` if all scrapers errored, `significant` if court hits ≥ 6). Superseded by the deterministic `riskGrouper` in Phase 2.
 - **`/report/preview` route**: The empty `web/app/report/preview/` placeholder directory was removed; the `[searchId]` dynamic route now handles it cleanly.
 
 ---
@@ -192,7 +192,7 @@ Keep `page.tsx` as a Server Component and extract any interactive UI into dedica
 - `web/components/EmailGate.tsx` — email input (required), AU state dropdown, project type dropdown, deep check checkbox; `onSubmit: (data: EmailGateData) => void`
 - `web/lib/resend.ts` — Resend client singleton (same `globalThis` pattern as Prisma)
 - `web/emails/ReportEmail.tsx` — React Email template; takes `entityName`, hit counts, `reportUrl`; rendered to HTML server-side in the save route
-- `web/app/api/reports/save/route.ts` — `POST /api/reports/save`: persists `Search` row with `reportJson`, sends report email via Resend; `riskSummary` is `null` (stubbed until Phase 2)
+- `web/app/api/reports/save/route.ts` — `POST /api/reports/save`: persists `Search` row with `reportJson`, calls `riskGrouper()` synchronously and stores result in `Search.riskSummary`, sends report email via Resend
 - `web/app/api/reports/[searchId]/route.ts` — `GET /api/reports/:searchId`: returns search + reportJson for `ReportContent` to consume
 
 ### Conventions
@@ -203,3 +203,43 @@ Keep `page.tsx` as a Server Component and extract any interactive UI into dedica
 - **`ReportContent` DB load**: For `searchId !== 'preview'`, `ReportContent` fetches `GET /api/reports/:searchId`, converts `reportJson` (`Record<string, SearchResult>`) to a `SearchResult[]`, and re-hydrates `BuilderInput` from `entityName` / `entityAbn`.
 - **Anonymous searches**: `Search.userId` is `null` for all Phase 1f searches (no auth yet). Phase 3a wires the session userId in after NextAuth is added.
 - **`RESEND_API_KEY` and `FROM_EMAIL`**: Must be set in `web/.env.local` for email delivery to work. The save route degrades gracefully if these are unset (email is skipped, report still saved).
+
+---
+
+## Phase 2 — Risk grouping engine + Risk Summary panel (complete)
+
+### Key files
+
+- `web/lib/riskGrouper.ts` — pure deterministic function `riskGrouper(findings: Record<string, SearchResult>): RiskGroupResult[]`; maps scraper output to five named risk groups (`INSOLVENCY`, `PAYMENT`, `LICENSING`, `LEGAL`, `CORPORATE`); no I/O, no randomness — same input always produces the same output
+- `web/components/RiskSummaryPanel.tsx` — renders triggered risk groups with prescribed descriptions and source-linked trigger bullets; shows "No significant findings" fallback when no groups are triggered
+
+### Conventions
+
+- **Risk groups are the source of truth for risk level**: `riskGrouper` replaces the Phase 1e heuristic. Each `<ReportSection>` receives a `riskLevel` prop derived from whether any triggered group maps to that section.
+- **`riskSummary` is frozen at save time**: The save route calls `riskGrouper()` synchronously on the raw `findings` map and stores the JSON in `Search.riskSummary`. `ReportContent` reads back this stored value for DB-backed reports — it never recomputes from the stored `reportJson`. This guarantees identical output across page loads for the same search.
+- **Preview fallback**: For `searchId === 'preview'` (sessionStorage path), `riskGrouper` is called live in `ReportContent` since there is no DB row to read from.
+- **`riskGrouper` input shape**: Accepts `Record<string, SearchResult>` keyed by the same 14 scraper keys used throughout the app. Missing keys are treated as no results (not errors).
+- **Five risk group IDs**: `INSOLVENCY | PAYMENT | LICENSING | LEGAL | CORPORATE` — defined in `web/src/types/index.ts` as `RiskGroupId`. Each `RiskGroupResult` carries `id`, `label`, `description`, `triggered: boolean`, and `triggers: RiskGroupTrigger[]`.
+
+---
+
+## Phase 3a — Auth (NextAuth + registration) (complete)
+
+### Key files
+
+- `web/lib/auth.ts` — NextAuth config; exports `authOptions`; type-augments `Session` and `JWT` to expose `user.id` (string cuid matching `User.id` in Prisma). Session strategy is **JWT** — required because `CredentialsProvider` is incompatible with the database session strategy in next-auth v4.
+- `web/app/api/auth/[...nextauth]/route.ts` — NextAuth catch-all; re-exports `GET` and `POST` from `NextAuth(authOptions)`
+- `web/app/api/auth/register/route.ts` — `POST /api/auth/register`: hashes password with `bcrypt` (cost 12), creates `User` + `VerificationToken` (24 h expiry), sends `VerifyEmail` via Resend (best-effort)
+- `web/app/auth/verify-email/page.tsx` — Server Component; validates token + email params, calls `prisma.$transaction` to set `emailVerified` and delete the token, then redirects to `/auth/login?verified=1`
+- `web/app/auth/login/page.tsx` — `'use client'`; credentials form (`signIn('credentials', { redirect: false })`) + Google button (`signIn('google', ...)`); reads `?verified=1` and `?error=invalid-token` from search params (wrapped in `<Suspense>` for `useSearchParams`)
+- `web/app/auth/register/page.tsx` — `'use client'`; posts to `/api/auth/register`; on success renders "check your inbox" confirmation in place
+- `web/emails/VerifyEmail.tsx` — React Email template; same visual style as `ReportEmail`
+- `web/components/NavBar.tsx` — `'use client'`; global nav rendered in root layout; uses `useSession()` to show email + **Sign out** (`signOut({ callbackUrl: '/' })`) when authenticated, or **Sign in** / **Register** links when not
+
+### Conventions
+
+- **Always import `authOptions` from `@/lib/auth`** when calling `getServerSession` in Route Handlers. Do not re-declare NextAuth config inline.
+- **`getServerSession(authOptions)`** is the correct pattern for server-side session access in Next.js 14 App Router Route Handlers and Server Components. Do not use `getSession()` (client-only) on the server.
+- **`Search.userId` is now set from the session** in `POST /api/reports/save`. Anonymous searches (unauthenticated) still produce `userId: null` — this is intentional and valid per the schema.
+- **Email verification is required for credentials users** but not enforced at sign-in time in Phase 3a. Enforcement (blocking unverified logins) can be added in a later phase if needed.
+- **Google sign-in auto-creates a `User` row** via the Prisma adapter (no `passwordHash`). These users have `emailVerified` set automatically by the adapter.

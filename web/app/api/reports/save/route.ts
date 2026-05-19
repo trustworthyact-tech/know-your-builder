@@ -1,9 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getServerSession } from 'next-auth/next';
+import { authOptions } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import { getResend } from '@/lib/resend';
 import { render } from '@react-email/components';
 import { ReportEmail } from '@/emails/ReportEmail';
 import { Persona, SearchResult } from '@/src/types';
+import { riskGrouper } from '@/lib/riskGrouper';
 
 interface SaveBody {
   entityName: string;
@@ -18,6 +21,8 @@ interface SaveBody {
 }
 
 export async function POST(req: NextRequest) {
+  const session = await getServerSession(authOptions);
+
   let body: SaveBody;
   try {
     body = await req.json();
@@ -41,11 +46,14 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'entityName is required' }, { status: 400 });
   }
 
-  // Persist the Search row. Risk grouping is stubbed until Phase 2 (riskSummary = null).
+  const riskGroups = riskGrouper(findings);
+  const riskSummary = JSON.stringify(riskGroups);
+
   let search;
   try {
     search = await prisma.search.create({
       data: {
+        userId: session?.user?.id ?? null,
         entityName,
         entityAbn: entityAbn || null,
         persona: persona ?? null,
@@ -54,7 +62,7 @@ export async function POST(req: NextRequest) {
         projectState: projectState || null,
         reportJson: findings as object,
         isDeepCheck,
-        riskSummary: null,
+        riskSummary,
       },
     });
   } catch (err) {
