@@ -10,6 +10,8 @@ import { riskGrouper } from '@/lib/riskGrouper';
 
 interface Props {
   searchId: string;
+  shareToken?: string;
+  readOnly?: boolean;
 }
 
 const TOC_SECTIONS = [
@@ -49,14 +51,21 @@ function entityInitials(name: string): string {
     .join('');
 }
 
-export function ReportContent({ searchId }: Props) {
+export function ReportContent({ searchId, shareToken, readOnly = false }: Props) {
   const [results, setResults] = useState<SearchResult[] | null>(null);
   const [input, setInput] = useState<BuilderInput | null>(null);
   const [riskGroups, setRiskGroups] = useState<RiskGroupResult[]>([]);
   const [loadError, setLoadError] = useState('');
 
   useEffect(() => {
-    if (searchId === 'preview') {
+    const fetchUrl = shareToken
+      ? `/api/share/${shareToken}`
+      : searchId === 'preview'
+        ? null
+        : `/api/reports/${searchId}`;
+
+    if (!fetchUrl) {
+      // Preview path: read from sessionStorage
       try {
         const rawResults = sessionStorage.getItem('kyb_preview_results');
         const rawInput = sessionStorage.getItem('kyb_preview_input');
@@ -73,38 +82,42 @@ export function ReportContent({ searchId }: Props) {
       } catch {
         setLoadError('Failed to load report data.');
       }
-    } else {
-      fetch(`/api/reports/${searchId}`)
-        .then(async (res) => {
-          if (!res.ok) throw new Error('Report not found');
-          return res.json();
-        })
-        .then((data) => {
-          const findings = data.reportJson as Record<string, SearchResult>;
-          setResults(Object.values(findings));
-          setInput({
-            companyName: data.entityName ?? '',
-            abn: data.entityAbn ?? '',
-            acn: '',
-            tradingName: '',
-            directors: [],
-          });
-          // Use stored risk summary when available; fall back to client-side computation
-          if (data.riskSummary) {
-            try {
-              setRiskGroups(JSON.parse(data.riskSummary) as RiskGroupResult[]);
-            } catch {
-              setRiskGroups(riskGrouper(findings));
-            }
-          } else {
+      return;
+    }
+
+    fetch(fetchUrl)
+      .then(async (res) => {
+        if (!res.ok) throw new Error('Report not found');
+        return res.json();
+      })
+      .then((data) => {
+        const findings = data.reportJson as Record<string, SearchResult>;
+        setResults(Object.values(findings));
+        setInput({
+          companyName: data.entityName ?? '',
+          abn: data.entityAbn ?? '',
+          acn: '',
+          tradingName: '',
+          directors: [],
+        });
+        if (data.riskSummary) {
+          try {
+            setRiskGroups(JSON.parse(data.riskSummary) as RiskGroupResult[]);
+          } catch {
             setRiskGroups(riskGrouper(findings));
           }
-        })
-        .catch(() => {
-          setLoadError('Report not found or could not be loaded. Please run a new search.');
-        });
-    }
-  }, [searchId]);
+        } else {
+          setRiskGroups(riskGrouper(findings));
+        }
+      })
+      .catch(() => {
+        setLoadError(
+          shareToken
+            ? 'This report link has expired or is no longer available.'
+            : 'Report not found or could not be loaded. Please run a new search.'
+        );
+      });
+  }, [searchId, shareToken]);
 
   if (loadError) {
     return (
@@ -254,12 +267,18 @@ export function ReportContent({ searchId }: Props) {
       >
         <div className="max-w-4xl mx-auto px-4 py-2 overflow-x-auto">
           <div className="flex items-center gap-1 min-w-max">
-            <Link
-              href="/"
-              className="text-white/70 hover:text-white text-xs font-semibold py-1.5 px-2 rounded transition shrink-0"
-            >
-              ← New search
-            </Link>
+            {readOnly ? (
+              <span className="text-white/60 text-xs font-semibold py-1.5 px-2 shrink-0 border border-white/20 rounded">
+                Shared report
+              </span>
+            ) : (
+              <Link
+                href="/"
+                className="text-white/70 hover:text-white text-xs font-semibold py-1.5 px-2 rounded transition shrink-0"
+              >
+                ← New search
+              </Link>
+            )}
             <span className="text-white/30 text-xs px-1" aria-hidden="true">|</span>
             {TOC_SECTIONS.map(({ id, short }) => (
               <a

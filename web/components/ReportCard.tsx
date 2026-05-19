@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import Link from 'next/link';
 import { RiskBadge, RiskLevel } from '@/components/RiskBadge';
 import { RiskGroupResult } from '@/src/types';
@@ -47,6 +48,27 @@ const PROJECT_TYPE_LABELS: Record<string, string> = {
 const STALE_DAYS = 30;
 
 export function ReportCard({ search }: { search: SearchSummary }) {
+  const [shareState, setShareState] = useState<'idle' | 'loading' | 'copied' | 'error'>('idle');
+
+  async function handleShare() {
+    setShareState('loading');
+    try {
+      const res = await fetch('/api/share', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ searchId: search.id }),
+      });
+      if (!res.ok) throw new Error('Failed to create share link');
+      const { shareUrl } = await res.json();
+      await navigator.clipboard.writeText(shareUrl);
+      setShareState('copied');
+      setTimeout(() => setShareState('idle'), 3000);
+    } catch {
+      setShareState('error');
+      setTimeout(() => setShareState('idle'), 3000);
+    }
+  }
+
   const createdAt = new Date(search.createdAt);
   const ageMs = Date.now() - createdAt.getTime();
   const isStale = ageMs > STALE_DAYS * 24 * 60 * 60 * 1000;
@@ -120,19 +142,33 @@ export function ReportCard({ search }: { search: SearchSummary }) {
           Re-check
         </button>
         <button
-          disabled
-          title="Coming in Phase 3c"
-          className="text-xs font-semibold text-text-muted border border-border-light rounded-lg px-2.5 py-1 cursor-not-allowed"
+          onClick={handleShare}
+          disabled={shareState === 'loading'}
+          className={`text-xs font-semibold border rounded-lg px-2.5 py-1 transition ${
+            shareState === 'copied'
+              ? 'text-success border-success/40 bg-success-bg'
+              : shareState === 'error'
+                ? 'text-danger border-danger/40'
+                : shareState === 'loading'
+                  ? 'text-text-muted border-border-light cursor-wait'
+                  : 'text-primary border-primary/40 hover:bg-primary/5'
+          }`}
         >
-          Share
+          {shareState === 'loading'
+            ? 'Sharing…'
+            : shareState === 'copied'
+              ? 'Link copied!'
+              : shareState === 'error'
+                ? 'Error'
+                : 'Share'}
         </button>
-        <button
-          disabled
-          title="Coming in Phase 3c"
-          className="text-xs font-semibold text-text-muted border border-border-light rounded-lg px-2.5 py-1 cursor-not-allowed"
+        <a
+          href={`/api/report/${search.id}/pdf`}
+          download
+          className="text-xs font-semibold text-primary border border-primary/40 rounded-lg px-2.5 py-1 hover:bg-primary/5 transition"
         >
           PDF
-        </button>
+        </a>
       </div>
     </div>
   );

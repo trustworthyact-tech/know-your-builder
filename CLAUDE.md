@@ -264,3 +264,23 @@ Keep `page.tsx` as a Server Component and extract any interactive UI into dedica
 - **Serialise `Date` before passing to client components**: Prisma returns `Date` objects, which are not serialisable across the Server/Client boundary. Call `.toISOString()` in the Server Component before passing `createdAt` as a prop.
 - **`riskSummary` is a JSON string of `RiskGroupResult[]`**: `riskGrouper` only pushes groups that have triggers, so any item in the parsed array is already triggered. Risk level is `significant` if any group has `severity === 'significant'`, `findings` if any groups exist, otherwise `clear`.
 - **Staleness threshold is 30 days**: defined as a constant `STALE_DAYS = 30` in `ReportCard.tsx`. Re-check / Share / PDF buttons are stubs to be wired in Phases 3c and 7b.
+
+---
+
+## Phase 3c — PDF export + shareable links (complete)
+
+### Key files
+
+- `web/app/api/share/route.ts` — `POST /api/share`: requires session; verifies `Search.userId === session.user.id`; upserts `ShareableLink` with 30-day expiry (always sets `expiresAt` on update so re-sharing extends the window); returns `{ token, shareUrl, expiresAt }`
+- `web/app/api/share/[token]/route.ts` — `GET /api/share/[token]`: no auth required; returns same shape as `GET /api/reports/:searchId` or 404 if token not found / expired
+- `web/app/api/report/[searchId]/pdf/route.ts` — `GET /api/report/:id/pdf`: two auth paths — (1) session + ownership: extracts `next-auth.session-token` cookie and forwards it to Puppeteer, navigates to `/report/:id`; (2) `?shareToken=`: validates token, navigates to `/report/share/:token`; streams back `application/pdf`
+- `web/app/report/share/[token]/page.tsx` — read-only report page; passes `shareToken` and `readOnly` props to `ReportContent`; no session required
+- `web/components/ReportCard.tsx` — Share button calls `POST /api/share`, copies URL to clipboard, cycles through `idle → loading → copied → idle` states; PDF button is `<a download>` pointing to `/api/report/:id/pdf`
+
+### Conventions
+
+- **`POST /api/share` is the only writer of `ShareableLink` records**: the PDF route must never create share links as a side effect. For own-report PDFs, Puppeteer receives the caller's session cookie and navigates to `/report/:id` directly.
+- **`ReportContent` accepts `shareToken?` and `readOnly?` props**: when `shareToken` is present the component fetches from `/api/share/:token` instead of `/api/reports/:id`; `readOnly=true` replaces the "← New search" nav link with a "Shared report" pill.
+- **Share upsert always updates `expiresAt`**: `update: { expiresAt }` ensures a previously-created link is refreshed to a full 30-day window on every Share button click. Do not use `update: {}` in the share route.
+- **PDF cookie forwarding**: check for `__Secure-next-auth.session-token` first (HTTPS/production), fall back to `next-auth.session-token` (HTTP/dev). Pass `domain` from `new URL(NEXTAUTH_URL).hostname`.
+- **`puppeteer` is in `dependencies`** (not devDependencies) — it is used at runtime in the PDF API route.
