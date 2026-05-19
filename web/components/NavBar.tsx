@@ -16,6 +16,12 @@ export function NavBar() {
         <div className="flex items-center gap-4">
           {status === 'loading' ? null : session ? (
             <>
+              <Link
+                href="/account/reports"
+                className="text-xs font-semibold text-text-secondary hover:text-primary transition-colors hidden sm:block"
+              >
+                Account
+              </Link>
               <span className="text-xs text-text-muted hidden sm:block truncate max-w-[180px]">
                 {session.user.email}
               </span>

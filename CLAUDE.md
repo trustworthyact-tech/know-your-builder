@@ -243,3 +243,24 @@ Keep `page.tsx` as a Server Component and extract any interactive UI into dedica
 - **`Search.userId` is now set from the session** in `POST /api/reports/save`. Anonymous searches (unauthenticated) still produce `userId: null` — this is intentional and valid per the schema.
 - **Email verification is required for credentials users** but not enforced at sign-in time in Phase 3a. Enforcement (blocking unverified logins) can be added in a later phase if needed.
 - **Google sign-in auto-creates a `User` row** via the Prisma adapter (no `passwordHash`). These users have `emailVerified` set automatically by the adapter.
+
+---
+
+## Phase 3b — Account dashboard shell + Saved Reports tab (complete)
+
+### Key files
+
+- `web/app/account/layout.tsx` — Server Component; calls `getServerSession(authOptions)` and redirects unauthenticated users to `/auth/login?callbackUrl=/account/reports`; renders account header + `<AccountTabNav>` + `{children}`
+- `web/app/account/page.tsx` — `redirect('/account/reports')`
+- `web/app/account/reports/page.tsx` — Server Component; queries Prisma directly (no HTTP hop); accepts `?page=` search param; serialises `Date` → ISO string before passing to client components
+- `web/app/api/user/searches/route.ts` — `GET /api/user/searches?page=&limit=`; 401 if unauthenticated; returns `{ searches, total, page, pageSize }`
+- `web/components/AccountTabNav.tsx` — `'use client'`; uses `usePathname()` for active-tab highlighting; tabs: Reports | Watchlist | Monitoring | Alerts | Billing
+- `web/components/ReportCard.tsx` — `'use client'`; derives overall risk level from stored `riskSummary` JSON (`significant` → `findings` → `clear` → `unavailable`); staleness badge appears when report age exceeds 30 days; Re-check / Share / PDF buttons are disabled stubs
+
+### Conventions
+
+- **Split Server/Client at the layout boundary**: `account/layout.tsx` is a Server Component for auth; `AccountTabNav` is extracted as a separate `'use client'` file because `usePathname()` is a hook and cannot be used in a Server Component.
+- **Query Prisma directly in Server Component pages** rather than calling the internal API route — avoids an unnecessary HTTP round-trip on the server. The API route exists for future client-side use.
+- **Serialise `Date` before passing to client components**: Prisma returns `Date` objects, which are not serialisable across the Server/Client boundary. Call `.toISOString()` in the Server Component before passing `createdAt` as a prop.
+- **`riskSummary` is a JSON string of `RiskGroupResult[]`**: `riskGrouper` only pushes groups that have triggers, so any item in the parsed array is already triggered. Risk level is `significant` if any group has `severity === 'significant'`, `findings` if any groups exist, otherwise `clear`.
+- **Staleness threshold is 30 days**: defined as a constant `STALE_DAYS = 30` in `ReportCard.tsx`. Re-check / Share / PDF buttons are stubs to be wired in Phases 3c and 7b.
