@@ -26,8 +26,11 @@ const INITIAL_SEARCHES: SearchResult[] = [
   { key: 'austlii_sa',    label: 'SA Courts & Tribunals (AustLII)',          status: 'idle' },
   { key: 'austlii_nt',    label: 'NT Courts & Tribunals (AustLII)',          status: 'idle' },
   { key: 'austlii_act',   label: 'ACT Courts & Tribunals (AustLII)',         status: 'idle' },
-  { key: 'austlii_tas',   label: 'TAS Courts & Tribunals (AustLII)',         status: 'idle' },
-  { key: 'links',          label: 'Additional Database Links',               status: 'idle' },
+  { key: 'austlii_tas',       label: 'TAS Courts & Tribunals (AustLII)',             status: 'idle' },
+  { key: 'fwo',              label: 'Fair Work Ombudsman — Enforcement Outcomes',   status: 'idle' },
+  { key: 'vicBpc',           label: 'VIC Building Authority — Disciplinary Register', status: 'idle' },
+  { key: 'waBuildingEnergy', label: 'WA Building and Energy — Enforcement',         status: 'idle' },
+  { key: 'links',            label: 'Additional Database Links',                    status: 'idle' },
 ];
 
 type Step = 'persona' | 'email-gate' | 'server-check' | 'running' | 'saving' | 'done' | 'error';

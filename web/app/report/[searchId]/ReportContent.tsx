@@ -19,7 +19,7 @@ const TOC_SECTIONS = [
   { id: 's82', short: '8.2 Licences' },
   { id: 's83', short: '8.3 Financial' },
   { id: 's84', short: '8.4 Payment' },
-  { id: 's85', short: '8.5 Courts' },
+  { id: 's85', short: '8.5 Enforcement' },
   { id: 's86', short: '8.6 Manual Review' },
 ] as const;
 
@@ -160,6 +160,9 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
   const paymentTimes = byKey('paymentTimes');
   const modernSlavery = byKey('modernSlavery');
   const austliiResults = results.filter((r) => r.key.startsWith('austlii_'));
+  const fwo = byKey('fwo');
+  const vicBpc = byKey('vicBpc');
+  const waBuildingEnergy = byKey('waBuildingEnergy');
   const links = byKey('links');
 
   // Entity card data
@@ -202,7 +205,15 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
     ...(paymentTimes?.results ?? []),
     ...(modernSlavery?.results ?? []),
   ];
-  const courtItems: ResultItem[] = austliiResults.flatMap((r) => r.results ?? []);
+  const fwoItems: ResultItem[] = fwo?.results ?? [];
+  const vicBpcItems: ResultItem[] = vicBpc?.results ?? [];
+  const waBuildingEnergyItems: ResultItem[] = waBuildingEnergy?.results ?? [];
+  const courtItems: ResultItem[] = [
+    ...austliiResults.flatMap((r) => r.results ?? []),
+    ...fwoItems,
+    ...vicBpcItems,
+    ...waBuildingEnergyItems,
+  ];
   const linkItems: ResultItem[] = links?.results ?? [];
 
   // Section risk levels — derived from risk groups, falling back to scraper-status baseline
@@ -242,7 +253,14 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
   const s85Risk = deriveRiskLevel(
     riskGroups,
     '#s85',
-    isAllErrored(austliiResults.map((r) => r.status)) ? 'unavailable' : 'clear'
+    isAllErrored([
+      ...austliiResults.map((r) => r.status),
+      fwo?.status ?? 'done',
+      vicBpc?.status ?? 'done',
+      waBuildingEnergy?.status ?? 'done',
+    ])
+      ? 'unavailable'
+      : 'clear'
   );
 
   // Synthetic SearchResult objects for sections that split one source across sections
@@ -287,6 +305,39 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
       courtHits > 0
         ? `${courtHits} decision(s) found across ${courtJurisdictionsFound} jurisdiction(s)`
         : 'No court or tribunal decisions found',
+  };
+
+  const fwoSearch: SearchResult = {
+    key: 'fwo',
+    label: 'Fair Work Ombudsman — Enforcement Outcomes',
+    status: fwo?.status ?? 'done',
+    source: 'Fair Work Ombudsman',
+    jurisdiction: 'Federal',
+    category: 'payment',
+    searchUrl: fwo?.searchUrl,
+    summary: fwo?.summary ?? 'No Fair Work Ombudsman enforcement outcomes found',
+  };
+
+  const vicBpcSearch: SearchResult = {
+    key: 'vicBpc',
+    label: 'VIC Building Authority — Disciplinary Register',
+    status: vicBpc?.status ?? 'done',
+    source: 'Victorian Building Authority',
+    jurisdiction: 'VIC',
+    category: 'regulatory',
+    searchUrl: vicBpc?.searchUrl,
+    summary: vicBpc?.summary ?? 'No VBA disciplinary proceedings found',
+  };
+
+  const waBuildingEnergySearch: SearchResult = {
+    key: 'waBuildingEnergy',
+    label: 'WA Building and Energy — Enforcement',
+    status: waBuildingEnergy?.status ?? 'done',
+    source: 'WA Building and Energy',
+    jurisdiction: 'WA',
+    category: 'regulatory',
+    searchUrl: waBuildingEnergy?.searchUrl,
+    summary: waBuildingEnergy?.summary ?? 'No WA Building and Energy enforcement actions found',
   };
 
   return (
@@ -428,12 +479,12 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
           resultsOverride={adjItems}
         />
 
-        {/* 8.5 Courts & Legal Proceedings */}
+        {/* 8.5 Courts, Enforcement & Disciplinary */}
         <ReportSection
           id="s85"
-          title="8.5 Courts & Legal Proceedings"
+          title="8.5 Courts, Enforcement & Disciplinary"
           icon="⚖️"
-          searchResults={[courtSearch]}
+          searchResults={[courtSearch, fwoSearch, vicBpcSearch, waBuildingEnergySearch]}
           riskLevel={s85Risk}
           resultsOverride={courtItems}
           showJurisdiction

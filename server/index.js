@@ -9,6 +9,9 @@ const { searchASIC } = require('./scrapers/asic');
 const { searchASICDisqualified } = require('./scrapers/asicDisqualified');
 const { searchAsicInsolvency } = require('./scrapers/asicInsolvency');
 const { searchAtoDebt } = require('./scrapers/atoDebt');
+const { searchFWO } = require('./scrapers/fwo');
+const { searchVicBpc } = require('./scrapers/vicBpc');
+const { searchWABuildingEnergy } = require('./scrapers/waBuildingEnergy');
 const { generateLinks } = require('./scrapers/links');
 
 const app = express();
@@ -133,6 +136,21 @@ app.post('/api/search', async (req, res) => {
       fn: () => searchModernSlavery(companyName, abn),
     },
     { key: 'qbcc', label: 'QBCC — Licence Register', fn: () => searchQBCC(companyName, abn) },
+    {
+      key: 'fwo',
+      label: 'Fair Work Ombudsman — Enforcement Outcomes',
+      fn: () => searchFWO(companyName, abn),
+    },
+    {
+      key: 'vicBpc',
+      label: 'VIC Building Authority — Disciplinary Register',
+      fn: () => searchVicBpc(companyName, abn),
+    },
+    {
+      key: 'waBuildingEnergy',
+      label: 'WA Building and Energy — Enforcement',
+      fn: () => searchWABuildingEnergy(companyName, abn),
+    },
     {
       key: 'links',
       label: 'Additional Database Links',

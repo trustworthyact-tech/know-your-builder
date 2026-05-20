@@ -379,3 +379,24 @@ Keep `page.tsx` as a Server Component and extract any interactive UI into dedica
 - **`criticalBanner` priority order in section 8.3**: insolvency notices take priority over ATO debt for the banner (insolvency implies immediate financial distress); ATO debt banner only shows when there are no insolvency notices. Both sets of results still appear in `financialItems`.
 - **ASIC Published Notices HTML structure is uncertain**: `insolvencynotices.asic.gov.au` may render as a table or card/article layout depending on the page version. Both scrapers try table rows first, then fall back through a list of card selectors. If neither matches, results are empty and the report degrades gracefully — users can verify via the ASIC Published Notices link in section 8.6.
 - **`s83Risk` baseline includes all four financial scrapers**: `isAllErrored` now checks `asicInsolvency`, `atoDebt`, `paymentTimes`, and `modernSlavery` together — the section is only `unavailable` if every one of them errors.
+
+---
+
+## Phase 6c — FWO + VIC BPC + WA Building & Energy scrapers (complete)
+
+### Key files
+
+- `server/scrapers/fwo.js` — searches FWO media releases for enforcement outcomes (wage underpayment, litigation, compliance notices); keyword-filters for enforcement content then name-matches to avoid false positives; returns `category: 'payment'`, `jurisdiction: 'Federal'`
+- `server/scrapers/vicBpc.js` — fetches the VBA disciplinary proceedings register page and filters rows/cards matching the entity name; tries table layout first then card/paragraph fallback; returns `category: 'regulatory'`, `jurisdiction: 'VIC'`
+- `server/scrapers/waBuildingEnergy.js` — searches WA Building and Energy media releases for enforcement actions; same defensive multi-selector pattern as other scrapers; returns `category: 'regulatory'`, `jurisdiction: 'WA'`
+- `web/app/report/[searchId]/ReportContent.tsx` — section 8.5 renamed to "8.5 Courts, Enforcement & Disciplinary"; `fwoItems`, `vicBpcItems`, and `waBuildingEnergyItems` appended to `courtItems`; synthetic SearchResult objects for each new scraper passed in `searchResults` prop; `s85Risk` baseline extended to include all three new scraper statuses
+
+### Conventions
+
+- **`riskGrouper.ts` required no changes for Phase 6c**: PAYMENT trigger for `fwo` and LICENSING triggers for `vicBpc` and `waBuildingEnergy` were already written ahead of time (lines 173–247).
+- **`page.tsx` was not edited**: consistent with all prior phases — all rendering changes go in `ReportContent.tsx`, not the Server Component shell.
+- **All three scrapers are independent**: no shared promises needed; they run fully independently in `Promise.all`.
+- **Each new `ResultItem` carries `jurisdiction`**: `fwo` items set `jurisdiction: 'Federal'`, `vicBpc` items set `'VIC'`, `waBuildingEnergy` items set `'WA'`. The existing `showJurisdiction` prop on section 8.5 renders jurisdiction badges without any component changes.
+- **`nameMatchesEntity` guards all three scrapers**: FWO and WA B&E fetch name-search pages, VIC BPC fetches the full register. All three filter results client-side by requiring every significant word of the company name to appear in the result text — same approach as `modernSlavery.js` `isEntityMatch()`.
+- **`s85Risk` baseline includes all three new scrapers**: `isAllErrored` now checks all `austliiResults` statuses plus `fwo`, `vicBpc`, and `waBuildingEnergy` — the section is only `unavailable` if every one of them errors.
+- **`courtHits` in the entity card remains AustLII-only**: the stat label is "Court/tribunal"; FWO/VIC BPC/WA are enforcement actions, not court proceedings, so they are not folded into this count.
