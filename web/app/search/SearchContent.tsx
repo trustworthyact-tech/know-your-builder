@@ -13,6 +13,8 @@ const INITIAL_SEARCHES: SearchResult[] = [
   { key: 'abn',               label: 'ABR — Business Register',               status: 'idle' },
   { key: 'asic',              label: 'ASIC Connect — Company Search',          status: 'idle' },
   { key: 'asicDisqualified',  label: 'ASIC — Disqualified Persons Register',   status: 'idle' },
+  { key: 'asicInsolvency',   label: 'ASIC Published Notices — Insolvency',    status: 'idle' },
+  { key: 'atoDebt',          label: 'ASIC Published Notices — ATO Tax Debt',  status: 'idle' },
   { key: 'paymentTimes',      label: 'Payment Times Reporting Register',       status: 'idle' },
   { key: 'modernSlavery',  label: 'Modern Slavery Statements Register',      status: 'idle' },
   { key: 'qbcc',           label: 'QBCC — Licence Register',                 status: 'idle' },

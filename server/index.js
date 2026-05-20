@@ -7,6 +7,8 @@ const { searchModernSlavery } = require('./scrapers/modernSlavery');
 const { searchQBCC } = require('./scrapers/qbcc');
 const { searchASIC } = require('./scrapers/asic');
 const { searchASICDisqualified } = require('./scrapers/asicDisqualified');
+const { searchAsicInsolvency } = require('./scrapers/asicInsolvency');
+const { searchAtoDebt } = require('./scrapers/atoDebt');
 const { generateLinks } = require('./scrapers/links');
 
 const app = express();
@@ -64,6 +66,16 @@ app.post('/api/search', async (req, res) => {
         const allDirectors = [...new Set([...(directors ?? []), ...asicDirectors])];
         return searchASICDisqualified(allDirectors);
       },
+    },
+    {
+      key: 'asicInsolvency',
+      label: 'ASIC Published Notices — Insolvency',
+      fn: () => searchAsicInsolvency(companyName, abn),
+    },
+    {
+      key: 'atoDebt',
+      label: 'ASIC Published Notices — ATO Tax Debt',
+      fn: () => searchAtoDebt(companyName, abn),
     },
     {
       key: 'austlii_federal',

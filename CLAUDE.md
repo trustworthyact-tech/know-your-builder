@@ -361,3 +361,21 @@ Keep `page.tsx` as a Server Component and extract any interactive UI into dedica
 - **`riskGrouper.ts` required no changes for Phase 6a**: CORPORATE and LICENSING triggers for `asic` and `asicDisqualified` were already written ahead of time.
 - **Spec lists `page.tsx` as edited but change lives in `ReportContent.tsx`**: consistent with every prior phase — `page.tsx` is a Server Component shell; all report rendering is in `ReportContent.tsx`. Do not add scraper rendering directly to `page.tsx`.
 - **ASIC Connect is a JSF application**: `asic.js` and `asicDisqualified.js` use GET requests with query parameters. If ASIC Connect returns an empty table (e.g. due to a ViewState requirement), both scrapers degrade gracefully to empty results — search still completes, report still renders, users can verify manually via the ASIC link in section 8.6.
+
+---
+
+## Phase 6b — ASIC insolvency notices + ATO tax debt (complete)
+
+### Key files
+
+- `server/scrapers/asicInsolvency.js` — scrapes `insolvencynotices.asic.gov.au` for external administration, winding-up, receiver, and liquidation notices; keyword-filters notice type text; tries table-row layout then card/article layout as a fallback; returns `category: 'financial'`
+- `server/scrapers/atoDebt.js` — hits the same ASIC Published Notices register with `noticeType=ATP` query param and keyword-matches against ATO/tax-debt terminology; captures disclosed amounts where present
+- `web/app/report/[searchId]/ReportContent.tsx` — extended section 8.3 to include `asicInsolvency` and `atoDebt`; `insolvencyItems` and `atoDebtItems` are prepended to `financialItems`; `criticalBanner` fires red for insolvency notices (priority) or ATO debt notices; `s83Risk` baseline now includes all four financial scrapers
+
+### Conventions
+
+- **Both scrapers are independent — no shared promise needed**: unlike `asicDisqualified` (which depends on `asic` via a shared promise), `asicInsolvency` and `atoDebt` run fully independently in `Promise.all`. They do not depend on ASIC Connect data.
+- **`riskGrouper.ts` required no changes for Phase 6b**: INSOLVENCY group triggers for `asicInsolvency` and `atoDebt` were already written ahead of time (lines 69–87).
+- **`criticalBanner` priority order in section 8.3**: insolvency notices take priority over ATO debt for the banner (insolvency implies immediate financial distress); ATO debt banner only shows when there are no insolvency notices. Both sets of results still appear in `financialItems`.
+- **ASIC Published Notices HTML structure is uncertain**: `insolvencynotices.asic.gov.au` may render as a table or card/article layout depending on the page version. Both scrapers try table rows first, then fall back through a list of card selectors. If neither matches, results are empty and the report degrades gracefully — users can verify via the ASIC Published Notices link in section 8.6.
+- **`s83Risk` baseline includes all four financial scrapers**: `isAllErrored` now checks `asicInsolvency`, `atoDebt`, `paymentTimes`, and `modernSlavery` together — the section is only `unavailable` if every one of them errors.

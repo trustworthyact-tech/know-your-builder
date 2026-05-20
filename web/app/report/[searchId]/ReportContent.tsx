@@ -154,6 +154,8 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
   const abn = byKey('abn');
   const asic = byKey('asic');
   const asicDisqualified = byKey('asicDisqualified');
+  const asicInsolvency = byKey('asicInsolvency');
+  const atoDebt = byKey('atoDebt');
   const qbcc = byKey('qbcc');
   const paymentTimes = byKey('paymentTimes');
   const modernSlavery = byKey('modernSlavery');
@@ -192,7 +194,11 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
   ];
   const licenceItems: ResultItem[] = qbcc?.licenceResults ?? [];
   const adjItems: ResultItem[] = qbcc?.adjudicationResults ?? [];
+  const insolvencyItems: ResultItem[] = asicInsolvency?.results ?? [];
+  const atoDebtItems: ResultItem[] = atoDebt?.results ?? [];
   const financialItems: ResultItem[] = [
+    ...insolvencyItems,
+    ...atoDebtItems,
     ...(paymentTimes?.results ?? []),
     ...(modernSlavery?.results ?? []),
   ];
@@ -219,7 +225,12 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
   const s83Risk = deriveRiskLevel(
     riskGroups,
     '#s83',
-    isAllErrored([paymentTimes?.status ?? 'done', modernSlavery?.status ?? 'done'])
+    isAllErrored([
+      asicInsolvency?.status ?? 'done',
+      atoDebt?.status ?? 'done',
+      paymentTimes?.status ?? 'done',
+      modernSlavery?.status ?? 'done',
+    ])
       ? 'unavailable'
       : 'clear'
   );
@@ -395,9 +406,16 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
           id="s83"
           title="8.3 Financial Risk Signals"
           icon="💳"
-          searchResults={[paymentTimes, modernSlavery].filter(Boolean) as SearchResult[]}
+          searchResults={[asicInsolvency, atoDebt, paymentTimes, modernSlavery].filter(Boolean) as SearchResult[]}
           riskLevel={s83Risk}
           resultsOverride={financialItems}
+          criticalBanner={
+            insolvencyItems.length > 0
+              ? `${insolvencyItems.length} ASIC insolvency notice(s) found. This entity may be subject to external administration, winding up, or liquidation proceedings. Verify current status before proceeding.`
+              : atoDebtItems.length > 0
+              ? `${atoDebtItems.length} ATO tax debt notice(s) found. The Australian Taxation Office has published a listed tax debt for this entity with ASIC.`
+              : undefined
+          }
         />
 
         {/* 8.4 Payment & Subcontractor Disputes */}
