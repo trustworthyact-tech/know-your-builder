@@ -5,6 +5,8 @@ const { searchAustLII } = require('./scrapers/austlii');
 const { searchPaymentTimes } = require('./scrapers/paymentTimes');
 const { searchModernSlavery } = require('./scrapers/modernSlavery');
 const { searchQBCC } = require('./scrapers/qbcc');
+const { searchASIC } = require('./scrapers/asic');
+const { searchASICDisqualified } = require('./scrapers/asicDisqualified');
 const { generateLinks } = require('./scrapers/links');
 
 const app = express();
@@ -40,8 +42,29 @@ app.post('/api/search', async (req, res) => {
 
   const send = (result) => res.write(JSON.stringify(result) + '\n');
 
+  // Shared promise so asicDisqualified can wait for ASIC directors without a second HTTP call
+  const asicPromise = searchASIC(companyName, abn, acn);
+
   const searches = [
     { key: 'abn', label: 'ABR — Business Register', fn: () => searchABN(abn, companyName) },
+    {
+      key: 'asic',
+      label: 'ASIC Connect — Company Search',
+      fn: () => asicPromise,
+    },
+    {
+      key: 'asicDisqualified',
+      label: 'ASIC — Disqualified Persons Register',
+      fn: async () => {
+        const asicResult = await asicPromise;
+        const asicDirectors = (asicResult.results ?? [])
+          .filter((r) => r.metadata?.Role === 'Director')
+          .map((r) => r.title)
+          .filter(Boolean);
+        const allDirectors = [...new Set([...(directors ?? []), ...asicDirectors])];
+        return searchASICDisqualified(allDirectors);
+      },
+    },
     {
       key: 'austlii_federal',
       label: 'Federal Courts (AustLII)',

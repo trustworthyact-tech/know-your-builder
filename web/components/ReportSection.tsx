@@ -16,6 +16,8 @@ interface Props {
   resultsOverride?: ResultItem[];
   /** Show jurisdiction badge on each ResultCard */
   showJurisdiction?: boolean;
+  /** Red critical banner shown at the top of the section body */
+  criticalBanner?: string;
 }
 
 export function ReportSection({
@@ -27,6 +29,7 @@ export function ReportSection({
   isLinkSection,
   resultsOverride,
   showJurisdiction,
+  criticalBanner,
 }: Props) {
   const [open, setOpen] = useState(true);
 
@@ -74,6 +77,12 @@ export function ReportSection({
       {/* Section body */}
       <div id={`${id}-body`} className={open ? 'block' : 'hidden md:block'}>
         <div className="p-5">
+          {criticalBanner && (
+            <div className="bg-danger-bg border border-danger/30 rounded-lg px-4 py-3 mb-4 flex items-start gap-3">
+              <span className="text-lg shrink-0" aria-hidden="true">⚠️</span>
+              <p className="text-sm font-semibold text-danger">{criticalBanner}</p>
+            </div>
+          )}
           {summaryTexts.map((s, i) => (
             <p
               key={i}

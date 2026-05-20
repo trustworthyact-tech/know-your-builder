@@ -152,6 +152,8 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
   const byKey = (key: string) => results.find((r) => r.key === key);
 
   const abn = byKey('abn');
+  const asic = byKey('asic');
+  const asicDisqualified = byKey('asicDisqualified');
   const qbcc = byKey('qbcc');
   const paymentTimes = byKey('paymentTimes');
   const modernSlavery = byKey('modernSlavery');
@@ -175,7 +177,19 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
   const courtHits = austliiResults.reduce((n, r) => n + (r.results?.length ?? 0), 0);
 
   // Per-section result sets
-  const identityItems: ResultItem[] = abn?.results ?? [];
+  const asicCompanyItems: ResultItem[] = (asic?.results ?? []).filter(
+    (r) => r.metadata?.Role !== 'Director'
+  );
+  const asicDirectorItems: ResultItem[] = (asic?.results ?? []).filter(
+    (r) => r.metadata?.Role === 'Director'
+  );
+  const disqualifiedItems: ResultItem[] = asicDisqualified?.results ?? [];
+  const identityItems: ResultItem[] = [
+    ...(abn?.results ?? []),
+    ...asicCompanyItems,
+    ...asicDirectorItems,
+    ...disqualifiedItems,
+  ];
   const licenceItems: ResultItem[] = qbcc?.licenceResults ?? [];
   const adjItems: ResultItem[] = qbcc?.adjudicationResults ?? [];
   const financialItems: ResultItem[] = [
@@ -189,7 +203,13 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
   const s81Risk = deriveRiskLevel(
     riskGroups,
     '#s81',
-    isAllErrored([abn?.status ?? 'done']) ? 'unavailable' : 'clear'
+    isAllErrored([
+      abn?.status ?? 'done',
+      asic?.status ?? 'done',
+      asicDisqualified?.status ?? 'done',
+    ])
+      ? 'unavailable'
+      : 'clear'
   );
   const s82Risk = deriveRiskLevel(
     riskGroups,
@@ -350,9 +370,14 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
           id="s81"
           title="8.1 Identity & Corporate Structure"
           icon="🏢"
-          searchResults={abn ? [abn] : []}
+          searchResults={[abn, asic, asicDisqualified].filter(Boolean) as SearchResult[]}
           riskLevel={s81Risk}
           resultsOverride={identityItems}
+          criticalBanner={
+            disqualifiedItems.length > 0
+              ? `${disqualifiedItems.length} director(s) found on the ASIC Disqualified Persons Register. These individuals are legally prohibited from managing corporations.`
+              : undefined
+          }
         />
 
         {/* 8.2 Licences & Registrations */}
@@ -418,8 +443,8 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
             before making any commercial decision.
           </p>
           <p className="text-xs text-text-muted leading-relaxed">
-            Sources: ABR, AustLII, Payment Times Reporting Register, Modern Slavery Register,
-            QBCC, and linked government databases. Generated {now}.
+            Sources: ABR, ASIC Connect, AustLII, Payment Times Reporting Register, Modern Slavery
+            Register, QBCC, and linked government databases. Generated {now}.
           </p>
         </div>
       </div>

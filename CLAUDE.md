@@ -343,3 +343,21 @@ Keep `page.tsx` as a Server Component and extract any interactive UI into dedica
 - **`HomeSearch` owns the disambiguation state, not `page.tsx`**: the spec listed `page.tsx` as the edit target, but `page.tsx` is a Server Component. The interactive logic lives in `HomeSearch.tsx` (the `'use client'` wrapper) — consistent with every prior phase.
 - **`SearchBar` falls back to direct navigation when `onSearch` is not provided**: the prop is optional, preserving standalone usage of `SearchBar` without `HomeSearch`.
 - **`SERVER_URL` is now exported from `web/lib/api.ts`**: client components that need to reach the Express server directly (e.g. `HomeSearch` calling `/api/search/disambiguate`) should import it from there rather than re-declaring the env-var chain.
+
+---
+
+## Phase 6a — ASIC scrapers: company search + disqualified directors (complete)
+
+### Key files
+
+- `server/scrapers/asic.js` — scrapes ASIC Connect (`SearchRegisters.jspx` + `orgDetails.jspx`); returns company status, ACN, type, registration date, registered office, charge count, and current directors; directors are returned as `ResultItem` entries alongside the company entry in `results[]`, marked with `metadata.Role = 'Director'`
+- `server/scrapers/asicDisqualified.js` — for each director name, searches the ASIC Disqualified Persons Register (`searchType=DPNm`); returns matches as `ResultItem` entries with `status: 'Disqualified'`
+- `web/components/ReportSection.tsx` — added optional `criticalBanner?: string` prop; renders a `bg-danger-bg text-danger` alert block at the top of the section body when set
+
+### Conventions
+
+- **`asicDisqualified` depends on `asic` via a shared promise**: in `server/index.js`, `asicPromise = searchASIC(...)` is created once before the searches array. The `asicDisqualified` entry's `fn` awaits that promise and extracts directors from it before checking the disqualified register. Both keys still stream independently via `Promise.all`.
+- **Directors are `ResultItem` entries in `asic.results`, not a separate field**: each director row has `metadata.Role = 'Director'` and no `status` field. `ReportContent` splits on this marker (`filter(r => r.metadata?.Role !== 'Director')`) to separate the company item from director items before rendering. The `riskGrouper` CORPORATE check (`status.length > 0`) naturally skips director items.
+- **`riskGrouper.ts` required no changes for Phase 6a**: CORPORATE and LICENSING triggers for `asic` and `asicDisqualified` were already written ahead of time.
+- **Spec lists `page.tsx` as edited but change lives in `ReportContent.tsx`**: consistent with every prior phase — `page.tsx` is a Server Component shell; all report rendering is in `ReportContent.tsx`. Do not add scraper rendering directly to `page.tsx`.
+- **ASIC Connect is a JSF application**: `asic.js` and `asicDisqualified.js` use GET requests with query parameters. If ASIC Connect returns an empty table (e.g. due to a ViewState requirement), both scrapers degrade gracefully to empty results — search still completes, report still renders, users can verify manually via the ASIC link in section 8.6.
