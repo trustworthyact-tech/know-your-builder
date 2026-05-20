@@ -536,3 +536,23 @@ The spec calls for `asicExtract` to return the **full historical director list**
 - **`NEXTAUTH_URL` is used to build the re-run URL in the worker**: `${NEXTAUTH_URL}/search?companyName=...&abn=...`. Ensure this env var is set in the worker process alongside `REDIS_URL`, `DATABASE_URL`, and `SCRAPING_SERVICE_URL`.
 - **Worker imports Resend directly, not via `getResend()`**: the `getResend()` singleton in `web/lib/resend.ts` uses `globalThis` caching for Next.js hot-reload safety. The worker is a plain Node process where that pattern is unnecessary; a module-level `new Resend(...)` is simpler and correct.
 - **The "Alerts" tab in `AccountTabNav` was already wired** to `/account/alerts` before this phase — no changes to `AccountTabNav` were needed.
+
+---
+
+## Phase 9a — Watchlist (complete)
+
+### Key files
+
+- `web/app/api/watchlist/route.ts` — `GET` returns all watchlist items with `lastSearch` joined (id, createdAt, riskSummary, isDeepCheck); `POST` upserts on `@@unique([userId, entityAbn])` — updates `entityName` and `lastSearchId` on re-add; `DELETE` removes by `entityAbn`
+- `web/app/account/watchlist/page.tsx` — Server Component; queries `prisma.watchlistItem.findMany` (with `lastSearch` include) and `prisma.packBalance.findUnique` in a `Promise.all`; serialises `Date` → ISO string before passing to `WatchlistContent`
+- `web/app/account/watchlist/WatchlistContent.tsx` — `'use client'`; renders builder cards with risk badge and staleness indicator; Re-check button links directly to `/search?...` when `freeChecks > 0`, opens `PaymentModal('RECHECK_SINGLE')` when 0; Remove calls `DELETE /api/watchlist` and optimistically updates local state
+- `web/app/report/[searchId]/ReportContent.tsx` — added `watchlisted`, `watchlistEnabled`, `watchlistLoading` state; a `useEffect` on `input.abn` that calls `GET /api/watchlist` to determine current state (sets `watchlistEnabled = false` on 401 so button is hidden for unauthenticated users); `handleWatchlistToggle` calls POST or DELETE; toggle button rendered at the bottom of the entity card
+
+### Conventions
+
+- **Watchlist requires an ABN**: `WatchlistItem.entityAbn` is non-nullable and the unique key is `@@unique([userId, entityAbn])`. The watchlist toggle in `ReportContent` is only shown when `watchlistEnabled` is true — that flag is only set when `GET /api/watchlist` returns 200 (i.e. the user is authenticated) and `input.abn` is non-empty.
+- **`watchlistEnabled` hides the button for unauthenticated users**: rather than importing `useSession`, `ReportContent` infers auth state from the `GET /api/watchlist` response (401 → hide, 200 → show). This avoids a new hook import and handles the anonymous-report case gracefully.
+- **`upsert` on `userId_entityAbn` handles re-adding after removal**: the POST route uses `upsert` so adding a previously-removed entity just refreshes `entityName` and `lastSearchId` without violating the unique constraint.
+- **`lastSearchId` is set at add-time, not updated automatically**: when the user adds a builder from a report, `searchId` is passed as `lastSearchId`. It is updated on subsequent adds (POST upsert). It is not automatically updated when a re-check search completes — a future phase can wire that by calling `POST /api/watchlist` from the save route.
+- **Re-check flow is identical to `ReportCard`**: credits > 0 → navigate to `/search?...`; credits = 0 → `PaymentModal('RECHECK_SINGLE')` → navigate on success. The credit is debited atomically in `POST /api/reports/save`, not upfront.
+- **The "Watchlist" tab in `AccountTabNav` was already wired** to `/account/watchlist` before this phase — no changes to `AccountTabNav` were needed.

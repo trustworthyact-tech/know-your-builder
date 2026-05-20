@@ -56,6 +56,9 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
   const [input, setInput] = useState<BuilderInput | null>(null);
   const [riskGroups, setRiskGroups] = useState<RiskGroupResult[]>([]);
   const [loadError, setLoadError] = useState('');
+  const [watchlisted, setWatchlisted] = useState(false);
+  const [watchlistEnabled, setWatchlistEnabled] = useState(false);
+  const [watchlistLoading, setWatchlistLoading] = useState(false);
 
   useEffect(() => {
     const fetchUrl = shareToken
@@ -118,6 +121,52 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
         );
       });
   }, [searchId, shareToken]);
+
+  // Check watchlist status once entity ABN is known (authenticated, non-preview, non-readonly)
+  useEffect(() => {
+    if (!input?.abn || readOnly || searchId === 'preview') return;
+    fetch('/api/watchlist')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.items) {
+          setWatchlistEnabled(true);
+          setWatchlisted(
+            data.items.some((i: { entityAbn: string }) => i.entityAbn === input.abn)
+          );
+        }
+      })
+      .catch(() => {});
+  }, [input?.abn, readOnly, searchId]);
+
+  async function handleWatchlistToggle() {
+    if (!input?.abn || watchlistLoading) return;
+    setWatchlistLoading(true);
+    try {
+      if (watchlisted) {
+        const res = await fetch('/api/watchlist', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ entityAbn: input.abn }),
+        });
+        if (res.ok) setWatchlisted(false);
+      } else {
+        const res = await fetch('/api/watchlist', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            entityName,
+            entityAbn: input.abn,
+            lastSearchId: searchId,
+          }),
+        });
+        if (res.ok || res.status === 201) setWatchlisted(true);
+      }
+    } catch {
+      // Non-critical — silently ignore
+    } finally {
+      setWatchlistLoading(false);
+    }
+  }
 
   if (loadError) {
     return (
@@ -454,9 +503,22 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
             </div>
           </div>
 
-          <p className="text-xs text-text-muted text-center mt-3">
-            Report generated {now}
-          </p>
+          <div className="flex items-center justify-between mt-3">
+            <p className="text-xs text-text-muted">Report generated {now}</p>
+            {watchlistEnabled && (
+              <button
+                onClick={handleWatchlistToggle}
+                disabled={watchlistLoading}
+                className={`text-xs font-semibold rounded-lg px-3 py-1.5 transition-colors disabled:opacity-50 ${
+                  watchlisted
+                    ? 'text-primary bg-primary/10 hover:bg-primary/20'
+                    : 'text-text-secondary border border-border-light hover:bg-surface-alt'
+                }`}
+              >
+                {watchlistLoading ? '…' : watchlisted ? '★ On watchlist' : '☆ Add to watchlist'}
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Risk Summary panel */}
