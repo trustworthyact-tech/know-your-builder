@@ -325,3 +325,21 @@ Keep `page.tsx` as a Server Component and extract any interactive UI into dedica
 - **DOCX is not supported for extraction**: `fileType === 'docx'` short-circuits and returns `{ confidence: 'low', builderName: '', abn: '', licenceNumber: '' }`. The low-confidence warning in `ExtractionConfirmCard` prompts the user to fill in fields manually.
 - **`ANTHROPIC_API_KEY` is required in `web/.env.local`**: without it `new Anthropic()` has no credentials and extraction returns 500. The route degrades gracefully — the UI drops back to the manual search view with an error message.
 - **Clause opt-in is wired but inert**: `wantClauseAnalysis` is captured in `ConfirmData` but not acted on in Phase 4b. It is available for Phase 4c to persist to `Search.contractExtracted` or trigger clause analysis.
+
+---
+
+## Phase 5 — Disambiguation (complete)
+
+### Key files
+
+- `web/components/DisambiguationCard.tsx` — `'use client'` list of ABR entity matches; each row shows name, formatted ABN, state, type, and active/inactive badge; "This one" button per row; "None of these — search anyway" escape hatch at the bottom; exports `EntityMatch` interface
+- `server/scrapers/abn.js` — added `searchByName(companyName)` export; scrapes the ABR name-search table and returns up to 10 matches as `{ name, abn, type, state, status }`
+- `web/components/SearchBar.tsx` — added `SearchFormData` export and optional `onSearch?: (data: SearchFormData) => void` prop; when provided, calls it instead of navigating directly so `HomeSearch` can intercept the submission
+
+### Conventions
+
+- **Disambiguation only runs on name-only searches**: `HomeSearch.handleSearch` checks `if (data.abn)` first and navigates immediately — no ABR round-trip. Only name-only submissions hit `POST /api/search/disambiguate`.
+- **Disambiguation failure is non-fatal**: any network error in `handleSearch` falls through to a plain name search so the user is never stranded on the disambiguation spinner.
+- **`HomeSearch` owns the disambiguation state, not `page.tsx`**: the spec listed `page.tsx` as the edit target, but `page.tsx` is a Server Component. The interactive logic lives in `HomeSearch.tsx` (the `'use client'` wrapper) — consistent with every prior phase.
+- **`SearchBar` falls back to direct navigation when `onSearch` is not provided**: the prop is optional, preserving standalone usage of `SearchBar` without `HomeSearch`.
+- **`SERVER_URL` is now exported from `web/lib/api.ts`**: client components that need to reach the Express server directly (e.g. `HomeSearch` calling `/api/search/disambiguate`) should import it from there rather than re-declaring the env-var chain.

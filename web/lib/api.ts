@@ -3,7 +3,7 @@ import { BuilderInput, SearchResult } from '@/src/types';
 // Set NEXT_PUBLIC_SCRAPING_SERVICE_URL in .env.local when the browser must reach
 // the Express server directly (e.g. for streaming). Server-side code uses
 // SCRAPING_SERVICE_URL (no NEXT_PUBLIC_ prefix).
-const SERVER_URL =
+export const SERVER_URL =
   process.env.NEXT_PUBLIC_SCRAPING_SERVICE_URL ??
   process.env.SCRAPING_SERVICE_URL ??
   'http://localhost:3001';

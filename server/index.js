@@ -1,6 +1,6 @@
 const express = require('express');
 const cors = require('cors');
-const { searchABN } = require('./scrapers/abn');
+const { searchABN, searchByName } = require('./scrapers/abn');
 const { searchAustLII } = require('./scrapers/austlii');
 const { searchPaymentTimes } = require('./scrapers/paymentTimes');
 const { searchModernSlavery } = require('./scrapers/modernSlavery');
@@ -14,6 +14,17 @@ app.use(cors());
 app.use(express.json());
 
 app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
+
+app.post('/api/search/disambiguate', async (req, res) => {
+  const { companyName } = req.body;
+  if (!companyName) return res.status(400).json({ error: 'companyName is required', matches: [] });
+  try {
+    const matches = await searchByName(companyName);
+    res.json({ matches });
+  } catch (err) {
+    res.status(500).json({ error: err.message, matches: [] });
+  }
+});
 
 // Streaming search endpoint — sends results as they arrive
 app.post('/api/search', async (req, res) => {

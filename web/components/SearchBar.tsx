@@ -11,12 +11,22 @@ function formatABN(raw: string): string {
   return `${digits.slice(0, 2)} ${digits.slice(2, 5)} ${digits.slice(5, 8)} ${digits.slice(8)}`;
 }
 
+export interface SearchFormData {
+  companyName: string;
+  abn: string;
+  licenceNumber: string;
+}
+
 interface Errors {
   companyName?: string;
   abn?: string;
 }
 
-export function SearchBar() {
+interface SearchBarProps {
+  onSearch?: (data: SearchFormData) => void;
+}
+
+export function SearchBar({ onSearch }: SearchBarProps = {}) {
   const router = useRouter();
   const [companyName, setCompanyName] = useState('');
   const [abn, setAbn] = useState('');
@@ -38,10 +48,19 @@ export function SearchBar() {
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!validate()) return;
+    const data: SearchFormData = {
+      companyName: companyName.trim(),
+      abn: abn.replace(/\D/g, ''),
+      licenceNumber: licenceNumber.trim(),
+    };
+    if (onSearch) {
+      onSearch(data);
+      return;
+    }
     const params = new URLSearchParams();
-    if (companyName.trim()) params.set('companyName', companyName.trim());
-    if (abn.trim()) params.set('abn', abn.replace(/\D/g, ''));
-    if (licenceNumber.trim()) params.set('licenceNumber', licenceNumber.trim());
+    if (data.companyName) params.set('companyName', data.companyName);
+    if (data.abn) params.set('abn', data.abn);
+    if (data.licenceNumber) params.set('licenceNumber', data.licenceNumber);
     router.push(`/search?${params.toString()}`);
   };
 

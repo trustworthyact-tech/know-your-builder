@@ -103,4 +103,37 @@ async function searchABN(abn, companyName) {
   };
 }
 
-module.exports = { searchABN };
+async function searchByName(companyName) {
+  const results = [];
+  try {
+    const encoded = encodeURIComponent(companyName);
+    const { data } = await axios.get(
+      `https://abr.business.gov.au/Search/SearchBusines?SearchText=${encoded}&SearchType=names`,
+      { headers: HEADERS, timeout: 15000 }
+    );
+    const $ = cheerio.load(data);
+
+    $('table tbody tr').each((_, row) => {
+      if (results.length >= 10) return false;
+      const cells = $(row).find('td');
+      if (cells.length < 2) return;
+      const nameCell = cells.eq(0);
+      const link = nameCell.find('a');
+      const name = link.text().trim() || nameCell.text().trim();
+      const abn = cells.eq(1).text().trim().replace(/\s/g, '');
+      if (!name || !abn) return;
+      results.push({
+        name,
+        abn,
+        type: cells.eq(2)?.text().trim() || '',
+        state: cells.eq(3)?.text().trim() || '',
+        status: cells.eq(4)?.text().trim() || '',
+      });
+    });
+  } catch {
+    // return empty on error
+  }
+  return results;
+}
+
+module.exports = { searchABN, searchByName };
