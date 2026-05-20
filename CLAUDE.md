@@ -477,3 +477,42 @@ The spec calls for `asicExtract` to return the **full historical director list**
   // existing ASIC Connect officer search falls through as the fallback
   ```
   The `searchViaDataApi` function should call `GET https://data.asic.gov.au/api/v1/companies/{acn}/officers?includeFormer=true` and `GET .../charges` and map the responses to the same `ResultItem` shape. The rest of the pipeline (riskGrouper, ReportContent) requires no changes.
+
+---
+
+## Phase 8a — BullMQ + Redis setup + monitoring worker (complete)
+
+### Key files
+
+- `web/lib/redis.ts` — ioredis singleton (`getRedis()`); uses same `globalThis` pattern as `db.ts` and `stripe.ts`; `maxRetriesPerRequest: null` is required for BullMQ Queue connections
+- `web/lib/queues/monitoring.ts` — BullMQ `Queue` singleton (`getMonitoringQueue()`); exports `MonitoringJobData` interface and `enqueueMonitoringJob(data, opts?)` helper; default job options: 3 attempts, exponential backoff (5s base), 24h completed retention, 7-day failed retention
+- `web/workers/monitoring.ts` — standalone BullMQ `Worker`; creates its own Redis connection (required — workers use blocking `BLPOP` and must not share the Queue connection); runs a fresh search, diffs against the most recent `Search.reportJson` for the entity, and bulk-inserts `Alert` rows via `prisma.alert.createMany`
+
+### Conventions
+
+- **Workers must use a separate Redis connection from the Queue**: BullMQ workers issue blocking `BLPOP` commands; sharing the same ioredis instance with a Queue causes connection stalls. `web/lib/redis.ts` (`getRedis()`) is for Queue/Next.js use only — workers in `web/workers/` create their own `new Redis(...)` directly.
+- **First monitoring run establishes the baseline — no alerts on first run**: when there is no prior `Search` row for the user+entity, the worker saves the new results and returns. Alerts only fire on the second and subsequent runs when a diff is possible. This is by design.
+- **ABN is the primary diff key in the worker**: the prior-search lookup uses `{ userId, entityAbn }` when `entityAbn` is present, falling back to `{ userId, entityName }`. Consistent with the same pattern in `pack-balance` and `save` routes.
+- **`detectChanges` covers all six `AlertType` values**: LICENCE_CHANGE (QBCC count or status), QBCC_ADJUDICATION (new adjudication decisions), INSOLVENCY_EVENT (ASIC insolvency notices), ATO_DEBT_FLAG (ATO debt disclosures), COURT_DECISION (all AustLII jurisdictions combined), FWO_ENFORCEMENT (Fair Work outcomes). Each category compares raw result counts between new and prior `reportJson`.
+- **Worker is run as a separate process**: `npm run worker:monitoring` (from `web/`) starts the worker via `tsx workers/monitoring.ts`. Requires `REDIS_URL`, `DATABASE_URL`, and `SCRAPING_SERVICE_URL` env vars. `tsx` is a devDependency for this purpose.
+- **`enqueueMonitoringJob` is the only public enqueue interface**: Phase 8b calls `enqueueInitialMonitoringJobs` (which wraps it) after creating a `MonitoringSubscription`. Do not call `getMonitoringQueue().add(...)` directly outside of `lib/queues/monitoring.ts`.
+
+---
+
+## Phase 8b — Monitoring subscription purchase flow (complete)
+
+### Key files
+
+- `web/app/api/monitoring/route.ts` — `GET` lists active `MonitoringSubscription` rows for the session user; `POST` creates a Stripe Customer + Subscription (`default_incomplete`, expands `latest_invoice.payment_intent`) and upserts a `MonitoringSubscription` row (`active: true`), then enqueues initial jobs; `DELETE` cancels the Stripe subscription and sets `active: false`
+- `web/components/MonitoringSubscribeModal.tsx` — `'use client'` two-step modal: entity name/ABN form (step 1, skipped when pre-filled) → Stripe `PaymentElement` (step 2); follows the same `stripe.confirmPayment({ redirect: 'if_required' })` pattern as `PaymentModal`
+- `web/app/account/monitoring/page.tsx` — Server Component; queries Prisma directly for active subscriptions; passes serialised data to `MonitoringContent`
+- `web/app/account/monitoring/MonitoringContent.tsx` — `'use client'`; renders subscription list with entity name, next check dates, cancel button; "Monitor a builder" button opens `MonitoringSubscribeModal`; calls `router.refresh()` after successful subscription
+
+### Conventions
+
+- **`MonitoringSubscription` is created as `active: true` immediately in the POST handler**: the subscription appears in the dashboard as soon as payment is initiated. If Stripe later cancels (failed payment or non-payment), the `customer.subscription.deleted` webhook sets `active: false`. Do not create it as `active: false` and rely on `customer.subscription.updated` for activation — that introduces webhook-latency lag before the subscription appears in the dashboard.
+- **Only `customer.subscription.deleted` is handled in the webhook**: activation is synchronous (POST sets `active: true`); the webhook only handles deactivation. Do not add a `customer.subscription.updated` activation handler.
+- **`upsert` on `userId_entityAbn` handles re-subscription after cancellation**: the `@@unique([userId, entityAbn])` constraint means a second subscription for the same entity would violate the constraint. `upsert` resets `stripeSubId`, `active`, and the check dates on re-subscribe, and also cancels any lingering orphaned Stripe subscription before creating a new one.
+- **`STRIPE_PRICE_MONITORING_MONTHLY` env var** (not `STRIPE_MONITORING_PRICE_ID`) — matches the key already in `.env.local.example`. The POST route returns 503 if this is unset.
+- **`enqueueInitialMonitoringJobs` is the public interface for scheduling**: it wraps `enqueueMonitoringJob` three times with 24h, 7d, and 30d delays; job IDs are `${subscriptionId}-daily`, `${subscriptionId}-weekly`, `${subscriptionId}-monthly` for BullMQ deduplication.
+- **`MonitoringSubscribeModal` accepts optional `initialEntityName` / `initialEntityAbn` props**: when pre-filled (e.g. from a future report-screen "Monitor this builder" button), it skips the entity form and calls `POST /api/monitoring` on mount. Without pre-fill it shows the entity form as step 1.

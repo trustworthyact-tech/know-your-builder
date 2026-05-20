@@ -63,5 +63,19 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // Deactivate MonitoringSubscription when Stripe cancels or deletes the subscription
+  if (event.type === 'customer.subscription.deleted') {
+    const sub = event.data.object as Stripe.Subscription;
+    try {
+      await prisma.monitoringSubscription.updateMany({
+        where: { stripeSubId: sub.id },
+        data: { active: false },
+      });
+    } catch (err) {
+      console.error('[payments/webhook] Failed to deactivate MonitoringSubscription:', err);
+      return NextResponse.json({ error: 'Failed to deactivate subscription' }, { status: 500 });
+    }
+  }
+
   return NextResponse.json({ received: true });
 }
