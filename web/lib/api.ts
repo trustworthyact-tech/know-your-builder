@@ -10,12 +10,13 @@ export const SERVER_URL =
 
 export async function runDueDiligence(
   input: BuilderInput,
-  onProgress: (result: SearchResult) => void
+  onProgress: (result: SearchResult) => void,
+  options?: { isDeepCheck?: boolean }
 ): Promise<SearchResult[]> {
   const response = await fetch(`${SERVER_URL}/api/search`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(input),
+    body: JSON.stringify({ ...input, isDeepCheck: options?.isDeepCheck ?? false }),
   });
 
   if (!response.ok) throw new Error(`Server error: ${response.status}`);

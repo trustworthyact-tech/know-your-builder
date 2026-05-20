@@ -8,7 +8,7 @@ import { PersonaSelector } from '@/components/PersonaSelector';
 import { EmailGate, EmailGateData } from '@/components/EmailGate';
 import { BuilderInput, Persona, SearchResult } from '@/src/types';
 
-// Must mirror the keys emitted by server/index.js exactly — order sets display order.
+// Base searches — must mirror the keys emitted by server/index.js exactly. Order sets display order.
 const INITIAL_SEARCHES: SearchResult[] = [
   { key: 'abn',               label: 'ABR — Business Register',               status: 'idle' },
   { key: 'asic',              label: 'ASIC Connect — Company Search',          status: 'idle' },
@@ -31,6 +31,12 @@ const INITIAL_SEARCHES: SearchResult[] = [
   { key: 'vicBpc',           label: 'VIC Building Authority — Disciplinary Register', status: 'idle' },
   { key: 'waBuildingEnergy', label: 'WA Building and Energy — Enforcement',         status: 'idle' },
   { key: 'links',            label: 'Additional Database Links',                    status: 'idle' },
+];
+
+// Additional entries appended when isDeepCheck is true (inserted before 'links')
+const DEEP_CHECK_SEARCHES: SearchResult[] = [
+  { key: 'asicExtract', label: 'ASIC — Director Company History (Deep Check)',          status: 'idle' },
+  { key: 'afsaNpii',    label: 'AFSA NPII — Director Personal Insolvency (Deep Check)', status: 'idle' },
 ];
 
 type Step = 'persona' | 'email-gate' | 'server-check' | 'running' | 'saving' | 'done' | 'error';
@@ -67,6 +73,11 @@ export function SearchContent() {
   const [gateData, setGateData] = useState<EmailGateData | null>(null);
   const [searches, setSearches] = useState<SearchResult[]>(INITIAL_SEARCHES);
   const [errorMsg, setErrorMsg] = useState('');
+  const [packBalanceInfo, setPackBalanceInfo] = useState<{
+    freeChecks: number;
+    deepChecks: number;
+    isRecheck: boolean;
+  } | null>(null);
   const resultsRef = useRef<SearchResult[]>([]);
 
   // Check localStorage for a saved persona on mount
@@ -78,8 +89,22 @@ export function SearchContent() {
     }
   }, []);
 
+  // Fetch pack balance (and re-check status) when email-gate step is active
+  useEffect(() => {
+    if (step !== 'email-gate') return;
+    const qs = new URLSearchParams();
+    const abn = params.get('abn');
+    const companyName = params.get('companyName');
+    if (abn) qs.set('entityAbn', abn);
+    if (companyName) qs.set('entityName', companyName);
+    fetch(`/api/payments/pack-balance?${qs}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => { if (data) setPackBalanceInfo(data); })
+      .catch(() => {}); // non-fatal — no re-check gating if fetch fails
+  }, [step, params]);
+
   const doneCount = searches.filter((s) => s.status === 'done' || s.status === 'error').length;
-  const total = INITIAL_SEARCHES.length;
+  const total = searches.length;
   const progressPct = total > 0 ? Math.round((doneCount / total) * 100) : 0;
 
   const updateSearch = (incoming: SearchResult) => {
@@ -125,10 +150,20 @@ export function SearchContent() {
       }
 
       setStep('running');
-      setSearches((prev) => prev.map((s) => ({ ...s, status: 'searching' })));
+
+      // Build full search list — insert deep check items before 'links' when opted in
+      if (gate.isDeepCheck) {
+        setSearches([
+          ...INITIAL_SEARCHES.filter((s) => s.key !== 'links'),
+          ...DEEP_CHECK_SEARCHES,
+          INITIAL_SEARCHES.find((s) => s.key === 'links')!,
+        ].map((s) => ({ ...s, status: 'searching' as const })));
+      } else {
+        setSearches((prev) => prev.map((s) => ({ ...s, status: 'searching' as const })));
+      }
 
       try {
-        await runDueDiligence(input, updateSearch);
+        await runDueDiligence(input, updateSearch, { isDeepCheck: gate.isDeepCheck });
         if (cancelled) return;
         setStep('saving');
         await saveReport(gate);
@@ -174,6 +209,15 @@ export function SearchContent() {
         }),
       });
 
+      if (res.status === 402) {
+        // Re-check payment webhook not yet processed — serve preview so user still sees results
+        sessionStorage.setItem('kyb_preview_results', JSON.stringify(resultsRef.current));
+        sessionStorage.setItem('kyb_preview_input', JSON.stringify(input));
+        setStep('done');
+        router.push('/report/preview');
+        return;
+      }
+
       if (!res.ok) throw new Error('Failed to save report');
       const { searchId } = await res.json();
       setStep('done');
@@ -198,6 +242,8 @@ export function SearchContent() {
       <EmailGate
         persona={persona}
         entityName={entityLabel}
+        isRecheck={packBalanceInfo?.isRecheck ?? false}
+        freeChecks={packBalanceInfo?.freeChecks ?? 0}
         onSubmit={handleEmailGateSubmit}
       />
     );

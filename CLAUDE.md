@@ -420,3 +420,60 @@ Keep `page.tsx` as a Server Component and extract any interactive UI into dedica
 - **`Payment` row is written in `create-intent`, not the webhook**: the row is created immediately when the PaymentIntent is created (the Stripe PI id is the stable key). The webhook only credits `PackBalance` — it does not create or update the `Payment` row.
 - **`PackBalance` is upserted, never inserted**: a user may not have a `PackBalance` row yet; `upsert` with `create` handles the first purchase. Subsequent purchases use `{ increment: N }` to avoid race conditions.
 - **Stripe CLI keys**: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, and `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` are now populated in `web/.env.local` with test-mode keys for account `acct_1TZ8MxDYgwiOmgz5`. Keys expire 2026-08-18. Run `~/bin/stripe listen --forward-to localhost:3000/api/payments/webhook` to relay test webhooks.
+
+---
+
+## Phase 7b — Re-check gate + pack balance display (complete)
+
+### Key files
+
+- `web/app/api/payments/pack-balance/route.ts` — `GET ?entityAbn=&entityName=` returns `{ freeChecks, deepChecks, isRecheck }`; unauthenticated callers receive zeros with no gating; ABN is the primary match key, entity name is the fallback
+- `web/app/api/reports/save/route.ts` — extended with a re-check entitlement block: for authenticated users with a prior search on the same entity, atomically decrements one `freeCheck` via `updateMany` with `freeChecks: { gt: 0 }` condition; returns `402 { error: 'recheck_required', recheckPrice: 300 }` if balance is zero
+- `web/components/EmailGate.tsx` — accepts `isRecheck?: boolean` and `freeChecks?: number` props; shows credit count banner when credits available; shows "$3.00 per re-check" notice and changes CTA to "Pay $3.00 and re-check →" when no credits; renders `PaymentModal(RECHECK_SINGLE)` inline, calls `onSubmit` only after payment success
+- `web/app/search/SearchContent.tsx` — fetches `/api/payments/pack-balance` in a `useEffect` keyed on `step === 'email-gate'`; passes `isRecheck` and `freeChecks` to `EmailGate`; if `save` returns 402 (webhook race condition), falls back to sessionStorage preview rather than crashing
+- `web/components/ReportCard.tsx` — Re-check button is now active; with `freeChecks > 0` navigates directly to `/search?...`; with `freeChecks === 0` opens `PaymentModal(RECHECK_SINGLE)` inline and navigates after payment success; displays credit count in button label
+- `web/app/account/reports/page.tsx` — fetches `PackBalance` in the same `Promise.all` as the search list; renders a green credit count line in the page header; passes `freeChecks` to each `ReportCard`
+
+### Conventions
+
+- **`isRecheck` is derived server-side, not client-side**: the `pack-balance` route queries `Search` for a prior row with the same `userId` + `entityAbn` (or `entityName` as fallback). The client never computes this itself — it only reads the flag from the API response.
+- **ABN takes priority over name for re-check matching**: using name alone risks false positives (two unrelated companies with similar names). If `entityAbn` is present in the query params, only ABN is used for the prior-search lookup in both `pack-balance` and `save` routes.
+- **`updateMany` with `gt: 0` is the atomic decrement pattern**: using `updateMany` instead of a transaction avoids a separate `findUnique` + `update` round-trip. The returned `count` tells whether any row was actually decremented — `count === 0` means no balance was available.
+- **402 from `save` falls back to preview, not an error screen**: a 402 means the Stripe webhook hasn't fired yet (race condition). The user still sees their report via the sessionStorage preview path — the report is not lost, just not DB-persisted.
+- **`PaymentModal` is imported into both `EmailGate` and `ReportCard`**: both are `'use client'` components. Import `type { PaymentType }` is not needed — Prisma 5 generates string literal union types, so passing `'RECHECK_SINGLE'` as `paymentType` is directly assignable without a cast.
+- **Pack balance display is read-only in the reports page header**: `freeChecks` is fetched server-side in the Server Component and rendered as a static green line. The `ReportCard` receives it as a prop — no client-side fetching in the card itself.
+
+---
+
+## Phase 7c — Deep check scrapers (partially complete)
+
+### Key files
+
+- `server/scrapers/asicExtract.js` — searches ASIC Connect's officer-by-name register (`searchType=OfficerPersonNm`) for each director; returns companies they are/were associated with (name, ACN, role, status); up to 4 directors, 15 companies per director, deduplicated by ACN; only runs when `isDeepCheck: true`
+- `server/scrapers/afsaNpii.js` — fetches the AFSA NPII search page to capture the JSF `ViewState`, then POSTs a debtor-name search for each director (surname + given names split from full name); parses two known table layouts defensively; up to 5 directors; only runs when `isDeepCheck: true`
+- `server/index.js` — reads `isDeepCheck` from the POST body; conditionally appends `asicExtract` and `afsaNpii` to the searches array after all base scrapers; both reuse `asicPromise` for director names (same pattern as `asicDisqualified`)
+- `web/lib/api.ts` — `runDueDiligence` accepts optional third argument `options?: { isDeepCheck?: boolean }`; merges `isDeepCheck` into the POST body alongside `BuilderInput`
+- `web/app/search/SearchContent.tsx` — defines `DEEP_CHECK_SEARCHES` (two entries); when `gate.isDeepCheck`, inserts them before `links` and marks all rows `searching`; `total` now uses `searches.length` (not the constant `INITIAL_SEARCHES.length`) so the progress bar is accurate for deep check runs
+- `web/app/report/[searchId]/ReportContent.tsx` — `asicExtract` results appended to `identityItems` in section 8.1; `afsaNpii` results prepended to `financialItems` in section 8.3; both rendered via nullable synthetic `SearchResult` objects (`asicExtractSearch`, `afsaNpiiSearch`) that are only added to `searchResults` props when the key exists in results (i.e. was a deep check run); section risk baselines include the new scraper statuses
+
+### Conventions
+
+- **Deep check scrapers are appended after the base searches array is defined**: `isDeepCheck` is read from the request body, then `searches.push(...)` is called conditionally. This keeps the base searches array clean and avoids conditional entries mid-array.
+- **Both deep check scrapers share `asicPromise`**: they await the existing ASIC Connect result to extract director names, avoiding a second HTTP round-trip to ASIC. Same pattern as `asicDisqualified`.
+- **Nullable synthetic SearchResult pattern for optional scrapers**: `asicExtractSearch` and `afsaNpiiSearch` are typed `SearchResult | null`. The `searchResults` prop uses `.filter(Boolean) as SearchResult[]` to exclude them on non-deep reports — no ghost rows or undefined handling needed downstream.
+- **`total` must use `searches.length`, not `INITIAL_SEARCHES.length`**: the progress bar denominator is the live state array, not the constant, so deep check runs (which have 2 extra rows) show accurate progress.
+
+### ⚠️ Incomplete — requires paid ASIC Data API key
+
+The spec calls for `asicExtract` to return the **full historical director list** (including resigned/former directors of the target company) and the **charges register** for the target company. These are not implemented:
+
+- **What is implemented**: companies that current directors are associated with (for phoenix-risk detection). This correctly feeds the riskGrouper CORPORATE/INSOLVENCY triggers and the `ReportContent` section 8.1 display.
+- **What is missing**: resigned/former directors of the target entity itself; per-charge detail from the charges register (only the count is available from the regular `asic.js` scrape).
+- **Why**: ASIC Connect's public website does not expose historical officer records without session/ViewState complexity. The paid ASIC Data API at `data.asic.gov.au` provides clean endpoints for both.
+- **To complete**: set `ASIC_DATA_API_KEY` in `server/.env`, then in `asicExtract.js` add a branch at the top of `searchAsicExtract()`:
+  ```js
+  const apiKey = process.env.ASIC_DATA_API_KEY;
+  if (apiKey && acn) return searchViaDataApi(acn, apiKey);
+  // existing ASIC Connect officer search falls through as the fallback
+  ```
+  The `searchViaDataApi` function should call `GET https://data.asic.gov.au/api/v1/companies/{acn}/officers?includeFormer=true` and `GET .../charges` and map the responses to the same `ResultItem` shape. The rest of the pipeline (riskGrouper, ReportContent) requires no changes.

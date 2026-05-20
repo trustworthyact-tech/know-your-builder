@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { Persona } from '@/src/types';
+import { PaymentModal } from '@/components/PaymentModal';
 
 const AU_STATES = ['QLD', 'NSW', 'VIC', 'WA', 'SA', 'TAS', 'NT', 'ACT'] as const;
 
@@ -23,6 +24,8 @@ export interface EmailGateData {
 interface Props {
   persona: Persona;
   entityName: string;
+  isRecheck?: boolean;
+  freeChecks?: number;
   onSubmit: (data: EmailGateData) => void;
 }
 
@@ -33,12 +36,14 @@ const PERSONA_LABELS: Record<Persona, string> = {
   [Persona.LENDER]: 'Lender',
 };
 
-export function EmailGate({ persona, entityName, onSubmit }: Props) {
+export function EmailGate({ persona, entityName, isRecheck = false, freeChecks = 0, onSubmit }: Props) {
   const [email, setEmail] = useState('');
   const [projectState, setProjectState] = useState('');
   const [projectType, setProjectType] = useState('');
   const [isDeepCheck, setIsDeepCheck] = useState(false);
   const [emailError, setEmailError] = useState('');
+  const [showPaymentModal, setShowPaymentModal] = useState(false);
+  const [pendingData, setPendingData] = useState<EmailGateData | null>(null);
 
   const validate = (): boolean => {
     if (!email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
@@ -52,13 +57,39 @@ export function EmailGate({ persona, entityName, onSubmit }: Props) {
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!validate()) return;
-    onSubmit({
+
+    const data: EmailGateData = {
       email: email.trim(),
       projectState,
       projectType,
       isDeepCheck,
-    });
+    };
+
+    if (isRecheck && freeChecks === 0) {
+      // Gate behind payment — open modal, proceed after success
+      setPendingData(data);
+      setShowPaymentModal(true);
+      return;
+    }
+
+    onSubmit(data);
   };
+
+  const handlePaymentSuccess = () => {
+    setShowPaymentModal(false);
+    if (pendingData) onSubmit(pendingData);
+  };
+
+  const needsPayment = isRecheck && freeChecks === 0;
+  const hasCredits = isRecheck && freeChecks > 0;
+
+  const heading = isRecheck ? 'Re-check this builder' : 'Run your free builder check';
+
+  const ctaLabel = needsPayment
+    ? 'Pay $3.00 and re-check →'
+    : hasCredits
+      ? `Re-check → (1 of ${freeChecks} credit${freeChecks !== 1 ? 's' : ''} used)`
+      : 'Run search →';
 
   return (
     <div className="min-h-screen bg-background">
@@ -67,13 +98,29 @@ export function EmailGate({ persona, entityName, onSubmit }: Props) {
           <div className="w-14 h-14 rounded-full bg-primary flex items-center justify-center mx-auto mb-4 shadow-md">
             <span className="text-white font-extrabold text-lg tracking-tight">KYB</span>
           </div>
-          <h1 className="text-2xl font-bold text-primary mb-1">Run your free builder check</h1>
+          <h1 className="text-2xl font-bold text-primary mb-1">{heading}</h1>
           <p className="text-sm text-text-muted">
             Checking{' '}
             <span className="font-semibold text-text-secondary">{entityName}</span>
             {' · '}
             <span className="text-text-muted">{PERSONA_LABELS[persona]}</span>
           </p>
+
+          {needsPayment && (
+            <p className="mt-2 text-sm text-text-secondary bg-surface border border-border-light rounded-lg px-4 py-2 inline-block">
+              This entity was previously checked.{' '}
+              <span className="font-semibold text-primary">$3.00</span> per re-check.
+            </p>
+          )}
+          {hasCredits && (
+            <p className="mt-2 text-sm text-success bg-success-bg border border-success/20 rounded-lg px-4 py-2 inline-block">
+              You have{' '}
+              <span className="font-semibold">
+                {freeChecks} re-check credit{freeChecks !== 1 ? 's' : ''}
+              </span>{' '}
+              — 1 will be used.
+            </p>
+          )}
         </div>
 
         <form
@@ -143,13 +190,15 @@ export function EmailGate({ persona, entityName, onSubmit }: Props) {
             type="submit"
             className="w-full bg-primary hover:bg-primary-light text-white font-semibold text-sm py-4 rounded-xl transition shadow-md"
           >
-            Run search →
+            {ctaLabel}
           </button>
 
-          <p className="text-center text-xs text-text-muted mt-3">
-            Free, instant, no credit card.{' '}
-            <span className="text-text-muted">Privacy policy · Unsubscribe any time</span>
-          </p>
+          {!isRecheck && (
+            <p className="text-center text-xs text-text-muted mt-3">
+              Free, instant, no credit card.{' '}
+              <span className="text-text-muted">Privacy policy · Unsubscribe any time</span>
+            </p>
+          )}
 
           {/* Deep check opt-in */}
           <div className="mt-5 border-t border-border-light pt-5">
@@ -192,6 +241,15 @@ export function EmailGate({ persona, entityName, onSubmit }: Props) {
           </div>
         </form>
       </div>
+
+      {showPaymentModal && (
+        <PaymentModal
+          paymentType="RECHECK_SINGLE"
+          metadata={{ entityName }}
+          onSuccess={handlePaymentSuccess}
+          onClose={() => setShowPaymentModal(false)}
+        />
+      )}
     </div>
   );
 }

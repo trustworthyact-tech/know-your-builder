@@ -12,6 +12,8 @@ const { searchAtoDebt } = require('./scrapers/atoDebt');
 const { searchFWO } = require('./scrapers/fwo');
 const { searchVicBpc } = require('./scrapers/vicBpc');
 const { searchWABuildingEnergy } = require('./scrapers/waBuildingEnergy');
+const { searchAsicExtract } = require('./scrapers/asicExtract');
+const { searchAfsaNpii } = require('./scrapers/afsaNpii');
 const { generateLinks } = require('./scrapers/links');
 
 const app = express();
@@ -35,7 +37,7 @@ app.post('/api/search/disambiguate', async (req, res) => {
 
 // Streaming search endpoint — sends results as they arrive
 app.post('/api/search', async (req, res) => {
-  const { abn, acn, companyName, tradingName, directors } = req.body;
+  const { abn, acn, companyName, tradingName, directors, isDeepCheck } = req.body;
 
   if (!companyName && !abn) {
     return res.status(400).json({ error: 'Company name or ABN is required' });
@@ -157,6 +159,38 @@ app.post('/api/search', async (req, res) => {
       fn: () => Promise.resolve(generateLinks({ abn, acn, companyName, tradingName, directors })),
     },
   ];
+
+  // Deep check scrapers — only added when isDeepCheck: true
+  if (isDeepCheck) {
+    searches.push(
+      {
+        key: 'asicExtract',
+        label: 'ASIC — Director Company History (Deep Check)',
+        fn: async () => {
+          const asicResult = await asicPromise;
+          const asicDirectors = (asicResult.results ?? [])
+            .filter((r) => r.metadata?.Role === 'Director')
+            .map((r) => r.title)
+            .filter(Boolean);
+          const allDirectors = [...new Set([...(directors ?? []), ...asicDirectors])];
+          return searchAsicExtract(companyName, abn, acn, allDirectors);
+        },
+      },
+      {
+        key: 'afsaNpii',
+        label: 'AFSA NPII — Director Personal Insolvency (Deep Check)',
+        fn: async () => {
+          const asicResult = await asicPromise;
+          const asicDirectors = (asicResult.results ?? [])
+            .filter((r) => r.metadata?.Role === 'Director')
+            .map((r) => r.title)
+            .filter(Boolean);
+          const allDirectors = [...new Set([...(directors ?? []), ...asicDirectors])];
+          return searchAfsaNpii(allDirectors);
+        },
+      }
+    );
+  }
 
   await Promise.all(
     searches.map(async ({ key, label, fn }) => {

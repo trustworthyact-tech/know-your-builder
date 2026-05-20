@@ -46,6 +46,32 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'entityName is required' }, { status: 400 });
   }
 
+  // Re-check entitlement gate — authenticated users only
+  if (session?.user?.id) {
+    const priorWhere = entityAbn
+      ? { userId: session.user.id, entityAbn }
+      : { userId: session.user.id, entityName };
+
+    const priorSearch = await prisma.search.findFirst({
+      where: priorWhere,
+      select: { id: true },
+    });
+
+    if (priorSearch) {
+      // Atomically consume one freeCheck; updateMany returns count = 0 if none available
+      const updated = await prisma.packBalance.updateMany({
+        where: { userId: session.user.id, freeChecks: { gt: 0 } },
+        data: { freeChecks: { decrement: 1 } },
+      });
+      if (updated.count === 0) {
+        return NextResponse.json(
+          { error: 'recheck_required', recheckPrice: 300 },
+          { status: 402 }
+        );
+      }
+    }
+  }
+
   const riskGroups = riskGrouper(findings);
   const riskSummary = JSON.stringify(riskGroups);
 

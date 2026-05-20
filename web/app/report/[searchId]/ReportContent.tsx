@@ -163,6 +163,8 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
   const fwo = byKey('fwo');
   const vicBpc = byKey('vicBpc');
   const waBuildingEnergy = byKey('waBuildingEnergy');
+  const asicExtract = byKey('asicExtract');
+  const afsaNpii = byKey('afsaNpii');
   const links = byKey('links');
 
   // Entity card data
@@ -189,19 +191,23 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
     (r) => r.metadata?.Role === 'Director'
   );
   const disqualifiedItems: ResultItem[] = asicDisqualified?.results ?? [];
+  const asicExtractItems: ResultItem[] = asicExtract?.results ?? [];
   const identityItems: ResultItem[] = [
     ...(abn?.results ?? []),
     ...asicCompanyItems,
     ...asicDirectorItems,
     ...disqualifiedItems,
+    ...asicExtractItems,
   ];
   const licenceItems: ResultItem[] = qbcc?.licenceResults ?? [];
   const adjItems: ResultItem[] = qbcc?.adjudicationResults ?? [];
   const insolvencyItems: ResultItem[] = asicInsolvency?.results ?? [];
   const atoDebtItems: ResultItem[] = atoDebt?.results ?? [];
+  const afsaNpiiItems: ResultItem[] = afsaNpii?.results ?? [];
   const financialItems: ResultItem[] = [
     ...insolvencyItems,
     ...atoDebtItems,
+    ...afsaNpiiItems,
     ...(paymentTimes?.results ?? []),
     ...(modernSlavery?.results ?? []),
   ];
@@ -224,6 +230,7 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
       abn?.status ?? 'done',
       asic?.status ?? 'done',
       asicDisqualified?.status ?? 'done',
+      ...(asicExtract ? [asicExtract.status] : []),
     ])
       ? 'unavailable'
       : 'clear'
@@ -241,6 +248,7 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
       atoDebt?.status ?? 'done',
       paymentTimes?.status ?? 'done',
       modernSlavery?.status ?? 'done',
+      ...(afsaNpii ? [afsaNpii.status] : []),
     ])
       ? 'unavailable'
       : 'clear'
@@ -340,6 +348,33 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
     summary: waBuildingEnergy?.summary ?? 'No WA Building and Energy enforcement actions found',
   };
 
+  // Deep check synthetic sources — only included when present in results
+  const asicExtractSearch: SearchResult | null = asicExtract
+    ? {
+        key: 'asicExtract',
+        label: 'ASIC — Director Company History (Deep Check)',
+        status: asicExtract.status,
+        source: 'ASIC Connect — Officer Search (Deep Check)',
+        jurisdiction: 'Federal',
+        category: 'identity',
+        searchUrl: asicExtract.searchUrl,
+        summary: asicExtract.summary,
+      }
+    : null;
+
+  const afsaNpiiSearch: SearchResult | null = afsaNpii
+    ? {
+        key: 'afsaNpii',
+        label: 'AFSA NPII — Director Personal Insolvency (Deep Check)',
+        status: afsaNpii.status,
+        source: 'AFSA — National Personal Insolvency Index (Deep Check)',
+        jurisdiction: 'Federal',
+        category: 'financial',
+        searchUrl: afsaNpii.searchUrl,
+        summary: afsaNpii.summary,
+      }
+    : null;
+
   return (
     <main className="min-h-screen bg-background">
       {/* Sticky table of contents */}
@@ -432,7 +467,7 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
           id="s81"
           title="8.1 Identity & Corporate Structure"
           icon="🏢"
-          searchResults={[abn, asic, asicDisqualified].filter(Boolean) as SearchResult[]}
+          searchResults={[abn, asic, asicDisqualified, asicExtractSearch].filter(Boolean) as SearchResult[]}
           riskLevel={s81Risk}
           resultsOverride={identityItems}
           criticalBanner={
@@ -457,7 +492,7 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
           id="s83"
           title="8.3 Financial Risk Signals"
           icon="💳"
-          searchResults={[asicInsolvency, atoDebt, paymentTimes, modernSlavery].filter(Boolean) as SearchResult[]}
+          searchResults={[asicInsolvency, atoDebt, afsaNpiiSearch, paymentTimes, modernSlavery].filter(Boolean) as SearchResult[]}
           riskLevel={s83Risk}
           resultsOverride={financialItems}
           criticalBanner={

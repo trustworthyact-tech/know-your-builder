@@ -21,7 +21,7 @@ export default async function AccountReportsPage({
   const page = Math.max(1, parseInt(searchParams.page ?? '1', 10));
   const skip = (page - 1) * PAGE_SIZE;
 
-  const [searches, total] = await Promise.all([
+  const [searches, total, packBalance] = await Promise.all([
     prisma.search.findMany({
       where: { userId: session.user.id },
       orderBy: { createdAt: 'desc' },
@@ -40,7 +40,13 @@ export default async function AccountReportsPage({
       },
     }),
     prisma.search.count({ where: { userId: session.user.id } }),
+    prisma.packBalance.findUnique({
+      where: { userId: session.user.id },
+      select: { freeChecks: true },
+    }),
   ]);
+
+  const freeChecks = packBalance?.freeChecks ?? 0;
 
   const totalPages = Math.ceil(total / PAGE_SIZE);
 
@@ -57,6 +63,11 @@ export default async function AccountReportsPage({
           <p className="text-sm text-text-muted mt-0.5">
             {total === 0 ? 'No reports yet' : `${total} report${total !== 1 ? 's' : ''}`}
           </p>
+          {freeChecks > 0 && (
+            <p className="text-xs text-success mt-1">
+              {freeChecks} re-check credit{freeChecks !== 1 ? 's' : ''} available
+            </p>
+          )}
         </div>
         <Link
           href="/"
@@ -81,7 +92,7 @@ export default async function AccountReportsPage({
           <ul className="space-y-3">
             {serialized.map((search) => (
               <li key={search.id}>
-                <ReportCard search={search} />
+                <ReportCard search={search} freeChecks={freeChecks} />
               </li>
             ))}
           </ul>
