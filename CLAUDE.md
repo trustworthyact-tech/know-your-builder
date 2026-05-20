@@ -516,3 +516,23 @@ The spec calls for `asicExtract` to return the **full historical director list**
 - **`STRIPE_PRICE_MONITORING_MONTHLY` env var** (not `STRIPE_MONITORING_PRICE_ID`) — matches the key already in `.env.local.example`. The POST route returns 503 if this is unset.
 - **`enqueueInitialMonitoringJobs` is the public interface for scheduling**: it wraps `enqueueMonitoringJob` three times with 24h, 7d, and 30d delays; job IDs are `${subscriptionId}-daily`, `${subscriptionId}-weekly`, `${subscriptionId}-monthly` for BullMQ deduplication.
 - **`MonitoringSubscribeModal` accepts optional `initialEntityName` / `initialEntityAbn` props**: when pre-filled (e.g. from a future report-screen "Monitor this builder" button), it skips the entity form and calls `POST /api/monitoring` on mount. Without pre-fill it shows the entity form as step 1.
+
+---
+
+## Phase 8c — Alert system + alert email (complete)
+
+### Key files
+
+- `web/app/api/alerts/route.ts` — `GET /api/alerts?read=true|false` returns the session user's alerts (up to 100, newest first); omit the param to return all
+- `web/app/api/alerts/[id]/route.ts` — `PATCH /api/alerts/:id` marks a single alert as read; ownership is verified against the session before updating
+- `web/emails/WatchlistAlert.tsx` — React Email template; accepts `entityName`, `entityAbn`, `alerts: { alertType, description }[]`, and `reRunUrl`; renders one labelled row per alert type with a "Re-run Search ($3)" CTA
+- `web/app/account/alerts/page.tsx` — Server Component; queries `prisma.alert.findMany` directly (no HTTP hop); serialises `createdAt` to ISO string before passing to `AlertsContent`
+- `web/app/account/alerts/AlertsContent.tsx` — `'use client'`; Unread/All tab switcher; colour-coded alert type badges; per-alert "Re-run search ($3)" link navigates to `/search?companyName=...&abn=...`; "Mark read" button calls `PATCH /api/alerts/:id`
+
+### Conventions
+
+- **`AlertType` is defined as a local string literal union in `AlertsContent.tsx`**: do not import `AlertType` from `@prisma/client` in client components — it bundles server-only code. Mirror the enum values as a `type` string union instead.
+- **Alert email is best-effort in the worker**: `resend.emails.send` is wrapped in a try/catch; errors are logged and swallowed. The BullMQ job completes successfully regardless of email delivery. The `Resend` instance is only created when `RESEND_API_KEY` is set — if unset, email is silently skipped.
+- **`NEXTAUTH_URL` is used to build the re-run URL in the worker**: `${NEXTAUTH_URL}/search?companyName=...&abn=...`. Ensure this env var is set in the worker process alongside `REDIS_URL`, `DATABASE_URL`, and `SCRAPING_SERVICE_URL`.
+- **Worker imports Resend directly, not via `getResend()`**: the `getResend()` singleton in `web/lib/resend.ts` uses `globalThis` caching for Next.js hot-reload safety. The worker is a plain Node process where that pattern is unnecessary; a module-level `new Resend(...)` is simpler and correct.
+- **The "Alerts" tab in `AccountTabNav` was already wired** to `/account/alerts` before this phase — no changes to `AccountTabNav` were needed.

@@ -10,6 +10,9 @@
 import { Worker, Job } from 'bullmq';
 import { PrismaClient, AlertType } from '@prisma/client';
 import Redis from 'ioredis';
+import { Resend } from 'resend';
+import { render } from '@react-email/components';
+import { WatchlistAlert } from '../emails/WatchlistAlert';
 import type { MonitoringJobData } from '../lib/queues/monitoring';
 
 const prisma = new PrismaClient();
@@ -17,6 +20,8 @@ const prisma = new PrismaClient();
 const connection = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379', {
   maxRetriesPerRequest: null,
 });
+
+const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 
 const EXPRESS_URL = process.env.SCRAPING_SERVICE_URL ?? 'http://localhost:3001';
 
@@ -225,6 +230,43 @@ async function processJob(job: Job<MonitoringJobData>): Promise<void> {
   });
 
   console.log(`[monitoring] ${changes.length} alert(s) created for ${entityName}`);
+
+  // Send alert email — best-effort, never fail the job if email fails
+  if (resend) {
+    try {
+      const user = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { email: true },
+      });
+
+      if (user?.email) {
+        const appUrl = process.env.NEXTAUTH_URL ?? 'http://localhost:3000';
+        const params = new URLSearchParams({ companyName: entityName });
+        if (entityAbn) params.set('abn', entityAbn);
+        const reRunUrl = `${appUrl}/search?${params.toString()}`;
+
+        const html = await render(
+          WatchlistAlert({
+            entityName,
+            entityAbn,
+            alerts: changes.map((c) => ({ alertType: c.alertType, description: c.description })),
+            reRunUrl,
+          })
+        );
+
+        await resend.emails.send({
+          from: process.env.FROM_EMAIL ?? 'noreply@knowyourbuilder.com.au',
+          to: user.email,
+          subject: `Monitoring alert — ${entityName}`,
+          html,
+        });
+
+        console.log(`[monitoring] Alert email sent to ${user.email} for ${entityName}`);
+      }
+    } catch (err) {
+      console.error('[monitoring] Alert email send error:', err);
+    }
+  }
 }
 
 // ─── Worker ───────────────────────────────────────────────────────────────────
