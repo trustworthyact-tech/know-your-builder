@@ -6,6 +6,7 @@ import { BuilderInput, SearchResult, ResultItem, SearchStatus, RiskGroupResult }
 import { ReportSection } from '@/components/ReportSection';
 import { RiskBadge, RiskLevel } from '@/components/RiskBadge';
 import { RiskSummaryPanel } from '@/components/RiskSummaryPanel';
+import { ProjectTimeline } from '@/components/ProjectTimeline';
 import { riskGrouper } from '@/lib/riskGrouper';
 
 interface Props {
@@ -612,6 +613,11 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
             Sources: ABR, ASIC Connect, AustLII, Payment Times Reporting Register, Modern Slavery
             Register, QBCC, and linked government databases. Generated {now}.
           </p>
+        </div>
+
+        {/* About Your Project — project timeline panel */}
+        <div className="mt-4">
+          <ProjectTimeline searchId={searchId} readOnly={readOnly} />
         </div>
       </div>
     </main>

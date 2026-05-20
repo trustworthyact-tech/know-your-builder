@@ -556,3 +556,23 @@ The spec calls for `asicExtract` to return the **full historical director list**
 - **`lastSearchId` is set at add-time, not updated automatically**: when the user adds a builder from a report, `searchId` is passed as `lastSearchId`. It is updated on subsequent adds (POST upsert). It is not automatically updated when a re-check search completes — a future phase can wire that by calling `POST /api/watchlist` from the save route.
 - **Re-check flow is identical to `ReportCard`**: credits > 0 → navigate to `/search?...`; credits = 0 → `PaymentModal('RECHECK_SINGLE')` → navigate on success. The credit is debited atomically in `POST /api/reports/save`, not upfront.
 - **The "Watchlist" tab in `AccountTabNav` was already wired** to `/account/watchlist` before this phase — no changes to `AccountTabNav` were needed.
+
+---
+
+## Phase 9b — Project timeline (complete)
+
+### Key files
+
+- `web/app/api/timeline/route.ts` — `POST`: upserts a `ProjectTimeline` row for the given `searchId`; verifies `Search.userId === session.user.id` before writing; uses `upsert` on the `searchId` unique constraint so re-saves are idempotent
+- `web/app/api/timeline/[searchId]/route.ts` — `GET`: returns `{ timeline: null }` when none exists (never 404); `PATCH`: partial update — only keys present in the body are applied; both verify ownership via `userId` on the existing row
+- `web/components/ProjectTimeline.tsx` — `'use client'` collapsible panel; collapsed by default; fetches `GET /api/timeline/:searchId` on mount and pre-populates the form when data exists; `exists` flag drives POST vs PATCH on save; hidden for `searchId === 'preview'` and unauthenticated users (401 response); `paymentSchedule` entries are managed as a local array with add/remove controls
+- `web/app/report/[searchId]/ReportContent.tsx` — imports and renders `<ProjectTimeline searchId={searchId} readOnly={readOnly} />` below the disclaimer block
+
+### Conventions
+
+- **Two API files, not one**: `POST` (create) lives in `web/app/api/timeline/route.ts`; `GET` and `PATCH` live in `web/app/api/timeline/[searchId]/route.ts`. The spec notation `PATCH /:searchId` implies a dynamic segment, which requires a separate file in Next.js App Router.
+- **POST uses `upsert`, not `create`**: the `searchId` column is `@unique`, so a duplicate save (e.g. user refreshes) upserts cleanly rather than throwing a unique constraint error. This makes the POST route safe to call multiple times.
+- **GET returns `{ timeline: null }` on miss, not 404**: the component checks `data.timeline` truthiness to decide whether to pre-populate the form. A 404 would require special error handling in the component; a null payload keeps the logic uniform.
+- **`Prisma.InputJsonValue` cast required for `paymentSchedule`**: Prisma's `Json` field type does not accept typed arrays directly. Cast via `as unknown as Prisma.InputJsonValue` in both route files — the runtime supports the array; the type system does not without the cast.
+- **Auth inferred from API response, not `useSession`**: the component sets `authd = false` on a 401 from the GET and hides itself — consistent with the watchlist toggle pattern in `ReportContent` (Phase 9a). No new hook imports needed.
+- **`amountCents` stored as integer cents, displayed as dollars**: the component converts display input (`"1500"`) to cents (`150000`) via `displayToCents` and back with `centsToDisplay` — the database always holds cents.
