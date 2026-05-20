@@ -400,3 +400,23 @@ Keep `page.tsx` as a Server Component and extract any interactive UI into dedica
 - **`nameMatchesEntity` guards all three scrapers**: FWO and WA B&E fetch name-search pages, VIC BPC fetches the full register. All three filter results client-side by requiring every significant word of the company name to appear in the result text — same approach as `modernSlavery.js` `isEntityMatch()`.
 - **`s85Risk` baseline includes all three new scrapers**: `isAllErrored` now checks all `austliiResults` statuses plus `fwo`, `vicBpc`, and `waBuildingEnergy` — the section is only `unavailable` if every one of them errors.
 - **`courtHits` in the entity card remains AustLII-only**: the stat label is "Court/tribunal"; FWO/VIC BPC/WA are enforcement actions, not court proceedings, so they are not folded into this count.
+
+---
+
+## Phase 7a — Stripe setup + PaymentIntent flow (complete)
+
+### Key files
+
+- `web/lib/stripe.ts` — Stripe server singleton (same `globalThis` pattern as `db.ts` / `resend.ts`); exports `getStripe()`, `PAYMENT_AMOUNTS` (AUD cents keyed by `PaymentType`), and `PAYMENT_LABELS`
+- `web/app/api/payments/create-intent/route.ts` — `POST /api/payments/create-intent`: requires session; validates `paymentType` against `PAYMENT_AMOUNTS`; creates Stripe `PaymentIntent` in AUD with `userId` and `paymentType` in metadata; records `Payment` row immediately; returns `{ clientSecret }`
+- `web/app/api/payments/webhook/route.ts` — `POST /api/payments/webhook`: reads raw body via `req.text()` for Stripe signature verification; on `payment_intent.succeeded` upserts `PackBalance` — RECHECK types increment `freeChecks`, DEEP_CHECK types increment `deepChecks`; returns 500 on DB failure so Stripe retries
+- `web/components/PaymentModal.tsx` — `'use client'` overlay; fetches `clientSecret` from `create-intent` on mount; renders Stripe `<Elements>` + `<PaymentElement>`; calls `stripe.confirmPayment({ redirect: 'if_required' })` (no redirect for card payments); calls `onSuccess()` on completion
+
+### Conventions
+
+- **`MONITORING_MONTHLY` is excluded from `PAYMENT_AMOUNTS`**: it is a Stripe Subscription, not a one-time PaymentIntent. The `create-intent` route rejects it with a 400.
+- **Webhook uses `req.text()`, not `req.json()`**: Stripe signature verification requires the raw request body. `export const dynamic = 'force-dynamic'` prevents Next.js from caching the route.
+- **Webhook returns 500 on DB failure**: this signals Stripe to retry delivery. Non-DB errors (e.g. unhandled event types) return 200 `{ received: true }` so Stripe does not retry unnecessarily.
+- **`Payment` row is written in `create-intent`, not the webhook**: the row is created immediately when the PaymentIntent is created (the Stripe PI id is the stable key). The webhook only credits `PackBalance` — it does not create or update the `Payment` row.
+- **`PackBalance` is upserted, never inserted**: a user may not have a `PackBalance` row yet; `upsert` with `create` handles the first purchase. Subsequent purchases use `{ increment: N }` to avoid race conditions.
+- **Stripe CLI keys**: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, and `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` are now populated in `web/.env.local` with test-mode keys for account `acct_1TZ8MxDYgwiOmgz5`. Keys expire 2026-08-18. Run `~/bin/stripe listen --forward-to localhost:3000/api/payments/webhook` to relay test webhooks.
