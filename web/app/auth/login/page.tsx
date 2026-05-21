@@ -10,6 +10,7 @@ function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const verified = searchParams.get('verified') === '1';
+  const reset = searchParams.get('reset') === '1';
   const errorParam = searchParams.get('error');
 
   const [email, setEmail] = useState('');
@@ -61,6 +62,12 @@ function LoginForm() {
               </div>
             )}
 
+            {reset && (
+              <div className="bg-success-bg border border-success rounded-xl px-4 py-3 mb-6 text-sm text-success font-medium">
+                Password updated — you can now sign in with your new password.
+              </div>
+            )}
+
             {error && (
               <div className="bg-danger-bg border border-danger rounded-xl px-4 py-3 mb-6 text-sm text-danger font-medium">
                 {error}
@@ -99,9 +106,17 @@ function LoginForm() {
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-text-secondary mb-1.5 uppercase tracking-wide">
-                  Password
-                </label>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="block text-xs font-semibold text-text-secondary uppercase tracking-wide">
+                    Password
+                  </label>
+                  <Link
+                    href="/auth/forgot-password"
+                    className="text-xs text-primary hover:underline"
+                  >
+                    Forgot password?
+                  </Link>
+                </div>
                 <input
                   type="password"
                   required

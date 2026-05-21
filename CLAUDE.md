@@ -597,7 +597,7 @@ The spec calls for `asicExtract` to return the **full historical director list**
 - **Worker uses `new PrismaClient()` directly, not `lib/db`**: consistent with `workers/monitoring.ts`. The `globalThis` singleton in `lib/db` is a Next.js hot-reload safeguard — unnecessary in a standalone worker process.
 - **Email body is inline HTML for Phase 9c**: `renderStepEmail()` in the worker generates simple but functional HTML per sequence key/step. Phase 9d replaces this with `render(<BeforeYouSign .../>)` etc. using React Email templates.
 - **Sequences are authenticated-user only**: `EmailSequenceState.userId` is non-nullable. The save route only calls `enqueueSequence` when `session?.user?.id` is present. Anonymous searches (no session) skip all email sequences.
-- **`RECHECK_30D`, `RECHECK_90D`, `PAYMENT_DUE` are defined in `SEQUENCE_DEFS` but not yet triggered**: their step definitions and `SEQUENCE_FIRST_DELAY` entries are in place; Phase 9e wires them to timeline dates and re-check events via `enqueueSequence` calls with a custom `initialDelay`.
+- **`RECHECK_30D`, `RECHECK_90D`, `PAYMENT_DUE` are now fully triggered (Phase 9e)**: `RECHECK_30D` and `RECHECK_90D` are enqueued from `reports/save` for contracted/underway homeowners and developers; `PAYMENT_DUE` is enqueued from the timeline POST route with a computed `initialDelay` of `milestoneDate − 2 days − now`.
 
 ---
 
@@ -621,3 +621,28 @@ The spec calls for `asicExtract` to return the **full historical director list**
 - **`CleanReport` persona lookup uses a `DEFAULT` fallback**: `NEXT_STEPS[persona ?? 'DEFAULT'] ?? NEXT_STEPS.DEFAULT` handles null/undefined persona and any future persona values gracefully without throwing.
 - **All templates follow the same visual structure as existing templates**: dark `#1A3A5C` header, white card body, `#F4F6F9` page background, `#EEF1F6` dividers — import the same style constants pattern from `ReportEmail.tsx` and `WatchlistAlert.tsx`.
 - **Phase 9e templates (`REENGAGEMENT`, `RECHECK_30D`, `RECHECK_90D`, `PAYMENT_DUE`) are still plain HTML**: the `default` branch in `renderStepEmail` is retained as a fallback; Phase 9e replaces it with proper React Email components.
+
+---
+
+## Phase 9e — Email sequence templates (part 2) + re-engagement (complete)
+
+### Key files
+
+- `web/emails/ReEngagement.tsx` — 14-day no-engagement email; props: `entityName`, `entityAbn?`, `reportUrl`; body lists all checked databases to re-surface the report's value
+- `web/emails/RecheckReminder.tsx` — single template for 30-day and 90-day intervals; `dayCount` prop drives header subtitle and body copy; copy is slightly longer for `dayCount >= 60`
+- `web/emails/PaymentDueReminder.tsx` — payment milestone reminder; props: `entityName`, `entityAbn?`, `reportUrl`, `milestoneLabel`, `milestoneDateFormatted`, `amountFormatted`; blue milestone banner at top; payment protection checklist below
+- `web/emails/PasswordReset.tsx` — password reset email; props: `name`, `resetUrl`; 1-hour expiry stated in body and footer
+- `web/app/api/auth/forgot-password/route.ts` — `POST /api/auth/forgot-password`: always returns 200 (prevents user enumeration); only sends if user exists with `passwordHash`; stores token in `VerificationToken` with identifier prefix `password-reset:{email}` and 1-hour expiry
+- `web/app/api/auth/reset-password/route.ts` — `POST /api/auth/reset-password`: validates token + expiry; atomically updates `passwordHash` and deletes the token in a `$transaction`
+- `web/app/auth/forgot-password/page.tsx` — `'use client'` form; shows "Check your inbox" confirmation state after submit regardless of outcome (consistent with API response)
+- `web/app/auth/reset-password/page.tsx` — `'use client'`; reads `?token=&email=` from URL via `useSearchParams()` (wrapped in `<Suspense>`); redirects to `/auth/login?reset=1` on success
+
+### Conventions
+
+- **`RECHECK_30D` and `RECHECK_90D` are enqueued from `reports/save`**: triggered for `HOMEOWNER` and `DEVELOPER` users at `projectStage === 'contracted' || 'underway'`; both use the default `SEQUENCE_FIRST_DELAY` (30 and 90 days from enqueue time). Not triggered for unsigned/pre-sign stages.
+- **`PAYMENT_DUE` is enqueued from the timeline POST route, not from `reports/save`**: when a timeline is created with a payment schedule, the route finds the soonest milestone more than 2 days in the future and passes `initialDelay = milestoneDate − 2 days − now` to `enqueueSequence`. If no qualifying milestone exists, no job is enqueued.
+- **`PAYMENT_DUE` worker queries the timeline live at fire time**: the worker calls `prisma.projectTimeline.findUnique({ where: { searchId } })` and re-identifies the soonest upcoming milestone at fire time. This means the email content reflects any schedule edits made after the job was enqueued — the job controls *when* the email sends; the live query controls *what* it says.
+- **`PaymentDueReminder` milestone props are pre-formatted strings**: `milestoneLabel`, `milestoneDateFormatted` (e.g. `"25 June 2026"`), and `amountFormatted` (e.g. `"$25,000"`) are formatted in the worker using `toLocaleDateString('en-AU')` and `toLocaleString('en-AU')`. Templates never format raw dates or numbers themselves.
+- **Password reset reuses `VerificationToken`, scoped by identifier prefix**: `identifier: "password-reset:{email}"` distinguishes reset tokens from email verification tokens (`identifier: "{email}"`). Both share the same table and unique constraint. Old reset tokens are deleted before creating a new one to avoid constraint conflicts.
+- **`Preview` component requires string children, not `ReactNode`**: the `@react-email/components` `Preview` type is `children: string`. When a template prop (e.g. `dayCount: number`) appears in a `Preview`, it must be wrapped in a template literal: `` `${dayCount}-day re-check reminder` ``.
+- **The `default` branch in `renderStepEmail` is now unreachable**: all nine `SequenceKey` values have explicit `case` branches. The switch is exhaustive; TypeScript will catch any new `SequenceKey` added to the union without a matching case.

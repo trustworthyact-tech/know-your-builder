@@ -23,6 +23,9 @@ import { DuringBuild } from '../emails/DuringBuild';
 import { SubcontractorOnboarding } from '../emails/SubcontractorOnboarding';
 import { FindingsAlert } from '../emails/FindingsAlert';
 import { CleanReport } from '../emails/CleanReport';
+import { ReEngagement } from '../emails/ReEngagement';
+import { RecheckReminder } from '../emails/RecheckReminder';
+import { PaymentDueReminder } from '../emails/PaymentDueReminder';
 import type { RiskGroupResult } from '../src/types';
 
 const prisma = new PrismaClient();
@@ -47,10 +50,16 @@ interface EmailContext {
   step: number;
   persona?: string | null;
   riskGroups: { label: string; description: string }[];
+  milestoneLabel?: string;
+  milestoneDateFormatted?: string;
+  amountFormatted?: string;
 }
 
 async function renderStepEmail(ctx: EmailContext): Promise<string> {
-  const { entityName, entityAbn, reportUrl, monitoringUrl, sequenceKey, step, persona, riskGroups } = ctx;
+  const {
+    entityName, entityAbn, reportUrl, monitoringUrl, sequenceKey, step, persona, riskGroups,
+    milestoneLabel, milestoneDateFormatted, amountFormatted,
+  } = ctx;
   const abn = entityAbn || undefined;
 
   switch (sequenceKey) {
@@ -64,34 +73,21 @@ async function renderStepEmail(ctx: EmailContext): Promise<string> {
       return render(FindingsAlert({ entityName, entityAbn: abn, reportUrl, riskGroups }));
     case 'CLEAN':
       return render(CleanReport({ entityName, entityAbn: abn, reportUrl, persona: persona ?? undefined }));
-    default: {
-      // REENGAGEMENT, RECHECK_30D, RECHECK_90D, PAYMENT_DUE — plain fallback (Phase 9e templates)
-      const entityLabel = entityAbn ? `${entityName} (ABN&nbsp;${entityAbn})` : entityName;
-      return `<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
-<body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;background:#F4F6F9;margin:0;padding:0">
-  <div style="max-width:560px;margin:32px auto;padding:0 16px">
-    <div style="background:#1A3A5C;border-radius:12px 12px 0 0;padding:24px 32px;text-align:center">
-      <p style="color:#fff;font-size:18px;font-weight:700;margin:0">Know Your Builder</p>
-      <p style="color:rgba(255,255,255,0.65);font-size:12px;margin:4px 0 0">Automated due diligence</p>
-    </div>
-    <div style="background:#fff;border:1px solid #D1D9E0;border-top:none;padding:24px 32px">
-      <p style="color:#9AA5B4;font-size:11px;font-weight:600;letter-spacing:0.5px;text-transform:uppercase;margin:0 0 4px">REPORT FOR</p>
-      <p style="color:#1A3A5C;font-size:18px;font-weight:700;margin:0 0 16px">${entityLabel}</p>
-      <div style="margin-top:24px;text-align:center">
-        <a href="${reportUrl}" style="background:#1A3A5C;border-radius:12px;color:#fff;display:inline-block;font-size:14px;font-weight:600;padding:14px 32px;text-decoration:none">
-          View Full Report →
-        </a>
-      </div>
-    </div>
-    <div style="padding:16px 0;text-align:center">
-      <p style="color:#9AA5B4;font-size:11px;margin:0">© Know Your Builder · Automated due diligence for Australian construction</p>
-    </div>
-  </div>
-</body>
-</html>`;
-    }
+    case 'REENGAGEMENT':
+      return render(ReEngagement({ entityName, entityAbn: abn, reportUrl }));
+    case 'RECHECK_30D':
+      return render(RecheckReminder({ entityName, entityAbn: abn, reportUrl, dayCount: 30 }));
+    case 'RECHECK_90D':
+      return render(RecheckReminder({ entityName, entityAbn: abn, reportUrl, dayCount: 90 }));
+    case 'PAYMENT_DUE':
+      return render(PaymentDueReminder({
+        entityName,
+        entityAbn: abn,
+        reportUrl,
+        milestoneLabel: milestoneLabel ?? 'Upcoming payment',
+        milestoneDateFormatted: milestoneDateFormatted ?? '',
+        amountFormatted: amountFormatted ?? '',
+      }));
   }
 }
 
@@ -148,10 +144,48 @@ async function processJob(job: Job<EmailSequenceJobData>): Promise<void> {
   const monitoringUrl = `${APP_URL}/account/monitoring`;
   const stepDef = SEQUENCE_DEFS[sequenceKey][step];
 
+  // For PAYMENT_DUE, look up the next upcoming milestone from the project timeline
+  let milestoneLabel: string | undefined;
+  let milestoneDateFormatted: string | undefined;
+  let amountFormatted: string | undefined;
+  if (sequenceKey === 'PAYMENT_DUE' && searchId) {
+    try {
+      const timeline = await prisma.projectTimeline.findUnique({
+        where: { searchId },
+        select: { paymentSchedule: true },
+      });
+      if (timeline?.paymentSchedule) {
+        const schedule = timeline.paymentSchedule as Array<{
+          label: string;
+          date: string;
+          amountCents: number;
+        }>;
+        const now = new Date();
+        const upcoming = schedule
+          .filter((e) => new Date(e.date) > now)
+          .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())[0];
+        if (upcoming) {
+          milestoneLabel = upcoming.label;
+          milestoneDateFormatted = new Date(upcoming.date).toLocaleDateString('en-AU', {
+            day: 'numeric',
+            month: 'long',
+            year: 'numeric',
+          });
+          amountFormatted = `$${(upcoming.amountCents / 100).toLocaleString('en-AU')}`;
+        }
+      }
+    } catch (err) {
+      console.error(`[emailSequence] PAYMENT_DUE timeline lookup error for job ${job.id}:`, err);
+    }
+  }
+
   // Send email — best-effort, never fail the job on email error
   if (resend) {
     try {
-      const html = await renderStepEmail({ entityName, entityAbn, reportUrl, monitoringUrl, sequenceKey, step, persona, riskGroups });
+      const html = await renderStepEmail({
+        entityName, entityAbn, reportUrl, monitoringUrl, sequenceKey, step, persona, riskGroups,
+        milestoneLabel, milestoneDateFormatted, amountFormatted,
+      });
       await resend.emails.send({
         from: FROM_EMAIL,
         to: user.email,

@@ -168,6 +168,15 @@ export async function POST(req: NextRequest) {
       sequencesToEnqueue.push('DURING_BUILD');
     }
 
+    // Re-check reminders — contracted/underway homeowners and developers
+    if (
+      (persona === Persona.HOMEOWNER || persona === Persona.DEVELOPER) &&
+      (projectStage === 'contracted' || projectStage === 'underway')
+    ) {
+      sequencesToEnqueue.push('RECHECK_30D');
+      sequencesToEnqueue.push('RECHECK_90D');
+    }
+
     // Re-engagement — all authenticated users (fires 14 days after search if no activity)
     sequencesToEnqueue.push('REENGAGEMENT');
 

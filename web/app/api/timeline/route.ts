@@ -3,6 +3,7 @@ import { getServerSession } from 'next-auth/next';
 import { authOptions } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import { Prisma } from '@prisma/client';
+import { enqueueSequence } from '@/lib/queues/emailSequence';
 
 export const dynamic = 'force-dynamic';
 
@@ -73,6 +74,23 @@ export async function POST(req: NextRequest) {
       financeArranged: body.financeArranged ?? null,
     },
   });
+
+  // Enqueue PAYMENT_DUE for the soonest upcoming milestone (2 days before it fires)
+  if (body.paymentSchedule && body.paymentSchedule.length > 0) {
+    const TWO_DAYS_MS = 2 * 24 * 60 * 60 * 1000;
+    const now = Date.now();
+    const upcoming = body.paymentSchedule
+      .map((e) => ({ ...e, ms: new Date(e.date).getTime() }))
+      .filter((e) => e.ms - TWO_DAYS_MS > now)
+      .sort((a, b) => a.ms - b.ms)[0];
+
+    if (upcoming) {
+      const initialDelay = upcoming.ms - TWO_DAYS_MS - now;
+      enqueueSequence(session.user.id, body.searchId, 'PAYMENT_DUE', { initialDelay }).catch(
+        (err) => console.error('[timeline] PAYMENT_DUE enqueue error:', err),
+      );
+    }
+  }
 
   return NextResponse.json({ timeline }, { status: 201 });
 }
