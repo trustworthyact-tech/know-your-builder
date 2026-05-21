@@ -7,6 +7,7 @@ import { render } from '@react-email/components';
 import { ReportEmail } from '@/emails/ReportEmail';
 import { Persona, SearchResult } from '@/src/types';
 import { riskGrouper } from '@/lib/riskGrouper';
+import { enqueueSequence, type SequenceKey } from '@/lib/queues/emailSequence';
 
 interface SaveBody {
   entityName: string;
@@ -135,6 +136,47 @@ export async function POST(req: NextRequest) {
       });
     } catch (err) {
       console.error('[reports/save] Email send error:', err);
+    }
+  }
+
+  // Enqueue email sequences — authenticated users only, best-effort
+  if (session?.user?.id) {
+    const userId = session.user.id;
+    const sequencesToEnqueue: SequenceKey[] = [];
+
+    // Findings vs. clean — mutually exclusive
+    if (riskGroups.length > 0) {
+      sequencesToEnqueue.push('FINDINGS');
+    } else {
+      sequencesToEnqueue.push('CLEAN');
+    }
+
+    // Persona-based sequences
+    if (persona === Persona.SUBCONTRACTOR) {
+      sequencesToEnqueue.push('SUBCONTRACTOR');
+    }
+    if (
+      (persona === Persona.HOMEOWNER || persona === Persona.DEVELOPER) &&
+      (projectStage === 'not_signed' || projectStage === 'about_to_sign')
+    ) {
+      sequencesToEnqueue.push('BEFORE_SIGN');
+    }
+    if (
+      (persona === Persona.HOMEOWNER || persona === Persona.DEVELOPER) &&
+      (projectStage === 'contracted' || projectStage === 'underway')
+    ) {
+      sequencesToEnqueue.push('DURING_BUILD');
+    }
+
+    // Re-engagement — all authenticated users (fires 14 days after search if no activity)
+    sequencesToEnqueue.push('REENGAGEMENT');
+
+    try {
+      await Promise.all(
+        sequencesToEnqueue.map((key) => enqueueSequence(userId, search.id, key)),
+      );
+    } catch (err) {
+      console.error('[reports/save] Email sequence enqueue error:', err);
     }
   }
 

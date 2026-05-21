@@ -7,7 +7,8 @@
     "build": "prisma generate && next build",
     "start": "next start",
     "type-check": "tsc --noEmit",
-    "worker:monitoring": "tsx workers/monitoring.ts"
+    "worker:monitoring": "tsx workers/monitoring.ts",
+    "worker:emailSequence": "tsx workers/emailSequence.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.29.0",

@@ -576,3 +576,25 @@ The spec calls for `asicExtract` to return the **full historical director list**
 - **`Prisma.InputJsonValue` cast required for `paymentSchedule`**: Prisma's `Json` field type does not accept typed arrays directly. Cast via `as unknown as Prisma.InputJsonValue` in both route files — the runtime supports the array; the type system does not without the cast.
 - **Auth inferred from API response, not `useSession`**: the component sets `authd = false` on a 401 from the GET and hides itself — consistent with the watchlist toggle pattern in `ReportContent` (Phase 9a). No new hook imports needed.
 - **`amountCents` stored as integer cents, displayed as dollars**: the component converts display input (`"1500"`) to cents (`150000`) via `displayToCents` and back with `centsToDisplay` — the database always holds cents.
+
+---
+
+## Phase 9c — Email sequence engine (complete)
+
+### Key files
+
+- `web/lib/queues/emailSequence.ts` — BullMQ `Queue` singleton (`getEmailSequenceQueue()`); exports `SequenceKey` type, `SEQUENCE_DEFS` (subject + next-step delay per step), `SEQUENCE_FIRST_DELAY` (delay before step 0), and `enqueueSequence(userId, searchId, sequenceKey)` — creates `EmailSequenceState` row + enqueues first job with idempotency guard
+- `web/workers/emailSequence.ts` — standalone BullMQ `Worker`; sends step email via Resend, advances `EmailSequenceState.step` and enqueues next-step job with delay, or marks `completed = true` when all steps are done; run with `npm run worker:emailSequence`
+- `web/app/api/reports/save/route.ts` — extended to call `enqueueSequence` after report save for authenticated users; selects sequences from `FINDINGS | CLEAN` (based on riskGroups) + `BEFORE_SIGN | DURING_BUILD | SUBCONTRACTOR` (based on persona + projectStage) + `REENGAGEMENT` (all users)
+
+### Conventions
+
+- **`enqueueSequence` owns both the DB row and the BullMQ job**: it creates `EmailSequenceState` and calls `getEmailSequenceQueue().add(...)` in one place. Do not split these — the DB row must exist before the job fires so the worker can load it.
+- **Idempotency guard in `enqueueSequence`**: `findFirst` checks for an existing incomplete row matching `{ userId, searchId, sequenceKey, completed: false }` before creating. Re-running the same search (re-check) does not spawn duplicate sequences.
+- **Step-number guard in the worker**: `processJob` rejects the job if `state.step !== job.data.step`. Combined with BullMQ's `jobId: \`${stateId}-step-${N}\`` deduplication, this prevents any step from sending twice.
+- **`SEQUENCE_FIRST_DELAY` controls the initial delay**: step 0 for `REENGAGEMENT` is delayed 14 days; all others fire immediately. `enqueueSequence` passes this as the BullMQ job `delay` and also pre-computes `nextSendAt` for the DB row.
+- **`StepDef.nextStepDelayMs` drives the chain**: after sending step N, the worker reads `SEQUENCE_DEFS[key][N].nextStepDelayMs`. If defined, it updates the state and enqueues step N+1 with that delay. If undefined (last step), it marks the sequence complete.
+- **Worker uses `new PrismaClient()` directly, not `lib/db`**: consistent with `workers/monitoring.ts`. The `globalThis` singleton in `lib/db` is a Next.js hot-reload safeguard — unnecessary in a standalone worker process.
+- **Email body is inline HTML for Phase 9c**: `renderStepEmail()` in the worker generates simple but functional HTML per sequence key/step. Phase 9d replaces this with `render(<BeforeYouSign .../>)` etc. using React Email templates.
+- **Sequences are authenticated-user only**: `EmailSequenceState.userId` is non-nullable. The save route only calls `enqueueSequence` when `session?.user?.id` is present. Anonymous searches (no session) skip all email sequences.
+- **`RECHECK_30D`, `RECHECK_90D`, `PAYMENT_DUE` are defined in `SEQUENCE_DEFS` but not yet triggered**: their step definitions and `SEQUENCE_FIRST_DELAY` entries are in place; Phase 9e wires them to timeline dates and re-check events via `enqueueSequence` calls with a custom `initialDelay`.
