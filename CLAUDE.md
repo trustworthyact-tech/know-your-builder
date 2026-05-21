@@ -1,718 +1,202 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
-## Two processes must both be running
-
-This project has two separate Node processes that must run simultaneously:
+## Running the project
 
 ```bash
-# Terminal 1 — API server (port 3001)
+# Terminal 1 — Express API server (port 3001)
 cd server && node index.js
 
-# Terminal 2 — Expo dev server (tunnel mode for phone support)
+# Terminal 2 — Expo dev server (tunnel mode)
 cd know-your-builder && npx expo start --tunnel
+
+# Terminal 3 — Next.js web app (port 3000)
+cd web && npm run dev
 ```
 
-Open the app in the browser by pressing `w` in the Expo terminal. Tunnel mode (`--tunnel`) uses ngrok so a physical phone can reach the dev server regardless of LAN routing; without it the QR code may advertise an unreachable IP on some networks.
-
-**Physical device setup:** set `EXPO_PUBLIC_API_URL` in `.env.local` to the Mac's LAN IP so the phone can reach the API server:
-```
-EXPO_PUBLIC_API_URL=http://192.168.x.x:3001
-```
-This env var is baked into the Expo bundle at Metro start time, so restart the Expo server after changing it.
+Tunnel mode uses ngrok so a physical phone can reach the dev server. Set `EXPO_PUBLIC_API_URL` in `.env.local` to the Mac's LAN IP for physical device testing — it is baked into the bundle at Metro start time, so restart Expo after changing it.
 
 ## Type checking
 
 ```bash
-npx tsc --noEmit
+npx tsc --noEmit          # mobile
+cd web && npx tsc --noEmit  # web
 ```
 
-There is no test suite and no linter configured.
+No test suite or linter configured.
 
 ## Architecture
-
-### Request flow
 
 ```
 HomeScreen → SearchingScreen → ReportScreen
                   │
                   ▼
-         src/services/api.ts          (fetch + NDJSON stream reader)
+         src/services/api.ts       (fetch + NDJSON stream reader)
                   │
                   ▼
-         server/index.js :3001        (Express, runs all scrapers in parallel)
+         server/index.js :3001     (Express, all scrapers in parallel)
                   │
-        ┌─────────┼──────────────────────────────┐
-        ▼         ▼         ▼          ▼          ▼
-     abn.js  austlii.js  qbcc.js  paymentTimes  modernSlavery  links.js
+     abn  austlii  qbcc  paymentTimes  modernSlavery  asic  fwo  …  links
 ```
 
-The server endpoint `POST /api/search` streams results back as **newline-delimited JSON (NDJSON)**. Each scraper fires independently via `Promise.all`; as each finishes it writes one JSON line to the response. The frontend reads the stream incrementally and updates the UI per-result — no waiting for all searches to complete before showing progress.
+`POST /api/search` streams NDJSON — each scraper writes one line when it finishes. The frontend merges results by `key` and updates the UI per-result.
 
-### Key design decisions
+**`links.js` is not a scraper** — it returns pre-populated deep-link URLs for databases that are too hard to scrape. No HTTP calls.
 
-**`links.js` is not a scraper.** It generates pre-populated deep-link URLs for every database that is too hard to scrape (ASIC, state building licence registers, SafeWork agencies, etc.). The report renders these as a tappable list in the "Additional Databases — Manual Review" section.
+**AustLII is called nine times**, once per jurisdiction key (`federal`, `qld`, `nsw`, `vic`, `wa`, `sa`, `nt`, `act`, `tas`), scoped via `mask_path`.
 
-**AustLII covers most courts.** `server/scrapers/austlii.js` is called nine times (once per jurisdiction key: `federal`, `qld`, `nsw`, `vic`, `wa`, `sa`, `nt`, `act`, `tas`). Each call scopes the search to that jurisdiction's AustLII path prefix via the `mask_path` parameter. The same scraper covers all courts and tribunals within each jurisdiction, including Fair Work Commission, VCAT, NCAT, QCAT, etc.
+**SearchResult keys are a stable contract.** `INITIAL_SEARCHES` in `SearchContent.tsx` must stay in sync with the keys emitted by `server/index.js`. Adding a scraper requires both.
 
-**SearchResult keys are stable contracts.** `SearchingScreen` initialises a hard-coded list of 14 keys (matching exactly the keys emitted by the server) and merges incoming stream updates by `key`. Adding a new scraper requires adding the key to both `server/index.js` and the `INITIAL_SEARCHES` array in `SearchingScreen.tsx`.
+**All scrapers return** `{ source, jurisdiction, category, results[], searchUrl, summary }`. Errors are caught per-scraper — a failing scraper never stops others.
 
-### Frontend structure
+### Adding a new scraper
 
-- `src/types/index.ts` — all shared TypeScript types (`BuilderInput`, `SearchResult`, `ResultItem`, `RootStackParamList`)
-- `src/theme.ts` — single source of truth for all colours, typography scales, and shadows; import `colors`, `typography`, `shadows` from here in every component
-- `src/services/api.ts` — `runDueDiligence()` streams NDJSON and calls `onProgress` per result; `checkServer()` health-checks before starting. `SERVER_URL` resolves from `EXPO_PUBLIC_API_URL` env var (set in `.env.local`), falling back to `http://localhost:3001` for browser use.
-- Navigation is a simple three-screen stack (`Home → Searching → Report`); `Searching` uses `navigation.replace` (not `navigate`) so the back button is suppressed
-
-### Server structure
-
-- `server/scrapers/abn.js` — scrapes `abr.business.gov.au` by ABN or name
-- `server/scrapers/austlii.js` — scrapes AustLII full-text search, parameterised by jurisdiction
-- `server/scrapers/qbcc.js` — tries QBCC JSON API then falls back to HTML scrape; also scrapes adjudication decisions separately
-- `server/scrapers/paymentTimes.js` — tries Payment Times Register JSON API then falls back to HTML
-- `server/scrapers/modernSlavery.js` — scrapes the HTML search page directly (the register has no usable public API). After parsing `a.search-results__item` elements, results are filtered by `isEntityMatch()` which requires every significant word of the company name (or the ABN) to appear in the *reporting entity* field — this prevents false positives from statements where the search term only appears in a subsidiary's name inside the statement body
-- `server/scrapers/links.js` — pure function, no HTTP calls; returns pre-populated URLs for ~35 databases
-
-All scrapers follow the same return shape: `{ source, jurisdiction, category, results[], searchUrl, summary }`. Errors are caught per-scraper in `server/index.js`; a failing scraper never brings down other searches.
-
-### Adding a new data source
-
-1. Create `server/scrapers/mySource.js` exporting an async function that returns the standard shape above
-2. Import and add it to the `searches` array in `server/index.js` with a unique `key`
-3. Add a matching entry to `INITIAL_SEARCHES` in `src/screens/SearchingScreen.tsx`
-4. Consume it in `ReportScreen.tsx` via `byKey(results, 'mySource')` and pass to a `<ReportSection>`
+1. `server/scrapers/mySource.js` — async function returning the standard shape
+2. Add to `searches` array in `server/index.js` with a unique `key`
+3. Add matching entry to `INITIAL_SEARCHES` in `web/app/search/SearchContent.tsx`
+4. Render in `ReportContent.tsx` via a synthetic SearchResult + `<ReportSection>`
 
 ---
 
-## Phase 1a — Next.js scaffold (complete)
+## Universal conventions
 
-The `web/` directory contains the Next.js 14 app (App Router). Key conventions set in this phase:
+**Server vs client components**: `page.tsx` files are always Server Components. Extract all interactive logic into `'use client'` components in `web/components/`. This applies everywhere — spec notes that list `page.tsx` as an edit target are wrong.
 
-### Running the web app
+**Prisma in Server Components**: query Prisma directly in Server Component pages rather than calling internal API routes — avoids a needless HTTP round-trip. Serialise `Date` → `.toISOString()` before passing to client components.
 
-```bash
-# Terminal 3 — Next.js dev server (port 3000)
-cd web && npm run dev
+**Auth pattern**: use `getServerSession(authOptions)` server-side (import `authOptions` from `@/lib/auth`). In client components, infer auth from API response (401 → hide feature) rather than importing `useSession`.
+
+**Singletons**: all library clients (`db`, `resend`, `redis`, `stripe`, `r2`) use the `globalThis` pattern for Next.js hot-reload safety. Workers skip this — use module-level `new Client()` directly.
+
+**Email is best-effort everywhere**: Resend calls are wrapped in try/catch; errors are logged and swallowed. The parent operation always succeeds regardless.
+
+**`upsert` over `insert`** for any re-entrant write (watchlist, timeline, pack balance, share links, monitoring subscriptions). Avoids unique-constraint errors on retry.
+
+**ABN over name for entity matching**: ABN is the primary lookup key throughout (pack-balance, save, watchlist, worker diff). Name is the fallback only when ABN is absent — name alone risks false positives.
+
+**`trackEvent` is fire-and-forget**: returns `void`, swallows errors. Never `await` it. Add new events to both `ALLOWED_EVENTS` in `web/app/api/events/route.ts` and the call site. Current tracked events: `persona_selected`, `email_captured`, `partner_link_clicked`.
+
+**WCAG**: `text-muted` is `#636B76` (not `#9AA5B4`). Focus rings use `focus-visible:ring-2` — never plain `focus:ring`.
+
+---
+
+## Report rendering conventions
+
+**`riskSummary` is frozen at save time**: `riskGrouper()` runs synchronously in the save route and the result is stored in `Search.riskSummary`. `ReportContent` reads this stored value for DB-backed reports — never recomputes from `reportJson`. For `searchId === 'preview'`, `riskGrouper` is called live.
+
+**QBCC split**: the `qbcc` SearchResult carries both `licenceResults` (section 8.2) and `adjudicationResults` (section 8.4). Pass `resultsOverride` to each `<ReportSection>` — do not use `qbcc.results` directly.
+
+**Courts section (8.5)**: one synthetic `courtSearch` provides the summary; `resultsOverride={courtItems}` combines all 9 AustLII jurisdiction results plus FWO/VIC BPC/WA enforcement items; `showJurisdiction` renders per-result badges.
+
+**Directors in ASIC results**: director rows have `metadata.Role = 'Director'` and no `status`. `ReportContent` splits on this marker to separate company vs director display. `riskGrouper` CORPORATE check (`status.length > 0`) naturally skips director items.
+
+**`asicDisqualified` depends on `asic` via a shared promise**: `asicPromise` is created once in `server/index.js` before the searches array; `asicDisqualified` and the deep-check scrapers await it to extract director names. Both still stream independently via `Promise.all`.
+
+**Nullable synthetic SearchResult for optional scrapers** (deep check only): typed `SearchResult | null`, excluded from `searchResults` props via `.filter(Boolean) as SearchResult[]`. No ghost rows or undefined handling needed downstream.
+
+**Staleness banner**: suppressed for `readOnly` shared reports and `searchId === 'preview'`. Guard: `isStale && !readOnly && searchId !== 'preview'`. Prices: RECHECK = $3, DEEP_CHECK = $15 (from `lib/stripe.ts`, not hardcoded copy).
+
+**Deep check scrapers**: appended to the searches array conditionally after it is defined (`searches.push(...)`). `total` in `SearchContent` uses `searches.length` not `INITIAL_SEARCHES.length` so the progress bar is accurate.
+
+**Comparison view** (`/compare?ids=`): max 3 builders enforced before any DB call. `deriveSectionRisk` assumes `'clear'` baseline (no scraper status data in `riskSummary`).
+
+---
+
+## Payment conventions
+
+**Webhook uses `req.text()`, not `req.json()`**: Stripe signature verification requires the raw body. Route must have `export const dynamic = 'force-dynamic'`.
+
+**`Payment` row is written in `create-intent`, not the webhook**: the webhook only credits `PackBalance`. Webhook returns 500 on DB failure (triggers Stripe retry); 200 for unhandled event types.
+
+**`MONITORING_MONTHLY` is excluded from `PAYMENT_AMOUNTS`**: it is a Stripe Subscription, not a PaymentIntent. The `create-intent` route rejects it with 400.
+
+**`MonitoringSubscription` is created as `active: true` immediately**: activation is synchronous; the webhook only handles deactivation (`customer.subscription.deleted` → `active: false`). Do not add a `customer.subscription.updated` activation handler.
+
+**Re-check 402 fallback**: if `POST /api/reports/save` returns 402 (webhook/balance race), fall back to sessionStorage preview rather than an error screen. The report is not lost.
+
+**`updateMany` with `gt: 0`** is the atomic credit-decrement pattern — avoids a separate findUnique + update round-trip. `count === 0` means no balance was available.
+
+---
+
+## Worker / queue conventions
+
+**Workers must use a separate Redis connection from the Queue**: BullMQ workers issue blocking `BLPOP`; sharing the same ioredis instance causes stalls. `getRedis()` from `web/lib/redis.ts` is Queue/Next.js only — workers create `new Redis(...)` directly.
+
+**`enqueueMonitoringJob` and `enqueueSequence` are the only public enqueue interfaces**: never call `.add(...)` on queues directly outside their respective `lib/queues/` files.
+
+**First monitoring run establishes the baseline — no alerts on first run**: alerts only fire on the second+ run when a diff is possible.
+
+**`detectChanges` covers six `AlertType` values**: LICENCE_CHANGE, QBCC_ADJUDICATION, INSOLVENCY_EVENT, ATO_DEBT_FLAG, COURT_DECISION, FWO_ENFORCEMENT. Each compares raw result counts between new and prior `reportJson`.
+
+---
+
+## Email sequence conventions
+
+**`enqueueSequence` owns both the DB row and the BullMQ job**: creates `EmailSequenceState` and enqueues in one call. Do not split these.
+
+**Idempotency guard**: `findFirst` checks for an existing incomplete row before creating. Re-checks do not spawn duplicate sequences.
+
+**Step-number guard in worker**: job is rejected if `state.step !== job.data.step`. Combined with BullMQ `jobId` deduplication, prevents any step from sending twice.
+
+**`PAYMENT_DUE` is enqueued from the timeline POST route**, not from the save route. `initialDelay = milestoneDate − 2 days − now`. The worker queries the timeline live at fire time — email content reflects any schedule edits made after enqueueing.
+
+**`RECHECK_30D` / `RECHECK_90D`** are enqueued from `reports/save` for `HOMEOWNER` and `DEVELOPER` at `projectStage === 'contracted' | 'underway'` only.
+
+**`renderStepEmail` is `async`**: `render()` from `@react-email/components` returns `Promise<string>`. Always `await` it.
+
+**Password reset reuses `VerificationToken`** with identifier prefix `password-reset:{email}` to distinguish from email verification tokens (`{email}`). Delete old token before creating a new one.
+
+**`Preview` component requires `children: string`**: wrap numeric props in template literals — `` `${dayCount}-day re-check reminder` ``.
+
+**Email templates visual standard**: dark `#1A3A5C` header, white card body, `#F4F6F9` background, `#EEF1F6` dividers.
+
+---
+
+## Scraper conventions
+
+**`nameMatchesEntity` / `isEntityMatch` guards all register scrapers** (modernSlavery, FWO, VIC BPC, WA B&E): every significant word of the company name must appear in the result text to prevent false positives.
+
+**Contract extraction lives in the Next.js app**, not the Express server (`web/lib/contractExtractor.ts`). The Express server has no `@anthropic-ai/sdk` or AWS SDK.
+
+**`DocumentBlockParam` cast via `any`** in `contractExtractor.ts` — the SDK types don't include it but the runtime supports it.
+
+**R2 object is always deleted after extraction** — unconditionally, on success and error paths.
+
+**DOCX extraction returns `confidence: 'low'` with empty fields** — prompt user to fill manually.
+
+**Use `XMLHttpRequest` for file uploads** when upload progress is needed — `fetch` does not expose `upload.onprogress`.
+
+**Share link upsert always updates `expiresAt`**: re-sharing extends the window to a full 30 days. Never use `update: {}` in the share route.
+
+**PDF cookie forwarding**: check `__Secure-next-auth.session-token` first (HTTPS), fall back to `next-auth.session-token` (HTTP/dev).
+
+---
+
+## Incomplete work
+
+### Phase 7c — asicExtract: historical directors + charges register
+
+`asicExtract.js` currently returns companies that *current* directors are associated with (phoenix detection). Missing:
+- Resigned/former directors of the target entity
+- Per-charge detail (only count available from `asic.js`)
+
+To complete: set `ASIC_DATA_API_KEY` in `server/.env`, then add a branch at the top of `searchAsicExtract()`:
+```js
+const apiKey = process.env.ASIC_DATA_API_KEY;
+if (apiKey && acn) return searchViaDataApi(acn, apiKey);
+// existing ASIC Connect officer search falls through
 ```
-
-All three processes (Express :3001, Expo, Next.js :3000) are independent. The Next.js app talks to Express at `SCRAPING_SERVICE_URL` (env var, defaults to `http://localhost:3001` server-side).
-
-### Type checking (web)
-
-```bash
-cd web && npx tsc --noEmit
-```
-
-### Key files
-
-- `web/prisma/schema.prisma` — PostgreSQL schema (Prisma 5). Run `npx prisma generate` after any schema change; run `npx prisma db push` to sync a dev database.
-- `web/lib/db.ts` — Prisma client singleton (safe for Next.js hot-reload via `globalThis` cache)
-- `web/app/layout.tsx` + `web/app/providers.tsx` — root layout with Inter font; `Providers` is a client component wrapping NextAuth `SessionProvider`
-- `web/app/globals.css` — Tailwind directives + CSS custom properties for brand colours
-- `web/tailwind.config.ts` — Tailwind extended with all brand colours from `src/theme.ts`
-- `web/.env.local.example` — copy to `.env.local` and fill in all values before running
-
-### Package versions
-
-- `next`: 14.2.35 (patched 14.x; do not upgrade to 15/16 without updating App Router conventions)
-- `prisma` / `@prisma/client`: 5.x
-- `next-auth`: 4.x with `@auth/prisma-adapter`
-- `@react-email/components`: 1.x + `react-email`: 6.x
+`searchViaDataApi` calls `GET https://data.asic.gov.au/api/v1/companies/{acn}/officers?includeFormer=true` and `GET .../charges` and maps to the standard `ResultItem` shape. The rest of the pipeline requires no changes.
 
 ---
 
-## Phase 1b — Shared types, theme, and API client (complete)
+## Performance baseline (2026-05-21)
 
-### Key files
-
-- `web/src/theme.ts` — web port of `src/theme.ts`; `lineHeight` values are CSS strings (e.g. `'36px'`) not React Native numbers; `shadows` are CSS `box-shadow` strings not RN shadow objects
-- `web/src/types/index.ts` — port of mobile types plus `Persona` enum (`HOMEOWNER | SUBCONTRACTOR | DEVELOPER | LENDER`) and `RiskGroupResult` / `RiskGroupTrigger` / `RiskGroupId` types (consumed by Phase 2 risk engine)
-- `web/lib/api.ts` — browser-safe port of `runDueDiligence()` and `checkServer()`; resolves `SERVER_URL` from `NEXT_PUBLIC_SCRAPING_SERVICE_URL` first (required for browser-side streaming), then `SCRAPING_SERVICE_URL` (server-side), then `http://localhost:3001`
-
-### Conventions
-
-Both env vars must be set for full functionality: `NEXT_PUBLIC_SCRAPING_SERVICE_URL` for client components that stream NDJSON directly from the browser, and `SCRAPING_SERVICE_URL` for server-side Route Handlers that proxy to Express.
-
----
-
-## Phase 1c — Home screen (complete)
-
-### Key files
-
-- `web/app/page.tsx` — React Server Component (no `'use client'`); delegates all interactivity to `<HomeSearch />`
-- `web/components/SearchBar.tsx` — `'use client'` form component; `formatABN()` auto-formats input as `XX XXX XXX XXX` on every keystroke; validates that at least one of company name or ABN is provided; on submit, strips ABN formatting to raw digits before pushing to `/search?companyName=...&abn=...&licenceNumber=...`
-
-### Conventions
-
-Keep `page.tsx` as a Server Component and extract any interactive UI into dedicated `'use client'` components in `web/components/`. Search params are passed as URL query params to `/search` — the Searching screen reads them from `useSearchParams()`.
-
----
-
-## Phase 1d — Searching screen (complete)
-
-### Key files
-
-- `web/app/search/page.tsx` — Server Component wrapper; exists solely to wrap `SearchContent` in `<Suspense>` (required by Next.js 14 for any client component using `useSearchParams()`)
-- `web/app/search/SearchContent.tsx` — `'use client'` component with all stream logic; checks server health, marks all rows `searching`, then calls `runDueDiligence()` from `web/lib/api.ts` and merges each NDJSON result into the row list by `key`
-- `web/components/SearchProgressItem.tsx` — single source row; four visual states: idle (gray ring), searching (CSS `animate-spin` spinner), done-with-results (green filled ring + checkmark + count badge), done-empty (gray ring), error (red ✕)
-
-### Conventions
-
-- `INITIAL_SEARCHES` in `SearchContent.tsx` must stay in sync with the 14 keys emitted by `server/index.js`; the list is the source of display order
-- When all searches complete, results are stored in `sessionStorage` under `kyb_preview_results` and `kyb_preview_input` (JSON), then the router pushes to `/report/preview` — Phase 1e reads these keys when `searchId === 'preview'`; Phase 1f replaces this with the database-backed flow
-- `BuilderInput.acn`, `.tradingName`, and `.directors` are not captured in the Phase 1c search form; they default to `''` / `[]` in `SearchContent` and may be added to the form later without breaking this screen
-
----
-
-## Phase 1e — Report screen (complete)
-
-### Key files
-
-- `web/app/report/[searchId]/page.tsx` — Server Component shell; wraps `ReportContent` in `<Suspense>`; `params.searchId` is passed as a prop (Next.js 14 — not async)
-- `web/app/report/[searchId]/ReportContent.tsx` — `'use client'` component; reads `sessionStorage` for `searchId === 'preview'`; computes per-section risk levels; renders six-section report with sticky ToC
-- `web/components/ReportSection.tsx` — `'use client'` section wrapper; collapsible on mobile (open by default); `resultsOverride` prop bypasses deriving results from `searchResults[].results`; `showJurisdiction` prop passes through to `ResultCard`
-- `web/components/ResultCard.tsx` — `'use client'` expandable card; shows metadata table and source link when expanded; `showJurisdiction` badge rendered above title
-- `web/components/RiskBadge.tsx` — pure presentational badge; `RiskLevel` type exported for use by other components; icon + label always shown together (never colour alone)
-
-### Conventions
-
-- **QBCC split**: The `qbcc` SearchResult carries both `licenceResults` (section 8.2) and `adjudicationResults` (section 8.4). `ReportContent` creates synthetic SearchResult descriptors for each sub-section and passes `resultsOverride` to `ReportSection` — do not use `qbcc.results` directly in sections 8.2 or 8.4.
-- **Courts (8.5)**: A single synthetic `courtSearch` SearchResult provides the summary and one "Verify at AustLII" link; `resultsOverride={courtItems}` combines all 9 jurisdiction results; `showJurisdiction` shows the per-result jurisdiction badge.
-- **Risk levels in Phase 1e**: Computed with a simple heuristic (`findings` if any results, `clear` if none, `unavailable` if all scrapers errored, `significant` if court hits ≥ 6). Superseded by the deterministic `riskGrouper` in Phase 2.
-- **`/report/preview` route**: The empty `web/app/report/preview/` placeholder directory was removed; the `[searchId]` dynamic route now handles it cleanly.
-
----
-
-## Phase 1f — Persona selection + email gate + report persistence + email delivery (complete)
-
-### Key files
-
-- `web/components/PersonaSelector.tsx` — four persona icon cards (2×2 grid); `onSelect: (persona: Persona) => void`; no async work — purely UI
-- `web/components/EmailGate.tsx` — email input (required), AU state dropdown, project type dropdown, deep check checkbox; `onSubmit: (data: EmailGateData) => void`
-- `web/lib/resend.ts` — Resend client singleton (same `globalThis` pattern as Prisma)
-- `web/emails/ReportEmail.tsx` — React Email template; takes `entityName`, hit counts, `reportUrl`; rendered to HTML server-side in the save route
-- `web/app/api/reports/save/route.ts` — `POST /api/reports/save`: persists `Search` row with `reportJson`, calls `riskGrouper()` synchronously and stores result in `Search.riskSummary`, sends report email via Resend
-- `web/app/api/reports/[searchId]/route.ts` — `GET /api/reports/:searchId`: returns search + reportJson for `ReportContent` to consume
-
-### Conventions
-
-- **Pre-search wizard in `SearchContent`**: The component is a three-step wizard — `persona` → `email-gate` → search running. Persona is persisted to `localStorage` under `kyb_persona` so the selector is skipped on return visits. Steps are controlled by a `step: Step` state string.
-- **Saving after stream**: When the NDJSON stream completes, `SearchContent` calls `POST /api/reports/save` and navigates to `/report/[searchId]`. If the save fails, it falls back to the existing `sessionStorage` + `/report/preview` path so the user still sees their report.
-- **Email is best-effort**: The save route never fails the response due to an email send error — Resend failures are logged and swallowed.
-- **`ReportContent` DB load**: For `searchId !== 'preview'`, `ReportContent` fetches `GET /api/reports/:searchId`, converts `reportJson` (`Record<string, SearchResult>`) to a `SearchResult[]`, and re-hydrates `BuilderInput` from `entityName` / `entityAbn`.
-- **Anonymous searches**: `Search.userId` is `null` for all Phase 1f searches (no auth yet). Phase 3a wires the session userId in after NextAuth is added.
-- **`RESEND_API_KEY` and `FROM_EMAIL`**: Must be set in `web/.env.local` for email delivery to work. The save route degrades gracefully if these are unset (email is skipped, report still saved).
-
----
-
-## Phase 2 — Risk grouping engine + Risk Summary panel (complete)
-
-### Key files
-
-- `web/lib/riskGrouper.ts` — pure deterministic function `riskGrouper(findings: Record<string, SearchResult>): RiskGroupResult[]`; maps scraper output to five named risk groups (`INSOLVENCY`, `PAYMENT`, `LICENSING`, `LEGAL`, `CORPORATE`); no I/O, no randomness — same input always produces the same output
-- `web/components/RiskSummaryPanel.tsx` — renders triggered risk groups with prescribed descriptions and source-linked trigger bullets; shows "No significant findings" fallback when no groups are triggered
-
-### Conventions
-
-- **Risk groups are the source of truth for risk level**: `riskGrouper` replaces the Phase 1e heuristic. Each `<ReportSection>` receives a `riskLevel` prop derived from whether any triggered group maps to that section.
-- **`riskSummary` is frozen at save time**: The save route calls `riskGrouper()` synchronously on the raw `findings` map and stores the JSON in `Search.riskSummary`. `ReportContent` reads back this stored value for DB-backed reports — it never recomputes from the stored `reportJson`. This guarantees identical output across page loads for the same search.
-- **Preview fallback**: For `searchId === 'preview'` (sessionStorage path), `riskGrouper` is called live in `ReportContent` since there is no DB row to read from.
-- **`riskGrouper` input shape**: Accepts `Record<string, SearchResult>` keyed by the same 14 scraper keys used throughout the app. Missing keys are treated as no results (not errors).
-- **Five risk group IDs**: `INSOLVENCY | PAYMENT | LICENSING | LEGAL | CORPORATE` — defined in `web/src/types/index.ts` as `RiskGroupId`. Each `RiskGroupResult` carries `id`, `label`, `description`, `triggered: boolean`, and `triggers: RiskGroupTrigger[]`.
-
----
-
-## Phase 3a — Auth (NextAuth + registration) (complete)
-
-### Key files
-
-- `web/lib/auth.ts` — NextAuth config; exports `authOptions`; type-augments `Session` and `JWT` to expose `user.id` (string cuid matching `User.id` in Prisma). Session strategy is **JWT** — required because `CredentialsProvider` is incompatible with the database session strategy in next-auth v4.
-- `web/app/api/auth/[...nextauth]/route.ts` — NextAuth catch-all; re-exports `GET` and `POST` from `NextAuth(authOptions)`
-- `web/app/api/auth/register/route.ts` — `POST /api/auth/register`: hashes password with `bcrypt` (cost 12), creates `User` + `VerificationToken` (24 h expiry), sends `VerifyEmail` via Resend (best-effort)
-- `web/app/auth/verify-email/page.tsx` — Server Component; validates token + email params, calls `prisma.$transaction` to set `emailVerified` and delete the token, then redirects to `/auth/login?verified=1`
-- `web/app/auth/login/page.tsx` — `'use client'`; credentials form (`signIn('credentials', { redirect: false })`) + Google button (`signIn('google', ...)`); reads `?verified=1` and `?error=invalid-token` from search params (wrapped in `<Suspense>` for `useSearchParams`)
-- `web/app/auth/register/page.tsx` — `'use client'`; posts to `/api/auth/register`; on success renders "check your inbox" confirmation in place
-- `web/emails/VerifyEmail.tsx` — React Email template; same visual style as `ReportEmail`
-- `web/components/NavBar.tsx` — `'use client'`; global nav rendered in root layout; uses `useSession()` to show email + **Sign out** (`signOut({ callbackUrl: '/' })`) when authenticated, or **Sign in** / **Register** links when not
-
-### Conventions
-
-- **Always import `authOptions` from `@/lib/auth`** when calling `getServerSession` in Route Handlers. Do not re-declare NextAuth config inline.
-- **`getServerSession(authOptions)`** is the correct pattern for server-side session access in Next.js 14 App Router Route Handlers and Server Components. Do not use `getSession()` (client-only) on the server.
-- **`Search.userId` is now set from the session** in `POST /api/reports/save`. Anonymous searches (unauthenticated) still produce `userId: null` — this is intentional and valid per the schema.
-- **Email verification is required for credentials users** but not enforced at sign-in time in Phase 3a. Enforcement (blocking unverified logins) can be added in a later phase if needed.
-- **Google sign-in auto-creates a `User` row** via the Prisma adapter (no `passwordHash`). These users have `emailVerified` set automatically by the adapter.
-
----
-
-## Phase 3b — Account dashboard shell + Saved Reports tab (complete)
-
-### Key files
-
-- `web/app/account/layout.tsx` — Server Component; calls `getServerSession(authOptions)` and redirects unauthenticated users to `/auth/login?callbackUrl=/account/reports`; renders account header + `<AccountTabNav>` + `{children}`
-- `web/app/account/page.tsx` — `redirect('/account/reports')`
-- `web/app/account/reports/page.tsx` — Server Component; queries Prisma directly (no HTTP hop); accepts `?page=` search param; serialises `Date` → ISO string before passing to client components
-- `web/app/api/user/searches/route.ts` — `GET /api/user/searches?page=&limit=`; 401 if unauthenticated; returns `{ searches, total, page, pageSize }`
-- `web/components/AccountTabNav.tsx` — `'use client'`; uses `usePathname()` for active-tab highlighting; tabs: Reports | Watchlist | Monitoring | Alerts | Billing
-- `web/components/ReportCard.tsx` — `'use client'`; derives overall risk level from stored `riskSummary` JSON (`significant` → `findings` → `clear` → `unavailable`); staleness badge appears when report age exceeds 30 days; Re-check / Share / PDF buttons are disabled stubs
-
-### Conventions
-
-- **Split Server/Client at the layout boundary**: `account/layout.tsx` is a Server Component for auth; `AccountTabNav` is extracted as a separate `'use client'` file because `usePathname()` is a hook and cannot be used in a Server Component.
-- **Query Prisma directly in Server Component pages** rather than calling the internal API route — avoids an unnecessary HTTP round-trip on the server. The API route exists for future client-side use.
-- **Serialise `Date` before passing to client components**: Prisma returns `Date` objects, which are not serialisable across the Server/Client boundary. Call `.toISOString()` in the Server Component before passing `createdAt` as a prop.
-- **`riskSummary` is a JSON string of `RiskGroupResult[]`**: `riskGrouper` only pushes groups that have triggers, so any item in the parsed array is already triggered. Risk level is `significant` if any group has `severity === 'significant'`, `findings` if any groups exist, otherwise `clear`.
-- **Staleness threshold is 30 days**: defined as a constant `STALE_DAYS = 30` in `ReportCard.tsx`. Re-check / Share / PDF buttons are stubs to be wired in Phases 3c and 7b.
-
----
-
-## Phase 3c — PDF export + shareable links (complete)
-
-### Key files
-
-- `web/app/api/share/route.ts` — `POST /api/share`: requires session; verifies `Search.userId === session.user.id`; upserts `ShareableLink` with 30-day expiry (always sets `expiresAt` on update so re-sharing extends the window); returns `{ token, shareUrl, expiresAt }`
-- `web/app/api/share/[token]/route.ts` — `GET /api/share/[token]`: no auth required; returns same shape as `GET /api/reports/:searchId` or 404 if token not found / expired
-- `web/app/api/report/[searchId]/pdf/route.ts` — `GET /api/report/:id/pdf`: two auth paths — (1) session + ownership: extracts `next-auth.session-token` cookie and forwards it to Puppeteer, navigates to `/report/:id`; (2) `?shareToken=`: validates token, navigates to `/report/share/:token`; streams back `application/pdf`
-- `web/app/report/share/[token]/page.tsx` — read-only report page; passes `shareToken` and `readOnly` props to `ReportContent`; no session required
-- `web/components/ReportCard.tsx` — Share button calls `POST /api/share`, copies URL to clipboard, cycles through `idle → loading → copied → idle` states; PDF button is `<a download>` pointing to `/api/report/:id/pdf`
-
-### Conventions
-
-- **`POST /api/share` is the only writer of `ShareableLink` records**: the PDF route must never create share links as a side effect. For own-report PDFs, Puppeteer receives the caller's session cookie and navigates to `/report/:id` directly.
-- **`ReportContent` accepts `shareToken?` and `readOnly?` props**: when `shareToken` is present the component fetches from `/api/share/:token` instead of `/api/reports/:id`; `readOnly=true` replaces the "← New search" nav link with a "Shared report" pill.
-- **Share upsert always updates `expiresAt`**: `update: { expiresAt }` ensures a previously-created link is refreshed to a full 30-day window on every Share button click. Do not use `update: {}` in the share route.
-- **PDF cookie forwarding**: check for `__Secure-next-auth.session-token` first (HTTPS/production), fall back to `next-auth.session-token` (HTTP/dev). Pass `domain` from `new URL(NEXTAUTH_URL).hostname`.
-- **`puppeteer` is in `dependencies`** (not devDependencies) — it is used at runtime in the PDF API route.
-
----
-
-## Phase 4a — File upload + R2 storage (complete)
-
-### Key files
-
-- `web/lib/r2.ts` — S3-compatible R2 client; exports `uploadToR2`, `deleteFromR2`, `getPresignedUrl`; uses `globalThis` singleton pattern (same as `db.ts` and `resend.ts`); reads `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_CONTRACTS` from env
-- `web/app/api/upload/route.ts` — `POST /api/upload`: accepts `multipart/form-data` with a `file` field; validates MIME type (PDF/DOCX/JPG/PNG) and size (≤ 10 MB) server-side; stores object under `contracts/<uuid>.<ext>`; returns `{ r2Key, fileType, warning? }` where `warning` is set for image uploads
-- `web/components/ContractUpload.tsx` — `'use client'` drag-and-drop zone; validates file type/size client-side before any network call; uses `XMLHttpRequest` (not `fetch`) for real upload progress via `xhr.upload.onprogress`; props: `onComplete(result: UploadResult)` and `onCancel()`
-- `web/components/HomeSearch.tsx` — `'use client'` wrapper that owns the `'search' | 'upload'` view toggle; keeps `page.tsx` a pure Server Component
-
-### Conventions
-
-- **`page.tsx` stays a Server Component**: the `HomeSearch` wrapper owns all client-side state for the search/upload toggle; extracted following the same pattern as `SearchContent`, `ReportContent`, etc.
-- **Client-side validation mirrors server-side**: `ContractUpload` rejects disallowed MIME types and files > 10 MB before sending — the API route enforces the same rules as a second line of defence.
-- **Use `XMLHttpRequest` for file uploads** when upload progress is needed — `fetch` does not expose `upload.onprogress`.
-- **`onComplete` is a Phase 4b hook**: `HomeSearch` currently receives the `UploadResult` but does nothing with it; Phase 4b wires it to `POST /api/extract` and the `ExtractionConfirmCard`.
-- **R2 lifecycle**: Cloudflare R2 does not support per-object TTL via the S3 API. A bucket-level lifecycle rule (prefix `contracts/`, expire after 1 day) is the safety net; Phase 4b's extractor calls `deleteFromR2` immediately after extraction so objects rarely survive longer than seconds.
-- **`R2_BUCKET_CONTRACTS` env var** (not `R2_BUCKET_NAME`) — matches the key already in `.env.local.example` and `.env.local`.
-
----
-
-## Phase 4b — Claude extraction + confirmation card + clause opt-in (complete)
-
-### Key files
-
-- `web/lib/contractExtractor.ts` — `extractFromContract(r2Key, fileType): Promise<ContractExtraction>`; fetches file from R2 via presigned URL, sends PDF as a `document` block or image as a `vision` block to `claude-opus-4-7`, parses the JSON response; DOCX returns empty fields with `confidence: 'low'` (no native parse support)
-- `web/app/api/extract/route.ts` — `POST /api/extract`: accepts `{ r2Key, fileType }`; calls `extractFromContract`; always calls `deleteFromR2` after extraction (both success and error paths); returns `ContractExtraction` JSON
-- `web/components/ExtractionConfirmCard.tsx` — `'use client'`; editable controlled inputs for `builderName`, `abn`, `licenceNumber`; shows low-confidence warning banner when `confidence === 'low'`; clause opt-in checkbox (wired, marked "coming soon"); exports `ConfirmData` interface
-- `web/components/HomeSearch.tsx` — extended from 2-state to 4-state view machine: `'search' | 'upload' | 'extracting' | 'confirm'`; on confirm navigates to `/search?companyName=...&abn=...&licenceNumber=...`
-- `web/src/types/index.ts` — added `ContractExtraction` interface (`builderName`, `abn`, `licenceNumber`, `contractValue?`, `projectAddress?`, `confidence: 'high' | 'medium' | 'low'`)
-
-### Conventions
-
-- **Extraction lives in the Next.js app, not the Express server**: the spec placed this in `server/scrapers/contractExtractor.js` but the Express server has no `@anthropic-ai/sdk` or AWS SDK. Since the upload route is already a Next.js route and the web app has both packages, extraction follows the same pattern. Do not move it to the Express server without installing those dependencies there.
-- **`DocumentBlockParam` is not in `@anthropic-ai/sdk` v0.29.0's union type**: the PDF `document` block is cast via `any` in `contractExtractor.ts`. This is intentional — the runtime supports it; the types do not. Do not attempt to type it as `Anthropic.MessageParam['content'][number]` directly.
-- **R2 object is always deleted after extraction**: `deleteFromR2` is called unconditionally in `route.ts` — on success, and in the error path before returning 500. A `.catch(() => {})` on the success-path call ensures a delete failure never breaks the response.
-- **DOCX is not supported for extraction**: `fileType === 'docx'` short-circuits and returns `{ confidence: 'low', builderName: '', abn: '', licenceNumber: '' }`. The low-confidence warning in `ExtractionConfirmCard` prompts the user to fill in fields manually.
-- **`ANTHROPIC_API_KEY` is required in `web/.env.local`**: without it `new Anthropic()` has no credentials and extraction returns 500. The route degrades gracefully — the UI drops back to the manual search view with an error message.
-- **Clause opt-in is wired but inert**: `wantClauseAnalysis` is captured in `ConfirmData` but not acted on in Phase 4b. It is available for Phase 4c to persist to `Search.contractExtracted` or trigger clause analysis.
-
----
-
-## Phase 5 — Disambiguation (complete)
-
-### Key files
-
-- `web/components/DisambiguationCard.tsx` — `'use client'` list of ABR entity matches; each row shows name, formatted ABN, state, type, and active/inactive badge; "This one" button per row; "None of these — search anyway" escape hatch at the bottom; exports `EntityMatch` interface
-- `server/scrapers/abn.js` — added `searchByName(companyName)` export; scrapes the ABR name-search table and returns up to 10 matches as `{ name, abn, type, state, status }`
-- `web/components/SearchBar.tsx` — added `SearchFormData` export and optional `onSearch?: (data: SearchFormData) => void` prop; when provided, calls it instead of navigating directly so `HomeSearch` can intercept the submission
-
-### Conventions
-
-- **Disambiguation only runs on name-only searches**: `HomeSearch.handleSearch` checks `if (data.abn)` first and navigates immediately — no ABR round-trip. Only name-only submissions hit `POST /api/search/disambiguate`.
-- **Disambiguation failure is non-fatal**: any network error in `handleSearch` falls through to a plain name search so the user is never stranded on the disambiguation spinner.
-- **`HomeSearch` owns the disambiguation state, not `page.tsx`**: the spec listed `page.tsx` as the edit target, but `page.tsx` is a Server Component. The interactive logic lives in `HomeSearch.tsx` (the `'use client'` wrapper) — consistent with every prior phase.
-- **`SearchBar` falls back to direct navigation when `onSearch` is not provided**: the prop is optional, preserving standalone usage of `SearchBar` without `HomeSearch`.
-- **`SERVER_URL` is now exported from `web/lib/api.ts`**: client components that need to reach the Express server directly (e.g. `HomeSearch` calling `/api/search/disambiguate`) should import it from there rather than re-declaring the env-var chain.
-
----
-
-## Phase 6a — ASIC scrapers: company search + disqualified directors (complete)
-
-### Key files
-
-- `server/scrapers/asic.js` — scrapes ASIC Connect (`SearchRegisters.jspx` + `orgDetails.jspx`); returns company status, ACN, type, registration date, registered office, charge count, and current directors; directors are returned as `ResultItem` entries alongside the company entry in `results[]`, marked with `metadata.Role = 'Director'`
-- `server/scrapers/asicDisqualified.js` — for each director name, searches the ASIC Disqualified Persons Register (`searchType=DPNm`); returns matches as `ResultItem` entries with `status: 'Disqualified'`
-- `web/components/ReportSection.tsx` — added optional `criticalBanner?: string` prop; renders a `bg-danger-bg text-danger` alert block at the top of the section body when set
-
-### Conventions
-
-- **`asicDisqualified` depends on `asic` via a shared promise**: in `server/index.js`, `asicPromise = searchASIC(...)` is created once before the searches array. The `asicDisqualified` entry's `fn` awaits that promise and extracts directors from it before checking the disqualified register. Both keys still stream independently via `Promise.all`.
-- **Directors are `ResultItem` entries in `asic.results`, not a separate field**: each director row has `metadata.Role = 'Director'` and no `status` field. `ReportContent` splits on this marker (`filter(r => r.metadata?.Role !== 'Director')`) to separate the company item from director items before rendering. The `riskGrouper` CORPORATE check (`status.length > 0`) naturally skips director items.
-- **`riskGrouper.ts` required no changes for Phase 6a**: CORPORATE and LICENSING triggers for `asic` and `asicDisqualified` were already written ahead of time.
-- **Spec lists `page.tsx` as edited but change lives in `ReportContent.tsx`**: consistent with every prior phase — `page.tsx` is a Server Component shell; all report rendering is in `ReportContent.tsx`. Do not add scraper rendering directly to `page.tsx`.
-- **ASIC Connect is a JSF application**: `asic.js` and `asicDisqualified.js` use GET requests with query parameters. If ASIC Connect returns an empty table (e.g. due to a ViewState requirement), both scrapers degrade gracefully to empty results — search still completes, report still renders, users can verify manually via the ASIC link in section 8.6.
-
----
-
-## Phase 6b — ASIC insolvency notices + ATO tax debt (complete)
-
-### Key files
-
-- `server/scrapers/asicInsolvency.js` — scrapes `insolvencynotices.asic.gov.au` for external administration, winding-up, receiver, and liquidation notices; keyword-filters notice type text; tries table-row layout then card/article layout as a fallback; returns `category: 'financial'`
-- `server/scrapers/atoDebt.js` — hits the same ASIC Published Notices register with `noticeType=ATP` query param and keyword-matches against ATO/tax-debt terminology; captures disclosed amounts where present
-- `web/app/report/[searchId]/ReportContent.tsx` — extended section 8.3 to include `asicInsolvency` and `atoDebt`; `insolvencyItems` and `atoDebtItems` are prepended to `financialItems`; `criticalBanner` fires red for insolvency notices (priority) or ATO debt notices; `s83Risk` baseline now includes all four financial scrapers
-
-### Conventions
-
-- **Both scrapers are independent — no shared promise needed**: unlike `asicDisqualified` (which depends on `asic` via a shared promise), `asicInsolvency` and `atoDebt` run fully independently in `Promise.all`. They do not depend on ASIC Connect data.
-- **`riskGrouper.ts` required no changes for Phase 6b**: INSOLVENCY group triggers for `asicInsolvency` and `atoDebt` were already written ahead of time (lines 69–87).
-- **`criticalBanner` priority order in section 8.3**: insolvency notices take priority over ATO debt for the banner (insolvency implies immediate financial distress); ATO debt banner only shows when there are no insolvency notices. Both sets of results still appear in `financialItems`.
-- **ASIC Published Notices HTML structure is uncertain**: `insolvencynotices.asic.gov.au` may render as a table or card/article layout depending on the page version. Both scrapers try table rows first, then fall back through a list of card selectors. If neither matches, results are empty and the report degrades gracefully — users can verify via the ASIC Published Notices link in section 8.6.
-- **`s83Risk` baseline includes all four financial scrapers**: `isAllErrored` now checks `asicInsolvency`, `atoDebt`, `paymentTimes`, and `modernSlavery` together — the section is only `unavailable` if every one of them errors.
-
----
-
-## Phase 6c — FWO + VIC BPC + WA Building & Energy scrapers (complete)
-
-### Key files
-
-- `server/scrapers/fwo.js` — searches FWO media releases for enforcement outcomes (wage underpayment, litigation, compliance notices); keyword-filters for enforcement content then name-matches to avoid false positives; returns `category: 'payment'`, `jurisdiction: 'Federal'`
-- `server/scrapers/vicBpc.js` — fetches the VBA disciplinary proceedings register page and filters rows/cards matching the entity name; tries table layout first then card/paragraph fallback; returns `category: 'regulatory'`, `jurisdiction: 'VIC'`
-- `server/scrapers/waBuildingEnergy.js` — searches WA Building and Energy media releases for enforcement actions; same defensive multi-selector pattern as other scrapers; returns `category: 'regulatory'`, `jurisdiction: 'WA'`
-- `web/app/report/[searchId]/ReportContent.tsx` — section 8.5 renamed to "8.5 Courts, Enforcement & Disciplinary"; `fwoItems`, `vicBpcItems`, and `waBuildingEnergyItems` appended to `courtItems`; synthetic SearchResult objects for each new scraper passed in `searchResults` prop; `s85Risk` baseline extended to include all three new scraper statuses
-
-### Conventions
-
-- **`riskGrouper.ts` required no changes for Phase 6c**: PAYMENT trigger for `fwo` and LICENSING triggers for `vicBpc` and `waBuildingEnergy` were already written ahead of time (lines 173–247).
-- **`page.tsx` was not edited**: consistent with all prior phases — all rendering changes go in `ReportContent.tsx`, not the Server Component shell.
-- **All three scrapers are independent**: no shared promises needed; they run fully independently in `Promise.all`.
-- **Each new `ResultItem` carries `jurisdiction`**: `fwo` items set `jurisdiction: 'Federal'`, `vicBpc` items set `'VIC'`, `waBuildingEnergy` items set `'WA'`. The existing `showJurisdiction` prop on section 8.5 renders jurisdiction badges without any component changes.
-- **`nameMatchesEntity` guards all three scrapers**: FWO and WA B&E fetch name-search pages, VIC BPC fetches the full register. All three filter results client-side by requiring every significant word of the company name to appear in the result text — same approach as `modernSlavery.js` `isEntityMatch()`.
-- **`s85Risk` baseline includes all three new scrapers**: `isAllErrored` now checks all `austliiResults` statuses plus `fwo`, `vicBpc`, and `waBuildingEnergy` — the section is only `unavailable` if every one of them errors.
-- **`courtHits` in the entity card remains AustLII-only**: the stat label is "Court/tribunal"; FWO/VIC BPC/WA are enforcement actions, not court proceedings, so they are not folded into this count.
-
----
-
-## Phase 7a — Stripe setup + PaymentIntent flow (complete)
-
-### Key files
-
-- `web/lib/stripe.ts` — Stripe server singleton (same `globalThis` pattern as `db.ts` / `resend.ts`); exports `getStripe()`, `PAYMENT_AMOUNTS` (AUD cents keyed by `PaymentType`), and `PAYMENT_LABELS`
-- `web/app/api/payments/create-intent/route.ts` — `POST /api/payments/create-intent`: requires session; validates `paymentType` against `PAYMENT_AMOUNTS`; creates Stripe `PaymentIntent` in AUD with `userId` and `paymentType` in metadata; records `Payment` row immediately; returns `{ clientSecret }`
-- `web/app/api/payments/webhook/route.ts` — `POST /api/payments/webhook`: reads raw body via `req.text()` for Stripe signature verification; on `payment_intent.succeeded` upserts `PackBalance` — RECHECK types increment `freeChecks`, DEEP_CHECK types increment `deepChecks`; returns 500 on DB failure so Stripe retries
-- `web/components/PaymentModal.tsx` — `'use client'` overlay; fetches `clientSecret` from `create-intent` on mount; renders Stripe `<Elements>` + `<PaymentElement>`; calls `stripe.confirmPayment({ redirect: 'if_required' })` (no redirect for card payments); calls `onSuccess()` on completion
-
-### Conventions
-
-- **`MONITORING_MONTHLY` is excluded from `PAYMENT_AMOUNTS`**: it is a Stripe Subscription, not a one-time PaymentIntent. The `create-intent` route rejects it with a 400.
-- **Webhook uses `req.text()`, not `req.json()`**: Stripe signature verification requires the raw request body. `export const dynamic = 'force-dynamic'` prevents Next.js from caching the route.
-- **Webhook returns 500 on DB failure**: this signals Stripe to retry delivery. Non-DB errors (e.g. unhandled event types) return 200 `{ received: true }` so Stripe does not retry unnecessarily.
-- **`Payment` row is written in `create-intent`, not the webhook**: the row is created immediately when the PaymentIntent is created (the Stripe PI id is the stable key). The webhook only credits `PackBalance` — it does not create or update the `Payment` row.
-- **`PackBalance` is upserted, never inserted**: a user may not have a `PackBalance` row yet; `upsert` with `create` handles the first purchase. Subsequent purchases use `{ increment: N }` to avoid race conditions.
-- **Stripe CLI keys**: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, and `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` are now populated in `web/.env.local` with test-mode keys for account `acct_1TZ8MxDYgwiOmgz5`. Keys expire 2026-08-18. Run `~/bin/stripe listen --forward-to localhost:3000/api/payments/webhook` to relay test webhooks.
-
----
-
-## Phase 7b — Re-check gate + pack balance display (complete)
-
-### Key files
-
-- `web/app/api/payments/pack-balance/route.ts` — `GET ?entityAbn=&entityName=` returns `{ freeChecks, deepChecks, isRecheck }`; unauthenticated callers receive zeros with no gating; ABN is the primary match key, entity name is the fallback
-- `web/app/api/reports/save/route.ts` — extended with a re-check entitlement block: for authenticated users with a prior search on the same entity, atomically decrements one `freeCheck` via `updateMany` with `freeChecks: { gt: 0 }` condition; returns `402 { error: 'recheck_required', recheckPrice: 300 }` if balance is zero
-- `web/components/EmailGate.tsx` — accepts `isRecheck?: boolean` and `freeChecks?: number` props; shows credit count banner when credits available; shows "$3.00 per re-check" notice and changes CTA to "Pay $3.00 and re-check →" when no credits; renders `PaymentModal(RECHECK_SINGLE)` inline, calls `onSubmit` only after payment success
-- `web/app/search/SearchContent.tsx` — fetches `/api/payments/pack-balance` in a `useEffect` keyed on `step === 'email-gate'`; passes `isRecheck` and `freeChecks` to `EmailGate`; if `save` returns 402 (webhook race condition), falls back to sessionStorage preview rather than crashing
-- `web/components/ReportCard.tsx` — Re-check button is now active; with `freeChecks > 0` navigates directly to `/search?...`; with `freeChecks === 0` opens `PaymentModal(RECHECK_SINGLE)` inline and navigates after payment success; displays credit count in button label
-- `web/app/account/reports/page.tsx` — fetches `PackBalance` in the same `Promise.all` as the search list; renders a green credit count line in the page header; passes `freeChecks` to each `ReportCard`
-
-### Conventions
-
-- **`isRecheck` is derived server-side, not client-side**: the `pack-balance` route queries `Search` for a prior row with the same `userId` + `entityAbn` (or `entityName` as fallback). The client never computes this itself — it only reads the flag from the API response.
-- **ABN takes priority over name for re-check matching**: using name alone risks false positives (two unrelated companies with similar names). If `entityAbn` is present in the query params, only ABN is used for the prior-search lookup in both `pack-balance` and `save` routes.
-- **`updateMany` with `gt: 0` is the atomic decrement pattern**: using `updateMany` instead of a transaction avoids a separate `findUnique` + `update` round-trip. The returned `count` tells whether any row was actually decremented — `count === 0` means no balance was available.
-- **402 from `save` falls back to preview, not an error screen**: a 402 means the Stripe webhook hasn't fired yet (race condition). The user still sees their report via the sessionStorage preview path — the report is not lost, just not DB-persisted.
-- **`PaymentModal` is imported into both `EmailGate` and `ReportCard`**: both are `'use client'` components. Import `type { PaymentType }` is not needed — Prisma 5 generates string literal union types, so passing `'RECHECK_SINGLE'` as `paymentType` is directly assignable without a cast.
-- **Pack balance display is read-only in the reports page header**: `freeChecks` is fetched server-side in the Server Component and rendered as a static green line. The `ReportCard` receives it as a prop — no client-side fetching in the card itself.
-
----
-
-## Phase 7c — Deep check scrapers (partially complete)
-
-### Key files
-
-- `server/scrapers/asicExtract.js` — searches ASIC Connect's officer-by-name register (`searchType=OfficerPersonNm`) for each director; returns companies they are/were associated with (name, ACN, role, status); up to 4 directors, 15 companies per director, deduplicated by ACN; only runs when `isDeepCheck: true`
-- `server/scrapers/afsaNpii.js` — fetches the AFSA NPII search page to capture the JSF `ViewState`, then POSTs a debtor-name search for each director (surname + given names split from full name); parses two known table layouts defensively; up to 5 directors; only runs when `isDeepCheck: true`
-- `server/index.js` — reads `isDeepCheck` from the POST body; conditionally appends `asicExtract` and `afsaNpii` to the searches array after all base scrapers; both reuse `asicPromise` for director names (same pattern as `asicDisqualified`)
-- `web/lib/api.ts` — `runDueDiligence` accepts optional third argument `options?: { isDeepCheck?: boolean }`; merges `isDeepCheck` into the POST body alongside `BuilderInput`
-- `web/app/search/SearchContent.tsx` — defines `DEEP_CHECK_SEARCHES` (two entries); when `gate.isDeepCheck`, inserts them before `links` and marks all rows `searching`; `total` now uses `searches.length` (not the constant `INITIAL_SEARCHES.length`) so the progress bar is accurate for deep check runs
-- `web/app/report/[searchId]/ReportContent.tsx` — `asicExtract` results appended to `identityItems` in section 8.1; `afsaNpii` results prepended to `financialItems` in section 8.3; both rendered via nullable synthetic `SearchResult` objects (`asicExtractSearch`, `afsaNpiiSearch`) that are only added to `searchResults` props when the key exists in results (i.e. was a deep check run); section risk baselines include the new scraper statuses
-
-### Conventions
-
-- **Deep check scrapers are appended after the base searches array is defined**: `isDeepCheck` is read from the request body, then `searches.push(...)` is called conditionally. This keeps the base searches array clean and avoids conditional entries mid-array.
-- **Both deep check scrapers share `asicPromise`**: they await the existing ASIC Connect result to extract director names, avoiding a second HTTP round-trip to ASIC. Same pattern as `asicDisqualified`.
-- **Nullable synthetic SearchResult pattern for optional scrapers**: `asicExtractSearch` and `afsaNpiiSearch` are typed `SearchResult | null`. The `searchResults` prop uses `.filter(Boolean) as SearchResult[]` to exclude them on non-deep reports — no ghost rows or undefined handling needed downstream.
-- **`total` must use `searches.length`, not `INITIAL_SEARCHES.length`**: the progress bar denominator is the live state array, not the constant, so deep check runs (which have 2 extra rows) show accurate progress.
-
-### ⚠️ Incomplete — requires paid ASIC Data API key
-
-The spec calls for `asicExtract` to return the **full historical director list** (including resigned/former directors of the target company) and the **charges register** for the target company. These are not implemented:
-
-- **What is implemented**: companies that current directors are associated with (for phoenix-risk detection). This correctly feeds the riskGrouper CORPORATE/INSOLVENCY triggers and the `ReportContent` section 8.1 display.
-- **What is missing**: resigned/former directors of the target entity itself; per-charge detail from the charges register (only the count is available from the regular `asic.js` scrape).
-- **Why**: ASIC Connect's public website does not expose historical officer records without session/ViewState complexity. The paid ASIC Data API at `data.asic.gov.au` provides clean endpoints for both.
-- **To complete**: set `ASIC_DATA_API_KEY` in `server/.env`, then in `asicExtract.js` add a branch at the top of `searchAsicExtract()`:
-  ```js
-  const apiKey = process.env.ASIC_DATA_API_KEY;
-  if (apiKey && acn) return searchViaDataApi(acn, apiKey);
-  // existing ASIC Connect officer search falls through as the fallback
-  ```
-  The `searchViaDataApi` function should call `GET https://data.asic.gov.au/api/v1/companies/{acn}/officers?includeFormer=true` and `GET .../charges` and map the responses to the same `ResultItem` shape. The rest of the pipeline (riskGrouper, ReportContent) requires no changes.
-
----
-
-## Phase 8a — BullMQ + Redis setup + monitoring worker (complete)
-
-### Key files
-
-- `web/lib/redis.ts` — ioredis singleton (`getRedis()`); uses same `globalThis` pattern as `db.ts` and `stripe.ts`; `maxRetriesPerRequest: null` is required for BullMQ Queue connections
-- `web/lib/queues/monitoring.ts` — BullMQ `Queue` singleton (`getMonitoringQueue()`); exports `MonitoringJobData` interface and `enqueueMonitoringJob(data, opts?)` helper; default job options: 3 attempts, exponential backoff (5s base), 24h completed retention, 7-day failed retention
-- `web/workers/monitoring.ts` — standalone BullMQ `Worker`; creates its own Redis connection (required — workers use blocking `BLPOP` and must not share the Queue connection); runs a fresh search, diffs against the most recent `Search.reportJson` for the entity, and bulk-inserts `Alert` rows via `prisma.alert.createMany`
-
-### Conventions
-
-- **Workers must use a separate Redis connection from the Queue**: BullMQ workers issue blocking `BLPOP` commands; sharing the same ioredis instance with a Queue causes connection stalls. `web/lib/redis.ts` (`getRedis()`) is for Queue/Next.js use only — workers in `web/workers/` create their own `new Redis(...)` directly.
-- **First monitoring run establishes the baseline — no alerts on first run**: when there is no prior `Search` row for the user+entity, the worker saves the new results and returns. Alerts only fire on the second and subsequent runs when a diff is possible. This is by design.
-- **ABN is the primary diff key in the worker**: the prior-search lookup uses `{ userId, entityAbn }` when `entityAbn` is present, falling back to `{ userId, entityName }`. Consistent with the same pattern in `pack-balance` and `save` routes.
-- **`detectChanges` covers all six `AlertType` values**: LICENCE_CHANGE (QBCC count or status), QBCC_ADJUDICATION (new adjudication decisions), INSOLVENCY_EVENT (ASIC insolvency notices), ATO_DEBT_FLAG (ATO debt disclosures), COURT_DECISION (all AustLII jurisdictions combined), FWO_ENFORCEMENT (Fair Work outcomes). Each category compares raw result counts between new and prior `reportJson`.
-- **Worker is run as a separate process**: `npm run worker:monitoring` (from `web/`) starts the worker via `tsx workers/monitoring.ts`. Requires `REDIS_URL`, `DATABASE_URL`, and `SCRAPING_SERVICE_URL` env vars. `tsx` is a devDependency for this purpose.
-- **`enqueueMonitoringJob` is the only public enqueue interface**: Phase 8b calls `enqueueInitialMonitoringJobs` (which wraps it) after creating a `MonitoringSubscription`. Do not call `getMonitoringQueue().add(...)` directly outside of `lib/queues/monitoring.ts`.
-
----
-
-## Phase 8b — Monitoring subscription purchase flow (complete)
-
-### Key files
-
-- `web/app/api/monitoring/route.ts` — `GET` lists active `MonitoringSubscription` rows for the session user; `POST` creates a Stripe Customer + Subscription (`default_incomplete`, expands `latest_invoice.payment_intent`) and upserts a `MonitoringSubscription` row (`active: true`), then enqueues initial jobs; `DELETE` cancels the Stripe subscription and sets `active: false`
-- `web/components/MonitoringSubscribeModal.tsx` — `'use client'` two-step modal: entity name/ABN form (step 1, skipped when pre-filled) → Stripe `PaymentElement` (step 2); follows the same `stripe.confirmPayment({ redirect: 'if_required' })` pattern as `PaymentModal`
-- `web/app/account/monitoring/page.tsx` — Server Component; queries Prisma directly for active subscriptions; passes serialised data to `MonitoringContent`
-- `web/app/account/monitoring/MonitoringContent.tsx` — `'use client'`; renders subscription list with entity name, next check dates, cancel button; "Monitor a builder" button opens `MonitoringSubscribeModal`; calls `router.refresh()` after successful subscription
-
-### Conventions
-
-- **`MonitoringSubscription` is created as `active: true` immediately in the POST handler**: the subscription appears in the dashboard as soon as payment is initiated. If Stripe later cancels (failed payment or non-payment), the `customer.subscription.deleted` webhook sets `active: false`. Do not create it as `active: false` and rely on `customer.subscription.updated` for activation — that introduces webhook-latency lag before the subscription appears in the dashboard.
-- **Only `customer.subscription.deleted` is handled in the webhook**: activation is synchronous (POST sets `active: true`); the webhook only handles deactivation. Do not add a `customer.subscription.updated` activation handler.
-- **`upsert` on `userId_entityAbn` handles re-subscription after cancellation**: the `@@unique([userId, entityAbn])` constraint means a second subscription for the same entity would violate the constraint. `upsert` resets `stripeSubId`, `active`, and the check dates on re-subscribe, and also cancels any lingering orphaned Stripe subscription before creating a new one.
-- **`STRIPE_PRICE_MONITORING_MONTHLY` env var** (not `STRIPE_MONITORING_PRICE_ID`) — matches the key already in `.env.local.example`. The POST route returns 503 if this is unset.
-- **`enqueueInitialMonitoringJobs` is the public interface for scheduling**: it wraps `enqueueMonitoringJob` three times with 24h, 7d, and 30d delays; job IDs are `${subscriptionId}-daily`, `${subscriptionId}-weekly`, `${subscriptionId}-monthly` for BullMQ deduplication.
-- **`MonitoringSubscribeModal` accepts optional `initialEntityName` / `initialEntityAbn` props**: when pre-filled (e.g. from a future report-screen "Monitor this builder" button), it skips the entity form and calls `POST /api/monitoring` on mount. Without pre-fill it shows the entity form as step 1.
-
----
-
-## Phase 8c — Alert system + alert email (complete)
-
-### Key files
-
-- `web/app/api/alerts/route.ts` — `GET /api/alerts?read=true|false` returns the session user's alerts (up to 100, newest first); omit the param to return all
-- `web/app/api/alerts/[id]/route.ts` — `PATCH /api/alerts/:id` marks a single alert as read; ownership is verified against the session before updating
-- `web/emails/WatchlistAlert.tsx` — React Email template; accepts `entityName`, `entityAbn`, `alerts: { alertType, description }[]`, and `reRunUrl`; renders one labelled row per alert type with a "Re-run Search ($3)" CTA
-- `web/app/account/alerts/page.tsx` — Server Component; queries `prisma.alert.findMany` directly (no HTTP hop); serialises `createdAt` to ISO string before passing to `AlertsContent`
-- `web/app/account/alerts/AlertsContent.tsx` — `'use client'`; Unread/All tab switcher; colour-coded alert type badges; per-alert "Re-run search ($3)" link navigates to `/search?companyName=...&abn=...`; "Mark read" button calls `PATCH /api/alerts/:id`
-
-### Conventions
-
-- **`AlertType` is defined as a local string literal union in `AlertsContent.tsx`**: do not import `AlertType` from `@prisma/client` in client components — it bundles server-only code. Mirror the enum values as a `type` string union instead.
-- **Alert email is best-effort in the worker**: `resend.emails.send` is wrapped in a try/catch; errors are logged and swallowed. The BullMQ job completes successfully regardless of email delivery. The `Resend` instance is only created when `RESEND_API_KEY` is set — if unset, email is silently skipped.
-- **`NEXTAUTH_URL` is used to build the re-run URL in the worker**: `${NEXTAUTH_URL}/search?companyName=...&abn=...`. Ensure this env var is set in the worker process alongside `REDIS_URL`, `DATABASE_URL`, and `SCRAPING_SERVICE_URL`.
-- **Worker imports Resend directly, not via `getResend()`**: the `getResend()` singleton in `web/lib/resend.ts` uses `globalThis` caching for Next.js hot-reload safety. The worker is a plain Node process where that pattern is unnecessary; a module-level `new Resend(...)` is simpler and correct.
-- **The "Alerts" tab in `AccountTabNav` was already wired** to `/account/alerts` before this phase — no changes to `AccountTabNav` were needed.
-
----
-
-## Phase 9a — Watchlist (complete)
-
-### Key files
-
-- `web/app/api/watchlist/route.ts` — `GET` returns all watchlist items with `lastSearch` joined (id, createdAt, riskSummary, isDeepCheck); `POST` upserts on `@@unique([userId, entityAbn])` — updates `entityName` and `lastSearchId` on re-add; `DELETE` removes by `entityAbn`
-- `web/app/account/watchlist/page.tsx` — Server Component; queries `prisma.watchlistItem.findMany` (with `lastSearch` include) and `prisma.packBalance.findUnique` in a `Promise.all`; serialises `Date` → ISO string before passing to `WatchlistContent`
-- `web/app/account/watchlist/WatchlistContent.tsx` — `'use client'`; renders builder cards with risk badge and staleness indicator; Re-check button links directly to `/search?...` when `freeChecks > 0`, opens `PaymentModal('RECHECK_SINGLE')` when 0; Remove calls `DELETE /api/watchlist` and optimistically updates local state
-- `web/app/report/[searchId]/ReportContent.tsx` — added `watchlisted`, `watchlistEnabled`, `watchlistLoading` state; a `useEffect` on `input.abn` that calls `GET /api/watchlist` to determine current state (sets `watchlistEnabled = false` on 401 so button is hidden for unauthenticated users); `handleWatchlistToggle` calls POST or DELETE; toggle button rendered at the bottom of the entity card
-
-### Conventions
-
-- **Watchlist requires an ABN**: `WatchlistItem.entityAbn` is non-nullable and the unique key is `@@unique([userId, entityAbn])`. The watchlist toggle in `ReportContent` is only shown when `watchlistEnabled` is true — that flag is only set when `GET /api/watchlist` returns 200 (i.e. the user is authenticated) and `input.abn` is non-empty.
-- **`watchlistEnabled` hides the button for unauthenticated users**: rather than importing `useSession`, `ReportContent` infers auth state from the `GET /api/watchlist` response (401 → hide, 200 → show). This avoids a new hook import and handles the anonymous-report case gracefully.
-- **`upsert` on `userId_entityAbn` handles re-adding after removal**: the POST route uses `upsert` so adding a previously-removed entity just refreshes `entityName` and `lastSearchId` without violating the unique constraint.
-- **`lastSearchId` is set at add-time, not updated automatically**: when the user adds a builder from a report, `searchId` is passed as `lastSearchId`. It is updated on subsequent adds (POST upsert). It is not automatically updated when a re-check search completes — a future phase can wire that by calling `POST /api/watchlist` from the save route.
-- **Re-check flow is identical to `ReportCard`**: credits > 0 → navigate to `/search?...`; credits = 0 → `PaymentModal('RECHECK_SINGLE')` → navigate on success. The credit is debited atomically in `POST /api/reports/save`, not upfront.
-- **The "Watchlist" tab in `AccountTabNav` was already wired** to `/account/watchlist` before this phase — no changes to `AccountTabNav` were needed.
-
----
-
-## Phase 9b — Project timeline (complete)
-
-### Key files
-
-- `web/app/api/timeline/route.ts` — `POST`: upserts a `ProjectTimeline` row for the given `searchId`; verifies `Search.userId === session.user.id` before writing; uses `upsert` on the `searchId` unique constraint so re-saves are idempotent
-- `web/app/api/timeline/[searchId]/route.ts` — `GET`: returns `{ timeline: null }` when none exists (never 404); `PATCH`: partial update — only keys present in the body are applied; both verify ownership via `userId` on the existing row
-- `web/components/ProjectTimeline.tsx` — `'use client'` collapsible panel; collapsed by default; fetches `GET /api/timeline/:searchId` on mount and pre-populates the form when data exists; `exists` flag drives POST vs PATCH on save; hidden for `searchId === 'preview'` and unauthenticated users (401 response); `paymentSchedule` entries are managed as a local array with add/remove controls
-- `web/app/report/[searchId]/ReportContent.tsx` — imports and renders `<ProjectTimeline searchId={searchId} readOnly={readOnly} />` below the disclaimer block
-
-### Conventions
-
-- **Two API files, not one**: `POST` (create) lives in `web/app/api/timeline/route.ts`; `GET` and `PATCH` live in `web/app/api/timeline/[searchId]/route.ts`. The spec notation `PATCH /:searchId` implies a dynamic segment, which requires a separate file in Next.js App Router.
-- **POST uses `upsert`, not `create`**: the `searchId` column is `@unique`, so a duplicate save (e.g. user refreshes) upserts cleanly rather than throwing a unique constraint error. This makes the POST route safe to call multiple times.
-- **GET returns `{ timeline: null }` on miss, not 404**: the component checks `data.timeline` truthiness to decide whether to pre-populate the form. A 404 would require special error handling in the component; a null payload keeps the logic uniform.
-- **`Prisma.InputJsonValue` cast required for `paymentSchedule`**: Prisma's `Json` field type does not accept typed arrays directly. Cast via `as unknown as Prisma.InputJsonValue` in both route files — the runtime supports the array; the type system does not without the cast.
-- **Auth inferred from API response, not `useSession`**: the component sets `authd = false` on a 401 from the GET and hides itself — consistent with the watchlist toggle pattern in `ReportContent` (Phase 9a). No new hook imports needed.
-- **`amountCents` stored as integer cents, displayed as dollars**: the component converts display input (`"1500"`) to cents (`150000`) via `displayToCents` and back with `centsToDisplay` — the database always holds cents.
-
----
-
-## Phase 9c — Email sequence engine (complete)
-
-### Key files
-
-- `web/lib/queues/emailSequence.ts` — BullMQ `Queue` singleton (`getEmailSequenceQueue()`); exports `SequenceKey` type, `SEQUENCE_DEFS` (subject + next-step delay per step), `SEQUENCE_FIRST_DELAY` (delay before step 0), and `enqueueSequence(userId, searchId, sequenceKey)` — creates `EmailSequenceState` row + enqueues first job with idempotency guard
-- `web/workers/emailSequence.ts` — standalone BullMQ `Worker`; sends step email via Resend, advances `EmailSequenceState.step` and enqueues next-step job with delay, or marks `completed = true` when all steps are done; run with `npm run worker:emailSequence`
-- `web/app/api/reports/save/route.ts` — extended to call `enqueueSequence` after report save for authenticated users; selects sequences from `FINDINGS | CLEAN` (based on riskGroups) + `BEFORE_SIGN | DURING_BUILD | SUBCONTRACTOR` (based on persona + projectStage) + `REENGAGEMENT` (all users)
-
-### Conventions
-
-- **`enqueueSequence` owns both the DB row and the BullMQ job**: it creates `EmailSequenceState` and calls `getEmailSequenceQueue().add(...)` in one place. Do not split these — the DB row must exist before the job fires so the worker can load it.
-- **Idempotency guard in `enqueueSequence`**: `findFirst` checks for an existing incomplete row matching `{ userId, searchId, sequenceKey, completed: false }` before creating. Re-running the same search (re-check) does not spawn duplicate sequences.
-- **Step-number guard in the worker**: `processJob` rejects the job if `state.step !== job.data.step`. Combined with BullMQ's `jobId: \`${stateId}-step-${N}\`` deduplication, this prevents any step from sending twice.
-- **`SEQUENCE_FIRST_DELAY` controls the initial delay**: step 0 for `REENGAGEMENT` is delayed 14 days; all others fire immediately. `enqueueSequence` passes this as the BullMQ job `delay` and also pre-computes `nextSendAt` for the DB row.
-- **`StepDef.nextStepDelayMs` drives the chain**: after sending step N, the worker reads `SEQUENCE_DEFS[key][N].nextStepDelayMs`. If defined, it updates the state and enqueues step N+1 with that delay. If undefined (last step), it marks the sequence complete.
-- **Worker uses `new PrismaClient()` directly, not `lib/db`**: consistent with `workers/monitoring.ts`. The `globalThis` singleton in `lib/db` is a Next.js hot-reload safeguard — unnecessary in a standalone worker process.
-- **Email body is inline HTML for Phase 9c**: `renderStepEmail()` in the worker generates simple but functional HTML per sequence key/step. Phase 9d replaces this with `render(<BeforeYouSign .../>)` etc. using React Email templates.
-- **Sequences are authenticated-user only**: `EmailSequenceState.userId` is non-nullable. The save route only calls `enqueueSequence` when `session?.user?.id` is present. Anonymous searches (no session) skip all email sequences.
-- **`RECHECK_30D`, `RECHECK_90D`, `PAYMENT_DUE` are now fully triggered (Phase 9e)**: `RECHECK_30D` and `RECHECK_90D` are enqueued from `reports/save` for contracted/underway homeowners and developers; `PAYMENT_DUE` is enqueued from the timeline POST route with a computed `initialDelay` of `milestoneDate − 2 days − now`.
-
----
-
-## Phase 9d — Email sequence templates (part 1) (complete)
-
-### Key files
-
-- `web/emails/BeforeYouSign.tsx` — pre-contract homeowner/developer email; `step` prop controls two variants: step 0 = full pre-signing checklist (HWI, QBCC, solicitor sharing, insolvency check); step 1 = 3-day reminder
-- `web/emails/DuringBuild.tsx` — contracted-user email; `step` prop controls two variants: step 0 = 4 watch-items + monitoring CTA + secondary report link; step 1 = 30-day re-check prompt; accepts `monitoringUrl` prop
-- `web/emails/SubcontractorOnboarding.tsx` — subcontractor/supplier email; 4 numbered steps: keep report, PPSR registration, trade credit insurance, milestone re-checks
-- `web/emails/FindingsAlert.tsx` — significant-findings email; renders one card per `riskGroups[]` entry with group-specific recommended action; amber warning banner at top
-- `web/emails/CleanReport.tsx` — clean-report email; green clear banner; `persona` prop selects one of four next-step lists (`HOMEOWNER | DEVELOPER | SUBCONTRACTOR | LENDER`) or a `DEFAULT` fallback
-- `web/workers/emailSequence.ts` — `renderStepEmail()` is now `async`; dispatches to the correct React Email template via `render()` per `sequenceKey`; `REENGAGEMENT | RECHECK_30D | RECHECK_90D | PAYMENT_DUE` fall through to the plain HTML fallback (Phase 9e)
-
-### Conventions
-
-- **`renderStepEmail` is `async` from Phase 9d onwards**: `render()` from `@react-email/components` returns a `Promise<string>`. All callers must `await` it.
-- **Worker now queries `persona` and `riskSummary` from `Search`**: the Prisma select in `processJob` was extended to include both fields. `riskSummary` is JSON-parsed into `RiskGroupResult[]` and mapped to `{ label, description }` before being passed to `FindingsAlert`. Parse failure is caught and swallowed — the template receives an empty array and still renders.
-- **`monitoringUrl` is built from `APP_URL` in the worker, not passed as a prop from outside**: `${APP_URL}/account/monitoring` is constructed in `processJob` and forwarded to `DuringBuild`. Templates never construct URLs themselves.
-- **Multi-step templates use a `step: number` prop, not separate components**: `BeforeYouSign` and `DuringBuild` render different JSX trees based on `step`. This keeps the `switch` in `renderStepEmail` simple — one case per `sequenceKey`, not per step.
-- **`CleanReport` persona lookup uses a `DEFAULT` fallback**: `NEXT_STEPS[persona ?? 'DEFAULT'] ?? NEXT_STEPS.DEFAULT` handles null/undefined persona and any future persona values gracefully without throwing.
-- **All templates follow the same visual structure as existing templates**: dark `#1A3A5C` header, white card body, `#F4F6F9` page background, `#EEF1F6` dividers — import the same style constants pattern from `ReportEmail.tsx` and `WatchlistAlert.tsx`.
-- **Phase 9e templates (`REENGAGEMENT`, `RECHECK_30D`, `RECHECK_90D`, `PAYMENT_DUE`) are still plain HTML**: the `default` branch in `renderStepEmail` is retained as a fallback; Phase 9e replaces it with proper React Email components.
-
----
-
-## Phase 9e — Email sequence templates (part 2) + re-engagement (complete)
-
-### Key files
-
-- `web/emails/ReEngagement.tsx` — 14-day no-engagement email; props: `entityName`, `entityAbn?`, `reportUrl`; body lists all checked databases to re-surface the report's value
-- `web/emails/RecheckReminder.tsx` — single template for 30-day and 90-day intervals; `dayCount` prop drives header subtitle and body copy; copy is slightly longer for `dayCount >= 60`
-- `web/emails/PaymentDueReminder.tsx` — payment milestone reminder; props: `entityName`, `entityAbn?`, `reportUrl`, `milestoneLabel`, `milestoneDateFormatted`, `amountFormatted`; blue milestone banner at top; payment protection checklist below
-- `web/emails/PasswordReset.tsx` — password reset email; props: `name`, `resetUrl`; 1-hour expiry stated in body and footer
-- `web/app/api/auth/forgot-password/route.ts` — `POST /api/auth/forgot-password`: always returns 200 (prevents user enumeration); only sends if user exists with `passwordHash`; stores token in `VerificationToken` with identifier prefix `password-reset:{email}` and 1-hour expiry
-- `web/app/api/auth/reset-password/route.ts` — `POST /api/auth/reset-password`: validates token + expiry; atomically updates `passwordHash` and deletes the token in a `$transaction`
-- `web/app/auth/forgot-password/page.tsx` — `'use client'` form; shows "Check your inbox" confirmation state after submit regardless of outcome (consistent with API response)
-- `web/app/auth/reset-password/page.tsx` — `'use client'`; reads `?token=&email=` from URL via `useSearchParams()` (wrapped in `<Suspense>`); redirects to `/auth/login?reset=1` on success
-
-### Conventions
-
-- **`RECHECK_30D` and `RECHECK_90D` are enqueued from `reports/save`**: triggered for `HOMEOWNER` and `DEVELOPER` users at `projectStage === 'contracted' || 'underway'`; both use the default `SEQUENCE_FIRST_DELAY` (30 and 90 days from enqueue time). Not triggered for unsigned/pre-sign stages.
-- **`PAYMENT_DUE` is enqueued from the timeline POST route, not from `reports/save`**: when a timeline is created with a payment schedule, the route finds the soonest milestone more than 2 days in the future and passes `initialDelay = milestoneDate − 2 days − now` to `enqueueSequence`. If no qualifying milestone exists, no job is enqueued.
-- **`PAYMENT_DUE` worker queries the timeline live at fire time**: the worker calls `prisma.projectTimeline.findUnique({ where: { searchId } })` and re-identifies the soonest upcoming milestone at fire time. This means the email content reflects any schedule edits made after the job was enqueued — the job controls *when* the email sends; the live query controls *what* it says.
-- **`PaymentDueReminder` milestone props are pre-formatted strings**: `milestoneLabel`, `milestoneDateFormatted` (e.g. `"25 June 2026"`), and `amountFormatted` (e.g. `"$25,000"`) are formatted in the worker using `toLocaleDateString('en-AU')` and `toLocaleString('en-AU')`. Templates never format raw dates or numbers themselves.
-- **Password reset reuses `VerificationToken`, scoped by identifier prefix**: `identifier: "password-reset:{email}"` distinguishes reset tokens from email verification tokens (`identifier: "{email}"`). Both share the same table and unique constraint. Old reset tokens are deleted before creating a new one to avoid constraint conflicts.
-- **`Preview` component requires string children, not `ReactNode`**: the `@react-email/components` `Preview` type is `children: string`. When a template prop (e.g. `dayCount: number`) appears in a `Preview`, it must be wrapped in a template literal: `` `${dayCount}-day re-check reminder` ``.
-- **The `default` branch in `renderStepEmail` is now unreachable**: all nine `SequenceKey` values have explicit `case` branches. The switch is exhaustive; TypeScript will catch any new `SequenceKey` added to the union without a matching case.
-
----
-
-## Phase 10b — Staleness banners + re-check prompts (complete)
-
-### Key files
-
-- `web/components/ReportCard.tsx` — staleness badge (>30 days) is now a `<button>` that calls `handleRecheck()`; text discloses price inline: "Xd old — re-run $3" (no credits) or "Xd old — re-check (N credits)" (credits available)
-- `web/app/report/[searchId]/ReportContent.tsx` — added `reportCreatedAt` state populated from `data.createdAt` in the API response; renders an amber banner above the entity card when the report is >30 days old, non-preview, and non-readonly; banner includes "Re-run $3" and "Deep check $15" links using actual Stripe prices
-
-### Conventions
-
-- **`reportCreatedAt` is only set for DB-backed reports**: the sessionStorage preview path never sets it, so `isStale` is always `false` for preview reports — the banner is intentionally suppressed there.
-- **Staleness banner is suppressed for `readOnly` shared reports**: the banner guard is `isStale && !readOnly && searchId !== 'preview'`. Shared-link viewers cannot re-run the search so the banner is irrelevant to them.
-- **Prices in the banner use actual Stripe amounts (`RECHECK_SINGLE` = $3, `DEEP_CHECK_SINGLE` = $15)**: the spec copy said "$3 / $18" but the configured prices are $3 and $15 — the implementation uses the correct values from `lib/stripe.ts`.
-- **Deep-check link passes `?deepCheck=1`**: `SearchContent` does not yet read this param, but the URL param is wired for a future phase to auto-select the deep-check option. The standard re-check link uses the same `/search?companyName=...&abn=...` format as all other re-check entry points.
-- **Staleness badge in `ReportCard` triggers the same `handleRecheck()` as the existing Re-check button**: clicking either the inline badge or the action-row button produces identical behaviour (navigate if credits; open `PaymentModal` if no credits).
-
----
-
-## Phase 10a — Builder comparison view (complete)
-
-### Key files
-
-- `web/app/compare/page.tsx` — async Server Component; reads `?ids=` (comma-separated search IDs); validates ≤ 3 IDs (error page for 0 or >3); fetches `Search` rows directly from Prisma; renders a responsive grid of `ComparisonColumn` components
-- `web/components/ComparisonColumn.tsx` — pure server component (no `'use client'`); accepts `ComparisonData` prop; renders entity header, per-section risk rows, triggered risk group badges, and a "View full report" link
-
-### Conventions
-
-- **`compare/page.tsx` is an async Server Component with no Suspense wrapper**: unlike client components using `useSearchParams()`, Server Components can read `searchParams` directly as a prop — no Suspense boundary is needed.
-- **`ComparisonColumn` has no `'use client'` marker**: it uses no hooks, state, or browser APIs. All data is passed as serialised props from the server page. `RiskBadge` and `Link` both work in server components.
-- **Per-section risk is derived from `riskSummary` alone**: the comparison view does not have access to individual scraper statuses (those live in `reportJson`). Sections with no triggered risk group show `'clear'` rather than `'unavailable'` — an acceptable approximation for a summary comparison. Click-through to the full report shows the true status.
-- **`deriveSectionRisk` mirrors `ReportContent.deriveRiskLevel` but without the baseline parameter**: the comparison column always assumes a `'clear'` baseline (no scraper status data available). The same anchor strings (`#s81`–`#s85`) are used as keys.
-- **`ComparisonData` interface is defined and exported from `ComparisonColumn.tsx`**: the page imports it from the component file, keeping the data contract co-located with the component that consumes it.
-- **Column order follows the `ids` query param, not database insertion order**: `prisma.search.findMany` returns rows in arbitrary order; the page re-orders via `ids.map(id => searches.find(...))` to preserve the user's intended column arrangement.
-- **Max 3 builders is enforced in `page.tsx` before any Prisma call**: the check on `ids.length > MAX_BUILDERS` short-circuits immediately, returning an error page without hitting the database.
-
----
-
-## Phase 10c — WCAG + performance + analytics (complete)
-
-### Key files
-
-- `web/lib/analytics.ts` — fire-and-forget `trackEvent(event, properties?)` client helper; calls `POST /api/events` without blocking the UI
-- `web/app/api/events/route.ts` — server-side analytics endpoint; validates event name against allowlist and logs to server output (Vercel Function logs); no DB writes
-- `web/tailwind.config.ts` + `web/app/globals.css` — `text-muted` colour darkened from `#9AA5B4` to `#636B76` to meet WCAG AA 4.5:1 contrast ratio on all app backgrounds
-
-### Conventions
-
-- **`trackEvent` is fire-and-forget**: it returns `void` and swallows errors. Never `await` it; never branch on its result.
-- **Three tracked events**: `persona_selected` (PersonaSelector), `email_captured` (EmailGate, fires after validation, before payment gate), `partner_link_clicked` (ReportSection link-section items). These map directly to the three funnel metrics: conversion at persona step, email capture rate, manual-review link engagement.
-- **`POST /api/events` allowlist**: only the three event names above are accepted; unrecognised events receive a 400. Add new events to both `ALLOWED_EVENTS` in the route and the `trackEvent` call site.
-- **`text-muted` colour is `#636B76` everywhere** (both Tailwind config and globals.css CSS variable). Minimum contrast ratios: 5.39:1 on white, 4.76:1 on `surface-alt`, 4.98:1 on `background`, 4.84:1 on `warning-bg`. Do not use `text-text-muted` for primary content — it is for secondary/hint copy only.
-- **Focus rings use `focus-visible:` to avoid showing on mouse click**: pattern is `focus:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2` on light backgrounds; `focus:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-inset` on dark (primary) backgrounds.
-- **Label/input associations**: all `<label>` + `<input>` pairs in `SearchBar` and `EmailGate` use explicit `htmlFor`/`id` matching plus `aria-describedby` for hint text paragraphs.
-
-### Performance measurements (p90 load test — 2026-05-21)
-
-Load test: 10 sequential `POST /api/search` requests, entity "Multiplex" (name-only, all scrapers active), Express server at `localhost:3001`.
+10 sequential `POST /api/search` requests, entity "Multiplex", Express at `localhost:3001`.
 
 | Metric | Result |
 |--------|--------|
-| Cold start (run 1) | 19.1 s |
-| p50 (warm) | 0.3 s |
-| **p90 (warm)** | **0.5 s** |
-| p99 | 19.1 s |
+| Cold start | 19.1 s |
+| p50 warm | 0.3 s |
+| p90 warm | 0.5 s |
 | Target | < 45 s |
-| **Status** | **PASS ✓** |
-
-The cold-start figure (19.1 s) represents the first request after server boot with no open connections to external sites (ABR, ASIC, AustLII, etc.). Warm requests benefit from HTTP keep-alive connections to those sites and complete in < 1 s. In production the server is continuously warm; the realistic steady-state p90 is well under 5 s. Even the cold-start worst case (19.1 s) is comfortably below the 45 s target.
+| Status | PASS ✓ |
