@@ -5,21 +5,25 @@
  * Uses a dedicated Redis connection (separate from the Queue connection in
  * lib/queues/emailSequence.ts) because BullMQ workers issue blocking BLPOP
  * commands that must not share a connection with Queue's non-blocking commands.
- *
- * Phase 9c: email body is rendered as simple HTML inline.
- * Phase 9d will replace renderStepEmail() with proper React Email template imports.
  */
 
 import { Worker, Job } from 'bullmq';
 import { PrismaClient } from '@prisma/client';
 import Redis from 'ioredis';
 import { Resend } from 'resend';
+import { render } from '@react-email/components';
 import {
   type EmailSequenceJobData,
   type SequenceKey,
   SEQUENCE_DEFS,
   getEmailSequenceQueue,
 } from '../lib/queues/emailSequence';
+import { BeforeYouSign } from '../emails/BeforeYouSign';
+import { DuringBuild } from '../emails/DuringBuild';
+import { SubcontractorOnboarding } from '../emails/SubcontractorOnboarding';
+import { FindingsAlert } from '../emails/FindingsAlert';
+import { CleanReport } from '../emails/CleanReport';
+import type { RiskGroupResult } from '../src/types';
 
 const prisma = new PrismaClient();
 
@@ -33,57 +37,37 @@ const APP_URL = process.env.NEXTAUTH_URL ?? 'http://localhost:3000';
 const FROM_EMAIL = process.env.FROM_EMAIL ?? 'noreply@knowyourbuilder.com.au';
 
 // ─── Email renderer ───────────────────────────────────────────────────────────
-// Phase 9c: simple inline HTML per sequence type.
-// Phase 9d replaces this with React Email renders (import BeforeYouSign, etc.).
 
 interface EmailContext {
   entityName: string;
   entityAbn: string;
   reportUrl: string;
+  monitoringUrl: string;
   sequenceKey: SequenceKey;
   step: number;
+  persona?: string | null;
+  riskGroups: { label: string; description: string }[];
 }
 
-const bodies: Partial<Record<SequenceKey, string[]>> = {
-  BEFORE_SIGN: [
-    '<p>You recently ran a due diligence search on this builder. Before you sign any contract, share the report with your solicitor or building inspector.</p>',
-    '<p>A quick reminder — your Know Your Builder report is still available. Review it before you sign.',
-  ],
-  DURING_BUILD: [
-    '<p>Your builder check is on record. Consider setting up ongoing monitoring so you\'re alerted to any changes — licence suspensions, insolvency notices, or new court decisions — during your build.</p>',
-    '<p>It\'s been 30 days since your build started. A lot can change — consider running a re-check to confirm everything is still in order.</p>',
-  ],
-  SUBCONTRACTOR: [
-    '<p>Your subcontractor due diligence check is complete. Keep this report on file and consider checking the builder\'s QBCC licence before each payment stage.</p>',
-  ],
-  FINDINGS: [
-    '<p>Your search returned findings that warrant further review. We recommend you read the full report and, where relevant, seek legal or financial advice before proceeding.</p>',
-  ],
-  CLEAN: [
-    '<p>Great news — your search returned no significant findings. Keep this report on file, and consider re-checking closer to the contract signing date if some time has passed.</p>',
-  ],
-  REENGAGEMENT: [
-    '<p>It\'s been two weeks since your builder search. Have you made a decision? Your report is still available whenever you need it.</p>',
-  ],
-  RECHECK_30D: [
-    '<p>It\'s been 30 days since your last builder check. Builder circumstances can change — licences can be suspended, insolvency notices filed. A quick re-check takes under a minute.</p>',
-  ],
-  RECHECK_90D: [
-    '<p>90 days have passed since your last builder check. Now is a good time to re-run due diligence before any upcoming payment milestones.</p>',
-  ],
-  PAYMENT_DUE: [
-    '<p>A payment milestone is coming up. Before releasing funds, consider running a quick re-check to confirm your builder\'s licence is still current and no new notices have been filed.</p>',
-  ],
-};
+async function renderStepEmail(ctx: EmailContext): Promise<string> {
+  const { entityName, entityAbn, reportUrl, monitoringUrl, sequenceKey, step, persona, riskGroups } = ctx;
+  const abn = entityAbn || undefined;
 
-function renderStepEmail(ctx: EmailContext): string {
-  const { entityName, entityAbn, reportUrl, sequenceKey, step } = ctx;
-  const entityLabel = entityAbn ? `${entityName} (ABN&nbsp;${entityAbn})` : entityName;
-  const bodyHtml =
-    bodies[sequenceKey]?.[step] ??
-    `<p>Your Know Your Builder report is ready. <a href="${reportUrl}">View report →</a></p>`;
-
-  return `<!DOCTYPE html>
+  switch (sequenceKey) {
+    case 'BEFORE_SIGN':
+      return render(BeforeYouSign({ entityName, entityAbn: abn, reportUrl, step }));
+    case 'DURING_BUILD':
+      return render(DuringBuild({ entityName, entityAbn: abn, reportUrl, monitoringUrl, step }));
+    case 'SUBCONTRACTOR':
+      return render(SubcontractorOnboarding({ entityName, entityAbn: abn, reportUrl }));
+    case 'FINDINGS':
+      return render(FindingsAlert({ entityName, entityAbn: abn, reportUrl, riskGroups }));
+    case 'CLEAN':
+      return render(CleanReport({ entityName, entityAbn: abn, reportUrl, persona: persona ?? undefined }));
+    default: {
+      // REENGAGEMENT, RECHECK_30D, RECHECK_90D, PAYMENT_DUE — plain fallback (Phase 9e templates)
+      const entityLabel = entityAbn ? `${entityName} (ABN&nbsp;${entityAbn})` : entityName;
+      return `<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
 <body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;background:#F4F6F9;margin:0;padding:0">
@@ -95,7 +79,6 @@ function renderStepEmail(ctx: EmailContext): string {
     <div style="background:#fff;border:1px solid #D1D9E0;border-top:none;padding:24px 32px">
       <p style="color:#9AA5B4;font-size:11px;font-weight:600;letter-spacing:0.5px;text-transform:uppercase;margin:0 0 4px">REPORT FOR</p>
       <p style="color:#1A3A5C;font-size:18px;font-weight:700;margin:0 0 16px">${entityLabel}</p>
-      ${bodyHtml}
       <div style="margin-top:24px;text-align:center">
         <a href="${reportUrl}" style="background:#1A3A5C;border-radius:12px;color:#fff;display:inline-block;font-size:14px;font-weight:600;padding:14px 32px;text-decoration:none">
           View Full Report →
@@ -108,6 +91,8 @@ function renderStepEmail(ctx: EmailContext): string {
   </div>
 </body>
 </html>`;
+    }
+  }
 }
 
 // ─── Job processor ────────────────────────────────────────────────────────────
@@ -139,22 +124,34 @@ async function processJob(job: Job<EmailSequenceJobData>): Promise<void> {
   // Load entity context from the associated search (best-effort)
   let entityName = '';
   let entityAbn = '';
+  let persona: string | null = null;
+  let riskGroups: { label: string; description: string }[] = [];
   if (searchId) {
     const search = await prisma.search.findUnique({
       where: { id: searchId },
-      select: { entityName: true, entityAbn: true },
+      select: { entityName: true, entityAbn: true, persona: true, riskSummary: true },
     });
     entityName = search?.entityName ?? '';
     entityAbn = search?.entityAbn ?? '';
+    persona = search?.persona ?? null;
+    if (search?.riskSummary) {
+      try {
+        const parsed = JSON.parse(search.riskSummary) as RiskGroupResult[];
+        riskGroups = parsed.map((g) => ({ label: g.label, description: g.description }));
+      } catch {
+        // riskSummary parse failure is non-fatal
+      }
+    }
   }
 
   const reportUrl = searchId ? `${APP_URL}/report/${searchId}` : APP_URL;
+  const monitoringUrl = `${APP_URL}/account/monitoring`;
   const stepDef = SEQUENCE_DEFS[sequenceKey][step];
 
   // Send email — best-effort, never fail the job on email error
   if (resend) {
     try {
-      const html = renderStepEmail({ entityName, entityAbn, reportUrl, sequenceKey, step });
+      const html = await renderStepEmail({ entityName, entityAbn, reportUrl, monitoringUrl, sequenceKey, step, persona, riskGroups });
       await resend.emails.send({
         from: FROM_EMAIL,
         to: user.email,

@@ -598,3 +598,26 @@ The spec calls for `asicExtract` to return the **full historical director list**
 - **Email body is inline HTML for Phase 9c**: `renderStepEmail()` in the worker generates simple but functional HTML per sequence key/step. Phase 9d replaces this with `render(<BeforeYouSign .../>)` etc. using React Email templates.
 - **Sequences are authenticated-user only**: `EmailSequenceState.userId` is non-nullable. The save route only calls `enqueueSequence` when `session?.user?.id` is present. Anonymous searches (no session) skip all email sequences.
 - **`RECHECK_30D`, `RECHECK_90D`, `PAYMENT_DUE` are defined in `SEQUENCE_DEFS` but not yet triggered**: their step definitions and `SEQUENCE_FIRST_DELAY` entries are in place; Phase 9e wires them to timeline dates and re-check events via `enqueueSequence` calls with a custom `initialDelay`.
+
+---
+
+## Phase 9d — Email sequence templates (part 1) (complete)
+
+### Key files
+
+- `web/emails/BeforeYouSign.tsx` — pre-contract homeowner/developer email; `step` prop controls two variants: step 0 = full pre-signing checklist (HWI, QBCC, solicitor sharing, insolvency check); step 1 = 3-day reminder
+- `web/emails/DuringBuild.tsx` — contracted-user email; `step` prop controls two variants: step 0 = 4 watch-items + monitoring CTA + secondary report link; step 1 = 30-day re-check prompt; accepts `monitoringUrl` prop
+- `web/emails/SubcontractorOnboarding.tsx` — subcontractor/supplier email; 4 numbered steps: keep report, PPSR registration, trade credit insurance, milestone re-checks
+- `web/emails/FindingsAlert.tsx` — significant-findings email; renders one card per `riskGroups[]` entry with group-specific recommended action; amber warning banner at top
+- `web/emails/CleanReport.tsx` — clean-report email; green clear banner; `persona` prop selects one of four next-step lists (`HOMEOWNER | DEVELOPER | SUBCONTRACTOR | LENDER`) or a `DEFAULT` fallback
+- `web/workers/emailSequence.ts` — `renderStepEmail()` is now `async`; dispatches to the correct React Email template via `render()` per `sequenceKey`; `REENGAGEMENT | RECHECK_30D | RECHECK_90D | PAYMENT_DUE` fall through to the plain HTML fallback (Phase 9e)
+
+### Conventions
+
+- **`renderStepEmail` is `async` from Phase 9d onwards**: `render()` from `@react-email/components` returns a `Promise<string>`. All callers must `await` it.
+- **Worker now queries `persona` and `riskSummary` from `Search`**: the Prisma select in `processJob` was extended to include both fields. `riskSummary` is JSON-parsed into `RiskGroupResult[]` and mapped to `{ label, description }` before being passed to `FindingsAlert`. Parse failure is caught and swallowed — the template receives an empty array and still renders.
+- **`monitoringUrl` is built from `APP_URL` in the worker, not passed as a prop from outside**: `${APP_URL}/account/monitoring` is constructed in `processJob` and forwarded to `DuringBuild`. Templates never construct URLs themselves.
+- **Multi-step templates use a `step: number` prop, not separate components**: `BeforeYouSign` and `DuringBuild` render different JSX trees based on `step`. This keeps the `switch` in `renderStepEmail` simple — one case per `sequenceKey`, not per step.
+- **`CleanReport` persona lookup uses a `DEFAULT` fallback**: `NEXT_STEPS[persona ?? 'DEFAULT'] ?? NEXT_STEPS.DEFAULT` handles null/undefined persona and any future persona values gracefully without throwing.
+- **All templates follow the same visual structure as existing templates**: dark `#1A3A5C` header, white card body, `#F4F6F9` page background, `#EEF1F6` dividers — import the same style constants pattern from `ReportEmail.tsx` and `WatchlistAlert.tsx`.
+- **Phase 9e templates (`REENGAGEMENT`, `RECHECK_30D`, `RECHECK_90D`, `PAYMENT_DUE`) are still plain HTML**: the `default` branch in `renderStepEmail` is retained as a fallback; Phase 9e replaces it with proper React Email components.
