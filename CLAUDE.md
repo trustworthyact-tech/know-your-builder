@@ -646,3 +646,22 @@ The spec calls for `asicExtract` to return the **full historical director list**
 - **Password reset reuses `VerificationToken`, scoped by identifier prefix**: `identifier: "password-reset:{email}"` distinguishes reset tokens from email verification tokens (`identifier: "{email}"`). Both share the same table and unique constraint. Old reset tokens are deleted before creating a new one to avoid constraint conflicts.
 - **`Preview` component requires string children, not `ReactNode`**: the `@react-email/components` `Preview` type is `children: string`. When a template prop (e.g. `dayCount: number`) appears in a `Preview`, it must be wrapped in a template literal: `` `${dayCount}-day re-check reminder` ``.
 - **The `default` branch in `renderStepEmail` is now unreachable**: all nine `SequenceKey` values have explicit `case` branches. The switch is exhaustive; TypeScript will catch any new `SequenceKey` added to the union without a matching case.
+
+---
+
+## Phase 10a — Builder comparison view (complete)
+
+### Key files
+
+- `web/app/compare/page.tsx` — async Server Component; reads `?ids=` (comma-separated search IDs); validates ≤ 3 IDs (error page for 0 or >3); fetches `Search` rows directly from Prisma; renders a responsive grid of `ComparisonColumn` components
+- `web/components/ComparisonColumn.tsx` — pure server component (no `'use client'`); accepts `ComparisonData` prop; renders entity header, per-section risk rows, triggered risk group badges, and a "View full report" link
+
+### Conventions
+
+- **`compare/page.tsx` is an async Server Component with no Suspense wrapper**: unlike client components using `useSearchParams()`, Server Components can read `searchParams` directly as a prop — no Suspense boundary is needed.
+- **`ComparisonColumn` has no `'use client'` marker**: it uses no hooks, state, or browser APIs. All data is passed as serialised props from the server page. `RiskBadge` and `Link` both work in server components.
+- **Per-section risk is derived from `riskSummary` alone**: the comparison view does not have access to individual scraper statuses (those live in `reportJson`). Sections with no triggered risk group show `'clear'` rather than `'unavailable'` — an acceptable approximation for a summary comparison. Click-through to the full report shows the true status.
+- **`deriveSectionRisk` mirrors `ReportContent.deriveRiskLevel` but without the baseline parameter**: the comparison column always assumes a `'clear'` baseline (no scraper status data available). The same anchor strings (`#s81`–`#s85`) are used as keys.
+- **`ComparisonData` interface is defined and exported from `ComparisonColumn.tsx`**: the page imports it from the component file, keeping the data contract co-located with the component that consumes it.
+- **Column order follows the `ids` query param, not database insertion order**: `prisma.search.findMany` returns rows in arbitrary order; the page re-orders via `ids.map(id => searches.find(...))` to preserve the user's intended column arrangement.
+- **Max 3 builders is enforced in `page.tsx` before any Prisma call**: the check on `ids.length > MAX_BUILDERS` short-circuits immediately, returning an error page without hitting the database.
