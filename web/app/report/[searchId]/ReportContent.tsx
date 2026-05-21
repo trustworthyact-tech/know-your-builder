@@ -463,7 +463,7 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
             ) : (
               <Link
                 href="/"
-                className="text-white/70 hover:text-white text-xs font-semibold py-1.5 px-2 rounded transition shrink-0"
+                className="text-white/70 hover:text-white text-xs font-semibold py-1.5 px-2 rounded transition shrink-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-1 focus-visible:ring-offset-primary"
               >
                 ← New search
               </Link>
@@ -473,7 +473,7 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
               <a
                 key={id}
                 href={`#${id}`}
-                className="text-white/80 hover:text-white text-xs font-medium py-1.5 px-2 rounded hover:bg-white/10 transition whitespace-nowrap"
+                className="text-white/80 hover:text-white text-xs font-medium py-1.5 px-2 rounded hover:bg-white/10 transition whitespace-nowrap focus:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-1 focus-visible:ring-offset-primary"
               >
                 {short}
               </a>
@@ -554,7 +554,7 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
               <button
                 onClick={handleWatchlistToggle}
                 disabled={watchlistLoading}
-                className={`text-xs font-semibold rounded-lg px-3 py-1.5 transition-colors disabled:opacity-50 ${
+                className={`text-xs font-semibold rounded-lg px-3 py-1.5 transition-colors disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 ${
                   watchlisted
                     ? 'text-primary bg-primary/10 hover:bg-primary/20'
                     : 'text-text-secondary border border-border-light hover:bg-surface-alt'

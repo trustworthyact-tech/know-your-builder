@@ -27,7 +27,7 @@ export function NavBar() {
               </span>
               <button
                 onClick={() => signOut({ callbackUrl: '/' })}
-                className="text-xs font-semibold text-text-secondary hover:text-primary transition-colors"
+                className="text-xs font-semibold text-text-secondary hover:text-primary transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 rounded"
               >
                 Sign out
               </button>

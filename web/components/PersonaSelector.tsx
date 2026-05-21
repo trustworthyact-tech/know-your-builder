@@ -1,6 +1,7 @@
 'use client';
 
 import { Persona } from '@/src/types';
+import { trackEvent } from '@/lib/analytics';
 
 interface PersonaOption {
   value: Persona;
@@ -59,7 +60,7 @@ export function PersonaSelector({ onSelect }: Props) {
             <button
               key={value}
               type="button"
-              onClick={() => onSelect(value)}
+              onClick={() => { trackEvent('persona_selected', { persona: value }); onSelect(value); }}
               className="bg-surface rounded-2xl border border-border p-5 text-left hover:border-primary hover:shadow-md transition-all group focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2"
             >
               <span className="text-3xl block mb-3">{icon}</span>

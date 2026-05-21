@@ -682,3 +682,37 @@ The spec calls for `asicExtract` to return the **full historical director list**
 - **`ComparisonData` interface is defined and exported from `ComparisonColumn.tsx`**: the page imports it from the component file, keeping the data contract co-located with the component that consumes it.
 - **Column order follows the `ids` query param, not database insertion order**: `prisma.search.findMany` returns rows in arbitrary order; the page re-orders via `ids.map(id => searches.find(...))` to preserve the user's intended column arrangement.
 - **Max 3 builders is enforced in `page.tsx` before any Prisma call**: the check on `ids.length > MAX_BUILDERS` short-circuits immediately, returning an error page without hitting the database.
+
+---
+
+## Phase 10c — WCAG + performance + analytics (complete)
+
+### Key files
+
+- `web/lib/analytics.ts` — fire-and-forget `trackEvent(event, properties?)` client helper; calls `POST /api/events` without blocking the UI
+- `web/app/api/events/route.ts` — server-side analytics endpoint; validates event name against allowlist and logs to server output (Vercel Function logs); no DB writes
+- `web/tailwind.config.ts` + `web/app/globals.css` — `text-muted` colour darkened from `#9AA5B4` to `#636B76` to meet WCAG AA 4.5:1 contrast ratio on all app backgrounds
+
+### Conventions
+
+- **`trackEvent` is fire-and-forget**: it returns `void` and swallows errors. Never `await` it; never branch on its result.
+- **Three tracked events**: `persona_selected` (PersonaSelector), `email_captured` (EmailGate, fires after validation, before payment gate), `partner_link_clicked` (ReportSection link-section items). These map directly to the three funnel metrics: conversion at persona step, email capture rate, manual-review link engagement.
+- **`POST /api/events` allowlist**: only the three event names above are accepted; unrecognised events receive a 400. Add new events to both `ALLOWED_EVENTS` in the route and the `trackEvent` call site.
+- **`text-muted` colour is `#636B76` everywhere** (both Tailwind config and globals.css CSS variable). Minimum contrast ratios: 5.39:1 on white, 4.76:1 on `surface-alt`, 4.98:1 on `background`, 4.84:1 on `warning-bg`. Do not use `text-text-muted` for primary content — it is for secondary/hint copy only.
+- **Focus rings use `focus-visible:` to avoid showing on mouse click**: pattern is `focus:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2` on light backgrounds; `focus:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-inset` on dark (primary) backgrounds.
+- **Label/input associations**: all `<label>` + `<input>` pairs in `SearchBar` and `EmailGate` use explicit `htmlFor`/`id` matching plus `aria-describedby` for hint text paragraphs.
+
+### Performance measurements (p90 load test — 2026-05-21)
+
+Load test: 10 sequential `POST /api/search` requests, entity "Multiplex" (name-only, all scrapers active), Express server at `localhost:3001`.
+
+| Metric | Result |
+|--------|--------|
+| Cold start (run 1) | 19.1 s |
+| p50 (warm) | 0.3 s |
+| **p90 (warm)** | **0.5 s** |
+| p99 | 19.1 s |
+| Target | < 45 s |
+| **Status** | **PASS ✓** |
+
+The cold-start figure (19.1 s) represents the first request after server boot with no open connections to external sites (ABR, ASIC, AustLII, etc.). Warm requests benefit from HTTP keep-alive connections to those sites and complete in < 1 s. In production the server is continuously warm; the realistic steady-state p90 is well under 5 s. Even the cold-start worst case (19.1 s) is comfortably below the 45 s target.

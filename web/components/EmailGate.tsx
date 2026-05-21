@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { Persona } from '@/src/types';
 import { PaymentModal } from '@/components/PaymentModal';
+import { trackEvent } from '@/lib/analytics';
 
 const AU_STATES = ['QLD', 'NSW', 'VIC', 'WA', 'SA', 'TAS', 'NT', 'ACT'] as const;
 
@@ -64,6 +65,8 @@ export function EmailGate({ persona, entityName, isRecheck = false, freeChecks =
       projectType,
       isDeepCheck,
     };
+
+    trackEvent('email_captured', { persona, isDeepCheck: data.isDeepCheck, isRecheck });
 
     if (isRecheck && freeChecks === 0) {
       // Gate behind payment — open modal, proceed after success
@@ -129,13 +132,17 @@ export function EmailGate({ persona, entityName, isRecheck = false, freeChecks =
         >
           {/* Email */}
           <div className="mb-5">
-            <label className="block text-sm font-semibold text-text-secondary mb-1">
-              Email <span className="text-danger">*</span>
+            <label htmlFor="eg-email" className="block text-sm font-semibold text-text-secondary mb-1">
+              Email <span className="text-danger" aria-hidden="true">*</span>
+              <span className="sr-only">(required)</span>
             </label>
-            <p className="text-xs text-text-muted mb-1.5">
+            <p id="eg-email-hint" className="text-xs text-text-muted mb-1.5">
               We'll send your report here
             </p>
             <input
+              id="eg-email"
+              aria-describedby="eg-email-hint"
+              aria-required="true"
               type="email"
               value={email}
               onChange={(e) => { setEmail(e.target.value); setEmailError(''); }}
@@ -153,10 +160,11 @@ export function EmailGate({ persona, entityName, isRecheck = false, freeChecks =
           {/* State + Project type */}
           <div className="grid grid-cols-2 gap-4 mb-6">
             <div>
-              <label className="block text-sm font-semibold text-text-secondary mb-1">
+              <label htmlFor="eg-state" className="block text-sm font-semibold text-text-secondary mb-1">
                 State
               </label>
               <select
+                id="eg-state"
                 value={projectState}
                 onChange={(e) => setProjectState(e.target.value)}
                 className="w-full border border-border rounded-lg px-3.5 py-3 text-sm text-text-primary bg-surface focus:outline-none focus:ring-2 focus:ring-primary-light focus:border-primary-light transition appearance-none"
@@ -169,10 +177,11 @@ export function EmailGate({ persona, entityName, isRecheck = false, freeChecks =
             </div>
 
             <div>
-              <label className="block text-sm font-semibold text-text-secondary mb-1">
+              <label htmlFor="eg-project-type" className="block text-sm font-semibold text-text-secondary mb-1">
                 Project type
               </label>
               <select
+                id="eg-project-type"
                 value={projectType}
                 onChange={(e) => setProjectType(e.target.value)}
                 className="w-full border border-border rounded-lg px-3.5 py-3 text-sm text-text-primary bg-surface focus:outline-none focus:ring-2 focus:ring-primary-light focus:border-primary-light transition appearance-none"

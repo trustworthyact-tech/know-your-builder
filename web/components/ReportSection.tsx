@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { SearchResult, ResultItem } from '@/src/types';
 import { ResultCard } from './ResultCard';
 import { RiskBadge, RiskLevel } from './RiskBadge';
+import { trackEvent } from '@/lib/analytics';
 
 interface Props {
   id: string;
@@ -52,7 +53,7 @@ export function ReportSection({
       {/* Section header — tappable on mobile to collapse */}
       <button
         type="button"
-        className="w-full flex items-center justify-between px-5 py-4 bg-primary text-white hover:bg-primary-light transition md:cursor-default"
+        className="w-full flex items-center justify-between px-5 py-4 bg-primary text-white hover:bg-primary-light transition md:cursor-default focus:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-inset"
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
         aria-controls={`${id}-body`}
@@ -101,7 +102,8 @@ export function ReportSection({
                   target="_blank"
                   rel="noopener noreferrer"
                   aria-label={`${item.title} (opens in new tab)`}
-                  className="flex items-center justify-between py-3 px-1 gap-3 hover:bg-surface-alt/50 transition group"
+                  onClick={() => trackEvent('partner_link_clicked', { title: item.title, url: item.url })}
+                  className="flex items-center justify-between py-3 px-1 gap-3 hover:bg-surface-alt/50 transition group focus:outline-none focus-visible:ring-2 focus-visible:ring-primary rounded"
                 >
                   <div className="min-w-0">
                     {item.jurisdiction && (

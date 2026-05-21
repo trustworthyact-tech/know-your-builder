@@ -198,7 +198,6 @@ export function HomeSearch() {
           type="button"
           onClick={() => setView('upload')}
           className="text-sm text-primary-light font-medium underline underline-offset-2 hover:text-primary transition"
-          aria-label="Upload a building contract to extract builder details automatically"
         >
           Or upload your contract to auto-fill →
         </button>

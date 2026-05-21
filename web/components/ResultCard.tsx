@@ -18,7 +18,7 @@ export function ResultCard({ item, showJurisdiction }: Props) {
     <div className="bg-surface rounded-xl border border-border shadow-sm mb-3 overflow-hidden">
       <button
         type="button"
-        className={`w-full text-left px-4 py-3 flex items-start gap-2 transition ${hasExtras ? 'hover:bg-surface-alt/50 cursor-pointer' : 'cursor-default'}`}
+        className={`w-full text-left px-4 py-3 flex items-start gap-2 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset ${hasExtras ? 'hover:bg-surface-alt/50 cursor-pointer' : 'cursor-default'}`}
         onClick={hasExtras ? () => setExpanded((e) => !e) : undefined}
         aria-expanded={hasExtras ? expanded : undefined}
       >

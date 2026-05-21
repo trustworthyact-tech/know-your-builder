@@ -12,9 +12,13 @@ export function SearchProgressItem({ item }: Props) {
   const hasResults = resultCount !== undefined && resultCount > 0;
 
   return (
-    <div className="flex items-center gap-3 px-4 py-3 border-b border-border-light last:border-0">
-      {/* Status indicator */}
+    <div
+      className="flex items-center gap-3 px-4 py-3 border-b border-border-light last:border-0"
+      role="listitem"
+    >
+      {/* Status indicator — decorative; status is conveyed by the text label below */}
       <div
+        aria-hidden="true"
         className={`w-7 h-7 rounded-full border-[1.5px] flex items-center justify-center shrink-0 ${
           item.status === 'idle'
             ? 'border-text-muted'

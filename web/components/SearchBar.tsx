@@ -76,11 +76,13 @@ export function SearchBar({ onSearch }: SearchBarProps = {}) {
 
       {/* Company name */}
       <div className="mb-4">
-        <label className="block text-sm font-semibold text-text-secondary mb-1">
+        <label htmlFor="sb-company-name" className="block text-sm font-semibold text-text-secondary mb-1">
           Company / Business Name
         </label>
-        <p className="text-xs text-text-muted mb-1.5">Registered legal name of the entity</p>
+        <p id="sb-company-name-hint" className="text-xs text-text-muted mb-1.5">Registered legal name of the entity</p>
         <input
+          id="sb-company-name"
+          aria-describedby="sb-company-name-hint"
           type="text"
           value={companyName}
           onChange={(e) => setCompanyName(e.target.value)}
@@ -97,9 +99,11 @@ export function SearchBar({ onSearch }: SearchBarProps = {}) {
 
       {/* ABN */}
       <div className="mb-4">
-        <label className="block text-sm font-semibold text-text-secondary mb-1">ABN</label>
-        <p className="text-xs text-text-muted mb-1.5">Australian Business Number — 11 digits</p>
+        <label htmlFor="sb-abn" className="block text-sm font-semibold text-text-secondary mb-1">ABN</label>
+        <p id="sb-abn-hint" className="text-xs text-text-muted mb-1.5">Australian Business Number — 11 digits</p>
         <input
+          id="sb-abn"
+          aria-describedby="sb-abn-hint"
           type="text"
           inputMode="numeric"
           value={abn}
@@ -114,13 +118,15 @@ export function SearchBar({ onSearch }: SearchBarProps = {}) {
 
       {/* Licence number */}
       <div className="mb-6">
-        <label className="block text-sm font-semibold text-text-secondary mb-1">
+        <label htmlFor="sb-licence" className="block text-sm font-semibold text-text-secondary mb-1">
           Licence Number
         </label>
-        <p className="text-xs text-text-muted mb-1.5">
+        <p id="sb-licence-hint" className="text-xs text-text-muted mb-1.5">
           QBCC, NSW Fair Trading, or other state licence
         </p>
         <input
+          id="sb-licence"
+          aria-describedby="sb-licence-hint"
           type="text"
           value={licenceNumber}
           onChange={(e) => setLicenceNumber(e.target.value)}
@@ -131,7 +137,7 @@ export function SearchBar({ onSearch }: SearchBarProps = {}) {
 
       <button
         type="submit"
-        className="w-full bg-primary hover:bg-primary-light text-white font-semibold text-sm py-4 rounded-xl transition shadow-md"
+        className="w-full bg-primary hover:bg-primary-light text-white font-semibold text-sm py-4 rounded-xl transition shadow-md focus:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
       >
         Start Due Diligence →
       </button>

@@ -18,7 +18,7 @@ const config: Config = {
         'surface-alt': '#EEF1F6',
         'text-primary': '#0F1C2E',
         'text-secondary': '#4A5568',
-        'text-muted': '#9AA5B4',
+        'text-muted': '#636B76',
         success: '#2E7D53',
         'success-bg': '#E8F5EE',
         warning: '#B45309',
