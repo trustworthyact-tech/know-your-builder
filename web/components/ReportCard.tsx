@@ -138,9 +138,15 @@ export function ReportCard({
                 )}
                 <span className="text-xs text-text-muted">{dateStr}</span>
                 {isStale && (
-                  <span className="inline-flex items-center text-xs font-medium text-warning bg-warning-bg border border-warning/30 rounded-full px-2 py-0.5">
-                    {ageDays}d old — consider re-checking
-                  </span>
+                  <button
+                    onClick={handleRecheck}
+                    className="inline-flex items-center text-xs font-medium text-warning bg-warning-bg border border-warning/30 rounded-full px-2 py-0.5 hover:bg-warning/10 transition-colors"
+                  >
+                    {ageDays}d old —{' '}
+                    {freeChecks > 0
+                      ? `re-check (${freeChecks} credit${freeChecks !== 1 ? 's' : ''})`
+                      : 're-run $3'}
+                  </button>
                 )}
               </div>
               {metaTags.length > 0 && (

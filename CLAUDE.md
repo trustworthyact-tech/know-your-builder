@@ -649,6 +649,23 @@ The spec calls for `asicExtract` to return the **full historical director list**
 
 ---
 
+## Phase 10b — Staleness banners + re-check prompts (complete)
+
+### Key files
+
+- `web/components/ReportCard.tsx` — staleness badge (>30 days) is now a `<button>` that calls `handleRecheck()`; text discloses price inline: "Xd old — re-run $3" (no credits) or "Xd old — re-check (N credits)" (credits available)
+- `web/app/report/[searchId]/ReportContent.tsx` — added `reportCreatedAt` state populated from `data.createdAt` in the API response; renders an amber banner above the entity card when the report is >30 days old, non-preview, and non-readonly; banner includes "Re-run $3" and "Deep check $15" links using actual Stripe prices
+
+### Conventions
+
+- **`reportCreatedAt` is only set for DB-backed reports**: the sessionStorage preview path never sets it, so `isStale` is always `false` for preview reports — the banner is intentionally suppressed there.
+- **Staleness banner is suppressed for `readOnly` shared reports**: the banner guard is `isStale && !readOnly && searchId !== 'preview'`. Shared-link viewers cannot re-run the search so the banner is irrelevant to them.
+- **Prices in the banner use actual Stripe amounts (`RECHECK_SINGLE` = $3, `DEEP_CHECK_SINGLE` = $15)**: the spec copy said "$3 / $18" but the configured prices are $3 and $15 — the implementation uses the correct values from `lib/stripe.ts`.
+- **Deep-check link passes `?deepCheck=1`**: `SearchContent` does not yet read this param, but the URL param is wired for a future phase to auto-select the deep-check option. The standard re-check link uses the same `/search?companyName=...&abn=...` format as all other re-check entry points.
+- **Staleness badge in `ReportCard` triggers the same `handleRecheck()` as the existing Re-check button**: clicking either the inline badge or the action-row button produces identical behaviour (navigate if credits; open `PaymentModal` if no credits).
+
+---
+
 ## Phase 10a — Builder comparison view (complete)
 
 ### Key files

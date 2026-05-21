@@ -57,6 +57,7 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
   const [input, setInput] = useState<BuilderInput | null>(null);
   const [riskGroups, setRiskGroups] = useState<RiskGroupResult[]>([]);
   const [loadError, setLoadError] = useState('');
+  const [reportCreatedAt, setReportCreatedAt] = useState<string | null>(null);
   const [watchlisted, setWatchlisted] = useState(false);
   const [watchlistEnabled, setWatchlistEnabled] = useState(false);
   const [watchlistLoading, setWatchlistLoading] = useState(false);
@@ -97,6 +98,7 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
       .then((data) => {
         const findings = data.reportJson as Record<string, SearchResult>;
         setResults(Object.values(findings));
+        if (data.createdAt) setReportCreatedAt(data.createdAt);
         setInput({
           companyName: data.entityName ?? '',
           abn: data.entityAbn ?? '',
@@ -227,6 +229,26 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
     month: 'long',
     year: 'numeric',
   });
+
+  const STALE_DAYS = 30;
+  const reportAgeMs = reportCreatedAt ? Date.now() - new Date(reportCreatedAt).getTime() : 0;
+  const isStale = reportAgeMs > STALE_DAYS * 24 * 60 * 60 * 1000;
+  const reportAgeDays = Math.floor(reportAgeMs / (24 * 60 * 60 * 1000));
+
+  const recheckUrl = (() => {
+    const p = new URLSearchParams();
+    p.set('companyName', input.companyName || entityName);
+    if (input.abn) p.set('abn', input.abn);
+    return `/search?${p}`;
+  })();
+
+  const deepCheckUrl = (() => {
+    const p = new URLSearchParams();
+    p.set('companyName', input.companyName || entityName);
+    if (input.abn) p.set('abn', input.abn);
+    p.set('deepCheck', '1');
+    return `/search?${p}`;
+  })();
 
   // Stats
   const nonLinkResults = results.filter((r) => r.key !== 'links');
@@ -461,6 +483,28 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
       </nav>
 
       <div className="max-w-4xl mx-auto px-4 py-6">
+        {isStale && !readOnly && searchId !== 'preview' && (
+          <div className="flex flex-col sm:flex-row sm:items-center gap-2 bg-warning-bg border border-warning/30 rounded-xl px-4 py-3 mb-5">
+            <p className="flex-1 text-sm text-warning font-medium">
+              This report is {reportAgeDays} day{reportAgeDays !== 1 ? 's' : ''} old — a lot can change.
+            </p>
+            <div className="flex items-center gap-3 shrink-0">
+              <Link
+                href={recheckUrl}
+                className="text-xs font-semibold text-warning border border-warning/40 rounded-lg px-3 py-1.5 hover:bg-warning/10 transition-colors"
+              >
+                Re-run $3
+              </Link>
+              <Link
+                href={deepCheckUrl}
+                className="text-xs font-semibold text-white bg-warning rounded-lg px-3 py-1.5 hover:opacity-90 transition-opacity"
+              >
+                Deep check $15
+              </Link>
+            </div>
+          </div>
+        )}
+
         {/* Entity card */}
         <div className="bg-surface rounded-2xl border border-border shadow-sm p-5 mb-6">
           <div className="flex items-start gap-4 mb-5">
