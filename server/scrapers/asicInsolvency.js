@@ -20,6 +20,8 @@ const INSOLVENCY_KEYWORDS = [
   'provisional liquidator',
   'court-ordered',
   'application to wind',
+  'winding-up order',
+  'order to wind',
 ];
 
 function isInsolvencyNotice(text) {
@@ -36,23 +38,19 @@ function abnToAcn(abn) {
 function parseResults($) {
   const results = [];
 
-  // Results render in an ASP.NET GridView table.
-  // Row structure: [company name | notice type | published date] with a link on the name.
-  $('table#ContentPlaceHolderDefault_INWMasterContentPlaceHolder_INWPageContentPlaceHolder_SearchNoticeList_3_gridViewNoticeList tbody tr, table.results-table tbody tr, table tbody tr').each((_, row) => {
-    const $cells = $(row).find('td');
-    if ($cells.length < 2) return;
+  // Results render as article-block divs inside the NoticeTable
+  $('div.article-block').each((_, block) => {
+    const $b = $(block);
+    const noticeType = $b.find('h3').text().replace(/\s+/g, ' ').trim();
+    const date = $b.find('.published-date').text().replace('Published:', '').trim();
+    const entityName = $b.find('p').first().text().trim();
 
-    const texts = $cells.map((_, c) => $(c).text().trim()).get();
-    const fullText = texts.join(' ');
-    if (!isInsolvencyNotice(fullText)) return;
-
-    const $link = $(row).find('a').first();
+    const $link = $b.closest('tr').find('a[href*="notice-details"]').first()
+      || $b.find('a[href*="notice-details"]').first();
     const href = $link.attr('href') || '';
     const url = href.startsWith('http') ? href : href ? `${BASE}${href}` : SEARCH_URL;
 
-    const entityName = texts[0] || '';
-    const noticeType = texts.find((t) => isInsolvencyNotice(t)) || texts[1] || '';
-    const date = texts.find((t) => /\d{1,2}[\s/.-]\w{3,}[\s/.-]\d{4}|\d{4}-\d{2}-\d{2}/.test(t)) || '';
+    if (!noticeType && !entityName) return;
 
     results.push({
       title: entityName ? `${entityName} — ${noticeType}` : noticeType,
@@ -83,33 +81,40 @@ async function searchAsicInsolvency(companyName, abn) {
     await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-AU,en;q=0.9' });
     await page.goto(SEARCH_URL, { waitUntil: 'networkidle2', timeout: 45_000 });
 
-    // Wait for AWS WAF JS challenge to clear
-    const deadline = Date.now() + 15_000;
-    while (Date.now() < deadline) {
+    // Wait for WAF/Cloudflare challenge to clear
+    const wafDeadline = Date.now() + 15_000;
+    while (Date.now() < wafDeadline) {
       const title = await page.title();
-      if (title && title !== 'Please Wait...' && title !== 'Just a moment...') break;
+      if (title && title !== 'Please Wait...' && title !== 'Just a moment...' && title !== '') break;
       await new Promise((r) => setTimeout(r, 1_000));
     }
 
-    // Set the ACN/company field and trigger ASP.NET postback search
-    await page.evaluate((term) => {
-      const inputs = Array.from(document.querySelectorAll('input[name*="CompanyNameOrACN"]'));
-      inputs.forEach((i) => { i.value = term; });
-    }, searchTerm);
+    // Type into the ACN/company field so ASP.NET registers the value properly
+    const fieldId = '#ContentPlaceHolderDefault_INWMasterContentPlaceHolder_INWPageContentPlaceHolder_SearchNoticeList_3_txtCompanyNameOrACN';
+    await page.click(fieldId, { clickCount: 3 });
+    await page.type(fieldId, searchTerm, { delay: 30 });
 
-    // Register navigation listener BEFORE triggering postback
+    // __doPostBack causes a full page navigation (not UpdatePanel XHR) — wait for it
     await Promise.all([
-      page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 20_000 }).catch(() => {}),
+      page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 25_000 }).catch(() => {}),
       page.evaluate(() => {
-        if (typeof __doPostBack === 'function') {
-          // eslint-disable-next-line no-undef
-          __doPostBack(
-            'ctl00$ctl00$ctl00$ctl00$ContentPlaceHolderDefault$INWMasterContentPlaceHolder$INWPageContentPlaceHolder$SearchNoticeList_3$searchButton',
-            ''
-          );
-        }
+        // eslint-disable-next-line no-undef
+        __doPostBack(
+          'ctl00$ctl00$ctl00$ctl00$ContentPlaceHolderDefault$INWMasterContentPlaceHolder$INWPageContentPlaceHolder$SearchNoticeList_3$searchButton',
+          ''
+        );
       }),
     ]);
+
+    // Results older than 6 months are archived — click "Load older data" if the banner appears
+    const archivedBtnSel = '[id*="ucNoticeResult_btnLoadArchived"]';
+    const hasArchivedBtn = await page.$(archivedBtnSel);
+    if (hasArchivedBtn) {
+      await Promise.all([
+        page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 25_000 }).catch(() => {}),
+        page.click(archivedBtnSel),
+      ]);
+    }
 
     const html = await page.content();
     const $ = cheerio.load(html);

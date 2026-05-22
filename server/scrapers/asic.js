@@ -136,8 +136,15 @@ function parseDirectors($, detailUrl) {
   return directors;
 }
 
+// Derive ACN from ABN: strip spaces, take the 9 digits after the 2-digit prefix.
+function abnToAcn(abn) {
+  const clean = (abn || '').replace(/\s/g, '');
+  return clean.length === 11 ? clean.slice(2) : null;
+}
+
 async function searchASIC(companyName, abn, acn) {
-  const query = acn ? acn.replace(/\s/g, '') : companyName || '';
+  const derivedAcn = (acn || '').replace(/\s/g, '') || abnToAcn(abn) || '';
+  const query = derivedAcn || companyName || '';
   const searchUrl = buildSearchUrl(query);
   const results = [];
 
@@ -150,7 +157,7 @@ async function searchASIC(companyName, abn, acn) {
       matches.find(
         (m) =>
           m.name.toLowerCase() === (companyName || '').toLowerCase() ||
-          m.acn === (acn || '').replace(/\s/g, '')
+          m.acn === derivedAcn
       ) || matches[0];
 
     if (bestMatch) {
@@ -213,7 +220,7 @@ async function searchASIC(companyName, abn, acn) {
         ? `ASIC company record found — status: ${results[0]?.status || 'unknown'}${
             directorCount > 0 ? ` — ${directorCount} director(s) identified` : ''
           }`
-        : `No ASIC records found for ${query}`,
+        : `No ASIC records found for ${companyName || query}`,
   };
 }
 
