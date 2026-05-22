@@ -21,9 +21,16 @@ function generateLinks({ abn, acn, companyName, tradingName, directors = [] }) {
     {
       jurisdiction: 'Federal',
       category: 'regulatory',
-      source: 'ASIC — Insolvency Notices',
-      url: `https://insolvencynotices.asic.gov.au/search?s=${q}`,
-      description: 'Winding-up applications, liquidators, external administration notices',
+      source: 'ASIC Published Notices — Winding Up Applications',
+      url: `https://publishednotices.asic.gov.au/browsesearch-notices?appointment=All&noticestate=All&companynameoracn=${cleanAbn.length === 11 ? cleanAbn.slice(2) : cleanAbn || q}`,
+      description: 'Winding-up applications and other court-ordered proceedings',
+    },
+    {
+      jurisdiction: 'Federal',
+      category: 'regulatory',
+      source: 'ASIC — Insolvency & Administration Notices',
+      url: `https://publishednotices.asic.gov.au/browsesearch-notices?appointment=All&noticestate=All&companynameoracn=${cleanAbn.length === 11 ? cleanAbn.slice(2) : cleanAbn || q}`,
+      description: 'Liquidator and administrator notices published after insolvency appointment',
     },
     {
       jurisdiction: 'Federal',
@@ -128,6 +135,13 @@ function generateLinks({ abn, acn, companyName, tradingName, directors = [] }) {
       source: 'Victorian Building Authority — Licence Check',
       url: `https://www.vba.vic.gov.au/check/licence?name=${q}`,
       description: 'VIC building practitioner registration and licence status',
+    },
+    {
+      jurisdiction: 'VIC',
+      category: 'regulatory',
+      source: 'VBA — Prosecution & Disciplinary Register',
+      url: 'https://www.vba.vic.gov.au/tools/prosecution-and-disciplinary-register',
+      description: 'Completed disciplinary orders, disqualifications and prosecutions by the VBA',
     },
     {
       jurisdiction: 'VIC',

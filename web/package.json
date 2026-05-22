@@ -8,7 +8,8 @@
     "start": "next start",
     "type-check": "tsc --noEmit",
     "worker:monitoring": "tsx workers/monitoring.ts",
-    "worker:emailSequence": "tsx workers/emailSequence.ts"
+    "worker:emailSequence": "tsx workers/emailSequence.ts",
+    "test:credits": "node scripts/add-test-credits.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.29.0",

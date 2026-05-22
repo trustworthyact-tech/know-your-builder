@@ -180,13 +180,9 @@ export async function POST(req: NextRequest) {
     // Re-engagement — all authenticated users (fires 14 days after search if no activity)
     sequencesToEnqueue.push('REENGAGEMENT');
 
-    try {
-      await Promise.all(
-        sequencesToEnqueue.map((key) => enqueueSequence(userId, search.id, key)),
-      );
-    } catch (err) {
-      console.error('[reports/save] Email sequence enqueue error:', err);
-    }
+    Promise.all(
+      sequencesToEnqueue.map((key) => enqueueSequence(userId, search.id, key)),
+    ).catch((err) => console.error('[reports/save] Email sequence enqueue error:', err));
   }
 
   return NextResponse.json({ searchId: search.id });

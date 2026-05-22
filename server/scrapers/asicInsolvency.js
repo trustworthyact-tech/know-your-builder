@@ -1,16 +1,11 @@
-const axios = require('axios');
 const cheerio = require('cheerio');
+const { getBrowser } = require('./browser');
 
-const BASE = 'https://insolvencynotices.asic.gov.au';
+// insolvencynotices.asic.gov.au was merged into publishednotices.asic.gov.au.
+// All notices (winding-up applications, liquidator appointments, administrations) live here.
+const BASE = 'https://publishednotices.asic.gov.au';
+const SEARCH_URL = `${BASE}/browsesearch-notices`;
 
-const HEADERS = {
-  'User-Agent':
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-  Referer: 'https://insolvencynotices.asic.gov.au/',
-};
-
-// Notice types that indicate insolvency, administration, or winding-up
 const INSOLVENCY_KEYWORDS = [
   'external administration',
   'voluntary administration',
@@ -18,11 +13,13 @@ const INSOLVENCY_KEYWORDS = [
   'liquidat',
   'winding up',
   'winding-up',
+  'wind up',
   'receiver',
   'deed of company arrangement',
   'doca',
   'provisional liquidator',
   'court-ordered',
+  'application to wind',
 ];
 
 function isInsolvencyNotice(text) {
@@ -30,33 +27,31 @@ function isInsolvencyNotice(text) {
   return INSOLVENCY_KEYWORDS.some((k) => lower.includes(k));
 }
 
-function buildSearchUrl(companyName, abn) {
-  const q = abn ? abn.replace(/\s/g, '') : companyName || '';
-  return `${BASE}/notices?q=${encodeURIComponent(q)}`;
+// ACN = last 9 digits of ABN (strip spaces, take chars 2-11)
+function abnToAcn(abn) {
+  const clean = (abn || '').replace(/\s/g, '');
+  return clean.length === 11 ? clean.slice(2) : clean;
 }
 
-function resolveUrl(href) {
-  if (!href) return '';
-  return href.startsWith('http') ? href : `${BASE}${href.startsWith('/') ? '' : '/'}${href}`;
-}
-
-function parseTableRows($, searchUrl) {
+function parseResults($) {
   const results = [];
 
-  $('table tbody tr').each((_, row) => {
+  // Results render in an ASP.NET GridView table.
+  // Row structure: [company name | notice type | published date] with a link on the name.
+  $('table#ContentPlaceHolderDefault_INWMasterContentPlaceHolder_INWPageContentPlaceHolder_SearchNoticeList_3_gridViewNoticeList tbody tr, table.results-table tbody tr, table tbody tr').each((_, row) => {
     const $cells = $(row).find('td');
     if ($cells.length < 2) return;
 
+    const texts = $cells.map((_, c) => $(c).text().trim()).get();
+    const fullText = texts.join(' ');
+    if (!isInsolvencyNotice(fullText)) return;
+
     const $link = $(row).find('a').first();
     const href = $link.attr('href') || '';
-    const url = resolveUrl(href) || searchUrl;
+    const url = href.startsWith('http') ? href : href ? `${BASE}${href}` : SEARCH_URL;
 
-    // Notice type is typically first or second column; entity name in another column
-    const texts = $cells.map((_, c) => $(c).text().trim()).get();
-    const noticeType = texts.find((t) => isInsolvencyNotice(t)) || texts[0] || '';
-    if (!noticeType || !isInsolvencyNotice(noticeType)) return;
-
-    const entityName = texts.find((t, i) => i > 0 && t && !isInsolvencyNotice(t)) || '';
+    const entityName = texts[0] || '';
+    const noticeType = texts.find((t) => isInsolvencyNotice(t)) || texts[1] || '';
     const date = texts.find((t) => /\d{1,2}[\s/.-]\w{3,}[\s/.-]\d{4}|\d{4}-\d{2}-\d{2}/.test(t)) || '';
 
     results.push({
@@ -64,11 +59,12 @@ function parseTableRows($, searchUrl) {
       url,
       date,
       status: noticeType,
-      description: `Published in ASIC Insolvency Notices — ${noticeType}`,
+      description: `ASIC Published Notices — ${noticeType}`,
       metadata: {
         'Notice Type': noticeType,
         Entity: entityName,
         Date: date,
+        Source: 'ASIC Published Notices',
       },
     });
   });
@@ -76,74 +72,52 @@ function parseTableRows($, searchUrl) {
   return results;
 }
 
-function parseCardLayout($, searchUrl) {
-  const results = [];
-
-  const selectors = [
-    '.notice-item',
-    '.search-result-item',
-    '[class*="notice-result"]',
-    '[class*="notice-card"]',
-    'article',
-  ];
-
-  for (const sel of selectors) {
-    const $items = $(sel);
-    if ($items.length === 0) continue;
-
-    $items.each((_, el) => {
-      const $el = $(el);
-      const fullText = $el.text();
-      if (!isInsolvencyNotice(fullText)) return;
-
-      const $link = $el.find('a').first();
-      const href = $link.attr('href') || '';
-      const url = resolveUrl(href) || searchUrl;
-
-      const noticeType =
-        $el.find('[class*="type"], [class*="category"], [class*="notice-type"]').first().text().trim() ||
-        $el.find('strong, h3, h4').first().text().trim();
-      const entityName = $el.find('[class*="entity"], [class*="company"], [class*="name"]').text().trim();
-      const date = $el.find('[class*="date"], time').first().text().trim();
-
-      results.push({
-        title: entityName ? `${entityName} — ${noticeType}` : noticeType || fullText.slice(0, 80),
-        url,
-        date,
-        status: noticeType,
-        description: `Published in ASIC Insolvency Notices`,
-        metadata: {
-          'Notice Type': noticeType,
-          Entity: entityName,
-          Date: date,
-        },
-      });
-    });
-
-    if (results.length > 0) break;
-  }
-
-  return results;
-}
-
 async function searchAsicInsolvency(companyName, abn) {
-  const searchUrl = buildSearchUrl(companyName, abn);
+  const acn = abnToAcn(abn);
+  const searchTerm = acn || companyName || '';
   let results = [];
 
+  const browser = await getBrowser();
+  const page = await browser.newPage();
   try {
-    const { data } = await axios.get(searchUrl, {
-      headers: HEADERS,
-      timeout: 20000,
-      maxRedirects: 5,
-    });
-    const $ = cheerio.load(data);
+    await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-AU,en;q=0.9' });
+    await page.goto(SEARCH_URL, { waitUntil: 'networkidle2', timeout: 45_000 });
 
-    results = parseTableRows($, searchUrl);
-    if (results.length === 0) {
-      results = parseCardLayout($, searchUrl);
+    // Wait for AWS WAF JS challenge to clear
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+      const title = await page.title();
+      if (title && title !== 'Please Wait...' && title !== 'Just a moment...') break;
+      await new Promise((r) => setTimeout(r, 1_000));
     }
+
+    // Set the ACN/company field and trigger ASP.NET postback search
+    await page.evaluate((term) => {
+      const inputs = Array.from(document.querySelectorAll('input[name*="CompanyNameOrACN"]'));
+      inputs.forEach((i) => { i.value = term; });
+    }, searchTerm);
+
+    // Register navigation listener BEFORE triggering postback
+    await Promise.all([
+      page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 20_000 }).catch(() => {}),
+      page.evaluate(() => {
+        if (typeof __doPostBack === 'function') {
+          // eslint-disable-next-line no-undef
+          __doPostBack(
+            'ctl00$ctl00$ctl00$ctl00$ContentPlaceHolderDefault$INWMasterContentPlaceHolder$INWPageContentPlaceHolder$SearchNoticeList_3$searchButton',
+            ''
+          );
+        }
+      }),
+    ]);
+
+    const html = await page.content();
+    const $ = cheerio.load(html);
+    results = parseResults($);
   } catch {
-    // non-fatal — return empty results
+    // non-fatal
+  } finally {
+    await page.close().catch(() => {});
   }
 
   return {
@@ -151,11 +125,11 @@ async function searchAsicInsolvency(companyName, abn) {
     jurisdiction: 'Federal',
     category: 'financial',
     results,
-    searchUrl,
+    searchUrl: SEARCH_URL,
     summary:
       results.length > 0
-        ? `${results.length} insolvency notice(s) found (external administration, winding up, or liquidation)`
-        : 'No insolvency notices found in ASIC Published Notices',
+        ? `${results.length} insolvency/winding-up notice(s) found`
+        : 'No current insolvency or winding-up notices found (resolved/archived notices not included)',
   };
 }
 

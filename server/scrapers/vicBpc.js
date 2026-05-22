@@ -1,37 +1,14 @@
-const axios = require('axios');
 const cheerio = require('cheerio');
+const { fetchWithBrowserSearch } = require('./browser');
 
 const BASE = 'https://www.vba.vic.gov.au';
-const REGISTER_URL = `${BASE}/about/current-disciplinary-proceedings/register-of-disciplinary-proceedings`;
+// Prosecution register covers completed orders, disqualifications, and historical actions.
+// Current proceedings register only covers pending/active proceedings.
+const PROSECUTION_REGISTER_URL = `${BASE}/tools/prosecution-and-disciplinary-register`;
+const CURRENT_PROCEEDINGS_URL = `${BASE}/about/current-disciplinary-proceedings/register-of-disciplinary-proceedings`;
+const REGISTER_URL = PROSECUTION_REGISTER_URL;
 
-const HEADERS = {
-  'User-Agent':
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-  Referer: 'https://www.vba.vic.gov.au/',
-};
-
-const DISCIPLINARY_KEYWORDS = [
-  'cancel',
-  'suspend',
-  'disciplin',
-  'caution',
-  'reprimand',
-  'revok',
-  'prohibit',
-  'order',
-  'condition',
-  'penalty',
-  'deregistr',
-  'show cause',
-];
-
-function isDisciplinaryEntry(text) {
-  const lower = (text || '').toLowerCase();
-  return DISCIPLINARY_KEYWORDS.some((k) => lower.includes(k));
-}
-
-// Every significant word must appear in the row text. Handles trading names and company suffixes.
+// Every significant word must appear in the record text to prevent false positives.
 function nameMatchesEntity(text, companyName) {
   if (!companyName) return false;
   const words = companyName
@@ -43,42 +20,49 @@ function nameMatchesEntity(text, companyName) {
   return words.every((w) => lower.includes(w));
 }
 
-function resolveUrl(href) {
-  if (!href) return '';
-  return href.startsWith('http') ? href : `${BASE}${href.startsWith('/') ? '' : '/'}${href}`;
-}
-
-function parseTableRows($, companyName) {
+// The VBA prosecution register uses an accordion layout.
+// Each .accordion__block has a .da_name button (practitioner name) and a
+// .da_record div (registration, proceeding type, date, action details).
+function parseAccordionItems($, companyName) {
   const results = [];
 
-  $('table tbody tr').each((_, row) => {
-    const $cells = $(row).find('td');
-    if ($cells.length < 2) return;
+  $('.accordion__block').each((_, block) => {
+    const $block = $(block);
+    const name = $block.find('.da_name').text().trim();
+    const fullText = $block.text();
 
-    const fullText = $(row).text();
     if (!nameMatchesEntity(fullText, companyName)) return;
 
-    const texts = $cells.map((_, c) => $(c).text().trim()).get();
-    const $link = $(row).find('a').first();
-    const href = $link.attr('href') || '';
-    const url = resolveUrl(href) || REGISTER_URL;
+    const $record = $block.find('.da_record');
+    const registration = $record.find('p').first().text().replace('Registration:', '').trim();
+    const proceeding = $record.find('p:contains("Disciplinary proceeding")').text()
+      .replace('Disciplinary proceeding:', '').trim();
+    const date = $record.find('p:contains("Decision date")').text()
+      .replace('Decision date:', '').trim();
 
-    const name = texts[0] || '';
-    const action = texts.find((t) => isDisciplinaryEntry(t)) || texts[1] || '';
-    const date =
-      texts.find((t) => /\d{1,2}[\s/.-]\w{3,}[\s/.-]\d{4}|\d{4}-\d{2}-\d{2}/.test(t)) || '';
+    const actionHeading = $record.find('h3').filter((_, h) => $(h).text().includes('Disciplinary action'));
+    const actionText = actionHeading.next('p').text().trim() + ' ' +
+      actionHeading.nextAll('ul').first().text().trim();
+
+    const groundsHeading = $record.find('h3').filter((_, h) => $(h).text().includes('grounds'));
+    const grounds = groundsHeading.next('p').text().trim();
+
+    // Link to the register page (no per-case deep-link available)
+    const url = PROSECUTION_REGISTER_URL;
 
     results.push({
-      title: name || fullText.slice(0, 80),
+      title: name,
       url,
-      date,
-      status: action || 'Disciplinary action',
-      description: `VBA disciplinary proceeding — ${action || 'see register for details'}`,
+      date: date.replace(/\s+/g, ' '),
+      status: actionText.trim().slice(0, 120) || proceeding || 'Disciplinary action',
+      description: grounds.slice(0, 250) || `VBA disciplinary proceeding — ${proceeding}`,
       jurisdiction: 'VIC',
       metadata: {
         Source: 'Victorian Building Authority',
-        Action: action,
-        Date: date,
+        Registration: registration,
+        Proceeding: proceeding,
+        Date: date.replace(/\s+/g, ' '),
+        Action: actionText.trim().slice(0, 200),
       },
     });
   });
@@ -86,59 +70,24 @@ function parseTableRows($, companyName) {
   return results;
 }
 
-function parseCardLayout($, companyName) {
-  const results = [];
-
-  const selectors = ['article', '.field-items p', '.wysiwyg p', '.content-body p', 'li'];
-
-  for (const sel of selectors) {
-    const $items = $(sel);
-    if ($items.length === 0) continue;
-
-    $items.each((_, el) => {
-      const $el = $(el);
-      const fullText = $el.text();
-      if (!nameMatchesEntity(fullText, companyName)) return;
-      if (!isDisciplinaryEntry(fullText)) return;
-
-      const $link = $el.find('a').first();
-      const href = $link.attr('href') || '';
-      const url = resolveUrl(href) || REGISTER_URL;
-
-      results.push({
-        title: $el.find('strong, b').first().text().trim() || fullText.slice(0, 100),
-        url,
-        date: '',
-        status: 'Disciplinary action',
-        description: fullText.slice(0, 200),
-        jurisdiction: 'VIC',
-        metadata: { Source: 'Victorian Building Authority' },
-      });
-    });
-
-    if (results.length > 0) break;
-  }
-
-  return results;
-}
-
 async function searchVicBpc(companyName, abn) {
   let results = [];
 
-  try {
-    const { data } = await axios.get(REGISTER_URL, {
-      headers: HEADERS,
-      timeout: 20000,
-      maxRedirects: 5,
-    });
-    const $ = cheerio.load(data);
+  // Search term: strip Pty Ltd suffix so List.js matches on the distinctive words.
+  const searchTerm = companyName.replace(/\s*pty\s*ltd\.?\s*$/i, '').trim();
 
-    results = parseTableRows($, companyName);
-    if (results.length === 0) {
-      results = parseCardLayout($, companyName);
+  // Try prosecution register (completed orders, disqualifications) first,
+  // then current proceedings register. Both use the same List.js search pattern.
+  const urls = [PROSECUTION_REGISTER_URL, CURRENT_PROCEEDINGS_URL];
+  for (const url of urls) {
+    try {
+      const html = await fetchWithBrowserSearch(url, searchTerm, '#listjs-search');
+      const $ = cheerio.load(html);
+      const found = parseAccordionItems($, companyName);
+      results.push(...found);
+    } catch {
+      // non-fatal — silently skip if page is unreachable
     }
-  } catch {
-    // non-fatal — return empty results
   }
 
   return {
@@ -146,7 +95,7 @@ async function searchVicBpc(companyName, abn) {
     jurisdiction: 'VIC',
     category: 'regulatory',
     results,
-    searchUrl: REGISTER_URL,
+    searchUrl: PROSECUTION_REGISTER_URL,
     summary:
       results.length > 0
         ? `${results.length} VBA disciplinary proceeding(s) found`
