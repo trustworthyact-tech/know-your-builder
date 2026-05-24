@@ -43,10 +43,21 @@ function parseResults($) {
     const $b = $(block);
     const noticeType = $b.find('h3').text().replace(/\s+/g, ' ').trim();
     const date = $b.find('.published-date').text().replace('Published:', '').trim();
-    const entityName = $b.find('p').first().text().trim();
 
-    const $link = $b.closest('tr').find('a[href*="notice-details"]').first()
-      || $b.find('a[href*="notice-details"]').first();
+    // Entity name is the first non-empty <p> in the block (the first <p> is always empty)
+    const entityName = $b.find('p').toArray()
+      .map((el) => $(el).text().trim())
+      .find((t) => t.length > 0) || '';
+
+    // ACN and status are in the <dl> beneath the entity name
+    const dlFields = {};
+    $b.find('dl dt').each((_, dt) => {
+      const key = $(dt).text().trim().replace(/:$/, '');
+      const val = $(dt).next('dd').text().trim();
+      if (key && val) dlFields[key] = val;
+    });
+
+    const $link = $b.find('a[href*="notice-details"]').first();
     const href = $link.attr('href') || '';
     const url = href.startsWith('http') ? href : href ? `${BASE}${href}` : SEARCH_URL;
 
@@ -57,12 +68,13 @@ function parseResults($) {
       url,
       date,
       status: noticeType,
-      description: `ASIC Published Notices — ${noticeType}`,
+      description: entityName || 'ASIC Published Notices',
       metadata: {
         'Notice Type': noticeType,
         Entity: entityName,
+        ACN: dlFields['ACN'] || '',
+        Status: dlFields['Status'] || '',
         Date: date,
-        Source: 'ASIC Published Notices',
       },
     });
   });
