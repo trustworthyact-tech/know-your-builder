@@ -604,7 +604,11 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
           resultsOverride={financialItems}
           criticalBanner={
             insolvencyItems.length > 0
-              ? `${insolvencyItems.length} ASIC insolvency notice(s) found. This entity may be subject to external administration, winding up, or liquidation proceedings. Verify current status before proceeding.`
+              ? (() => {
+                  const entityNames = [...new Set(insolvencyItems.map((r) => r.metadata?.Entity).filter(Boolean))];
+                  const entityStr = entityNames.length > 0 ? ` relating to ${entityNames.join(', ')}` : '';
+                  return `${insolvencyItems.length} ASIC insolvency notice(s) found${entityStr}. This entity may be subject to external administration, winding up, or liquidation proceedings. Verify current status before proceeding.`;
+                })()
               : atoDebtItems.length > 0
               ? `${atoDebtItems.length} ATO tax debt notice(s) found. The Australian Taxation Office has published a listed tax debt for this entity with ASIC.`
               : undefined
