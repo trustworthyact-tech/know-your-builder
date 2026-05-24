@@ -1,14 +1,33 @@
-const axios = require('axios');
 const cheerio = require('cheerio');
+const { getBrowser } = require('./browser');
 
 const BASE = 'https://connectonline.asic.gov.au';
 
-const HEADERS = {
-  'User-Agent':
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-  Referer: 'https://connectonline.asic.gov.au/',
-};
+async function fetchAdfPage(url) {
+  const browser = await getBrowser();
+  const page = await browser.newPage();
+  try {
+    await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-AU,en;q=0.9' });
+    await page.goto(url, { waitUntil: 'networkidle2', timeout: 45_000 });
+
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+      const title = await page.title();
+      const isChallenge =
+        title === 'Just a moment...' ||
+        title === 'Please Wait...' ||
+        title === 'Attention Required!' ||
+        title === '';
+      if (!isChallenge) break;
+      await new Promise((r) => setTimeout(r, 1_000));
+    }
+
+    await new Promise((r) => setTimeout(r, 3_000));
+    return await page.content();
+  } finally {
+    await page.close().catch(() => {});
+  }
+}
 
 // Officers-by-person-name search — returns all company associations for a named individual
 function officerSearchUrl(name) {
@@ -31,12 +50,8 @@ async function fetchDirectorCompanies(directorName) {
   const companies = [];
 
   try {
-    const { data } = await axios.get(searchUrl, {
-      headers: HEADERS,
-      timeout: 20000,
-      maxRedirects: 5,
-    });
-    const $ = cheerio.load(data);
+    const html = await fetchAdfPage(searchUrl);
+    const $ = cheerio.load(html);
 
     $('table tbody tr').each((_, row) => {
       const $cells = $(row).find('td');
@@ -120,18 +135,18 @@ async function searchAsicExtract(companyName, abn, acn, directorNames) {
       category: 'identity',
       results: [],
       searchUrl: fallbackUrl,
-      summary: 'No directors identified for deep check officer search',
+      summary: 'No directors identified for officer search',
     };
   }
 
   // Limit to 4 directors — avoids excessive requests
-  const directorsToCheck = directorNames.slice(0, 4);
+  const directorsToCheck = directorNames.slice(0, 4).filter(Boolean);
   const seen = new Set();
   const allCompanies = [];
 
-  for (const director of directorsToCheck) {
-    if (!director) continue;
-    const companies = await fetchDirectorCompanies(director);
+  const perDirector = await Promise.all(directorsToCheck.map(fetchDirectorCompanies));
+
+  for (const companies of perDirector) {
     for (const co of companies) {
       // Deduplicate by ACN (if available) or company name
       const key = co.acn || normalise(co.companyName);

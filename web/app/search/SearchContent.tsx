@@ -30,13 +30,13 @@ const INITIAL_SEARCHES: SearchResult[] = [
   { key: 'fwo',              label: 'Fair Work Ombudsman — Enforcement Outcomes',   status: 'idle' },
   { key: 'vicBpc',           label: 'VIC Building Authority — Disciplinary Register', status: 'idle' },
   { key: 'waBuildingEnergy', label: 'WA Building and Energy — Enforcement',         status: 'idle' },
+  { key: 'asicExtract',      label: 'ASIC — Director Company History',              status: 'idle' },
   { key: 'links',            label: 'Additional Database Links',                    status: 'idle' },
 ];
 
 // Additional entries appended when isDeepCheck is true (inserted before 'links')
 const DEEP_CHECK_SEARCHES: SearchResult[] = [
-  { key: 'asicExtract', label: 'ASIC — Director Company History (Deep Check)',          status: 'idle' },
-  { key: 'afsaNpii',    label: 'AFSA NPII — Director Personal Insolvency (Deep Check)', status: 'idle' },
+  { key: 'afsaNpii', label: 'AFSA NPII — Director Personal Insolvency (Deep Check)', status: 'idle' },
 ];
 
 type Step = 'persona' | 'email-gate' | 'server-check' | 'running' | 'saving' | 'done' | 'error';

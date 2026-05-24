@@ -154,6 +154,19 @@ app.post('/api/search', async (req, res) => {
       fn: () => searchWABuildingEnergy(companyName, abn),
     },
     {
+      key: 'asicExtract',
+      label: 'ASIC — Director Company History',
+      fn: async () => {
+        const asicResult = await asicPromise;
+        const asicDirectors = (asicResult.results ?? [])
+          .filter((r) => r.metadata?.Role === 'Director')
+          .map((r) => r.title)
+          .filter(Boolean);
+        const allDirectors = [...new Set([...(directors ?? []), ...asicDirectors])];
+        return searchAsicExtract(companyName, abn, acn, allDirectors);
+      },
+    },
+    {
       key: 'links',
       label: 'Additional Database Links',
       fn: () => Promise.resolve(generateLinks({ abn, acn, companyName, tradingName, directors })),
@@ -163,19 +176,6 @@ app.post('/api/search', async (req, res) => {
   // Deep check scrapers — only added when isDeepCheck: true
   if (isDeepCheck) {
     searches.push(
-      {
-        key: 'asicExtract',
-        label: 'ASIC — Director Company History (Deep Check)',
-        fn: async () => {
-          const asicResult = await asicPromise;
-          const asicDirectors = (asicResult.results ?? [])
-            .filter((r) => r.metadata?.Role === 'Director')
-            .map((r) => r.title)
-            .filter(Boolean);
-          const allDirectors = [...new Set([...(directors ?? []), ...asicDirectors])];
-          return searchAsicExtract(companyName, abn, acn, allDirectors);
-        },
-      },
       {
         key: 'afsaNpii',
         label: 'AFSA NPII — Director Personal Insolvency (Deep Check)',

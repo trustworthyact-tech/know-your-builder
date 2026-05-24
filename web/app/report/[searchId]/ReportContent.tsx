@@ -424,9 +424,9 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
   const asicExtractSearch: SearchResult | null = asicExtract
     ? {
         key: 'asicExtract',
-        label: 'ASIC — Director Company History (Deep Check)',
+        label: 'ASIC — Director Company History',
         status: asicExtract.status,
-        source: 'ASIC Connect — Officer Search (Deep Check)',
+        source: 'ASIC Connect — Officer Search',
         jurisdiction: 'Federal',
         category: 'identity',
         searchUrl: asicExtract.searchUrl,
