@@ -58,29 +58,31 @@ async function searchABN(abn, companyName) {
     try {
       const encoded = encodeURIComponent(companyName);
       const { data } = await axios.get(
-        `https://abr.business.gov.au/Search/SearchBusines?SearchText=${encoded}&SearchType=names`,
+        `https://abr.business.gov.au/Search/ResultsActive?SearchText=${encoded}`,
         { headers: HEADERS, timeout: 15000 }
       );
       const $ = cheerio.load(data);
 
       $('table tbody tr').each((_, row) => {
         const cells = $(row).find('td');
-        if (cells.length >= 2) {
-          const nameCell = cells.eq(0);
-          const link = nameCell.find('a');
-          results.push({
-            title: link.text().trim() || nameCell.text().trim(),
-            url: link.attr('href')
-              ? `https://abr.business.gov.au${link.attr('href')}`
-              : `https://abr.business.gov.au/Search/SearchBusines?SearchText=${encoded}&SearchType=names`,
-            metadata: {
-              ABN: cells.eq(1).text().trim(),
-              Type: cells.eq(2)?.text().trim() || '',
-              State: cells.eq(3)?.text().trim() || '',
-              Status: cells.eq(4)?.text().trim() || '',
-            },
-          });
-        }
+        if (cells.length < 2) return;
+        const abnCell = cells.eq(0);
+        const abnLink = abnCell.find('a');
+        const abnValue = abnLink.text().trim().replace(/\s/g, '');
+        const name = cells.eq(1).text().trim();
+        if (!name || !abnValue) return;
+        results.push({
+          title: name,
+          url: abnLink.attr('href')
+            ? `https://abr.business.gov.au${abnLink.attr('href')}`
+            : `https://abr.business.gov.au/Search/ResultsActive?SearchText=${encoded}`,
+          metadata: {
+            ABN: abnValue,
+            Type: cells.eq(2)?.text().trim() || '',
+            State: cells.eq(3)?.text().trim() || '',
+            Status: abnCell.find('span').text().trim() || '',
+          },
+        });
       });
     } catch {
       // ignore
@@ -95,7 +97,7 @@ async function searchABN(abn, companyName) {
     results,
     searchUrl: abn
       ? `https://abr.business.gov.au/ABN/View?id=${abn.replace(/\s/g, '')}`
-      : `https://abr.business.gov.au/Search/SearchBusines?SearchText=${encodeURIComponent(companyName || '')}&SearchType=names`,
+      : `https://abr.business.gov.au/Search/ResultsActive?SearchText=${encodeURIComponent(companyName || '')}`,
     summary:
       results.length > 0
         ? `Found ${results.length} record(s) for ${searchTerm}`
@@ -108,7 +110,7 @@ async function searchByName(companyName) {
   try {
     const encoded = encodeURIComponent(companyName);
     const { data } = await axios.get(
-      `https://abr.business.gov.au/Search/SearchBusines?SearchText=${encoded}&SearchType=names`,
+      `https://abr.business.gov.au/Search/ResultsActive?SearchText=${encoded}`,
       { headers: HEADERS, timeout: 15000 }
     );
     const $ = cheerio.load(data);
@@ -117,17 +119,16 @@ async function searchByName(companyName) {
       if (results.length >= 10) return false;
       const cells = $(row).find('td');
       if (cells.length < 2) return;
-      const nameCell = cells.eq(0);
-      const link = nameCell.find('a');
-      const name = link.text().trim() || nameCell.text().trim();
-      const abn = cells.eq(1).text().trim().replace(/\s/g, '');
+      const abnCell = cells.eq(0);
+      const abn = abnCell.find('a').text().trim().replace(/\s/g, '');
+      const name = cells.eq(1).text().trim();
       if (!name || !abn) return;
       results.push({
         name,
         abn,
         type: cells.eq(2)?.text().trim() || '',
         state: cells.eq(3)?.text().trim() || '',
-        status: cells.eq(4)?.text().trim() || '',
+        status: abnCell.find('span').text().trim() || '',
       });
     });
   } catch {
