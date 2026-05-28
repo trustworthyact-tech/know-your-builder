@@ -6,7 +6,7 @@ const BASE = 'https://connectonline.asic.gov.au';
 const DATA_API_BASE = 'https://data.asic.gov.au/api/v1';
 
 function buildSearchUrl(query) {
-  return `${BASE}/RegistrySearch/faces/landing/SearchRegisters.jspx?searchType=OrgAndBusNm&searchText=${encodeURIComponent(query)}`;
+  return `${BASE}/RegistrySearch/faces/landing/panelSearch.jspx?searchType=OrgAndBusNm&searchText=${encodeURIComponent(query)}`;
 }
 
 function buildDetailUrl(acn) {

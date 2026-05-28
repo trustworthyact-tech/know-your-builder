@@ -11,7 +11,7 @@ const HEADERS = {
 };
 
 function buildSearchUrl(name) {
-  return `${BASE}/RegistrySearch/faces/landing/SearchRegisters.jspx?searchType=DPNm&searchText=${encodeURIComponent(name)}`;
+  return `${BASE}/RegistrySearch/faces/landing/panelSearch.jspx?searchType=DPNm&searchText=${encodeURIComponent(name)}`;
 }
 
 function normalise(s) {
@@ -69,7 +69,7 @@ async function checkDirector(directorName) {
 }
 
 async function searchASICDisqualified(directors) {
-  const fallbackUrl = `${BASE}/RegistrySearch/faces/landing/SearchRegisters.jspx?searchType=DPNm`;
+  const fallbackUrl = `${BASE}/RegistrySearch/faces/landing/panelSearch.jspx?searchType=DPNm`;
 
   if (!directors || directors.length === 0) {
     return {

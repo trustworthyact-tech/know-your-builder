@@ -24,7 +24,7 @@ function officerFullName(o) {
 
 // Officers (current + former) of targetAcn → per-officer company history via person officerships.
 async function searchViaDataApi(targetAcn, apiKey) {
-  const fallbackUrl = `${BASE}/RegistrySearch/faces/landing/SearchRegisters.jspx?searchType=OfficerPersonNm`;
+  const fallbackUrl = `${BASE}/RegistrySearch/faces/landing/panelSearch.jspx?searchType=OfficerPersonNm`;
 
   const officersPayload = await dataApiFetch(
     `/companies/${targetAcn}/officers?includeFormer=true`,
@@ -113,7 +113,7 @@ async function fetchAdfPage(url) {
 
 // Officers-by-person-name search — returns all company associations for a named individual
 function officerSearchUrl(name) {
-  return `${BASE}/RegistrySearch/faces/landing/SearchRegisters.jspx?searchType=OfficerPersonNm&searchText=${encodeURIComponent(name)}`;
+  return `${BASE}/RegistrySearch/faces/landing/panelSearch.jspx?searchType=OfficerPersonNm&searchText=${encodeURIComponent(name)}`;
 }
 
 function normalise(s) {
@@ -208,7 +208,7 @@ async function fetchDirectorCompanies(directorName) {
 }
 
 async function searchAsicExtract(companyName, abn, acn, directorNames) {
-  const fallbackUrl = `${BASE}/RegistrySearch/faces/landing/SearchRegisters.jspx?searchType=OfficerPersonNm`;
+  const fallbackUrl = `${BASE}/RegistrySearch/faces/landing/panelSearch.jspx?searchType=OfficerPersonNm`;
 
   // ASIC Data API path — direct ACN lookup, works for deregistered companies
   // and includes historical (resigned) directors that ASIC Connect omits.
