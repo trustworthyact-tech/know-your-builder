@@ -69,7 +69,7 @@ app.post('/api/search', async (req, res) => {
           .map((r) => r.title)
           .filter(Boolean);
         const allDirectors = [...new Set([...(directors ?? []), ...asicDirectors])];
-        return searchASICDisqualified(allDirectors);
+        return searchASICDisqualified(allDirectors, process.env.CAPTCHA_API_KEY);
       },
     },
     {

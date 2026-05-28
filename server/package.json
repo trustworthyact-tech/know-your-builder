@@ -3,8 +3,9 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
-    "dev": "nodemon index.js"
+    "start": "node --env-file=.env index.js",
+    "dev": "nodemon --env-file=.env index.js",
+    "test": "node --test scrapers/captcha.test.js scrapers/asicDisqualified.test.js"
   },
   "dependencies": {
     "axios": "^1.7.9",

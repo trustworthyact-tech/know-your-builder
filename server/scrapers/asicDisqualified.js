@@ -1,14 +1,7 @@
-const axios = require('axios');
 const cheerio = require('cheerio');
+const { fetchAdfPageWithCaptcha } = require('./browser');
 
 const BASE = 'https://connectonline.asic.gov.au';
-
-const HEADERS = {
-  'User-Agent':
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-  Referer: 'https://connectonline.asic.gov.au/',
-};
 
 function buildSearchUrl(name) {
   return `${BASE}/RegistrySearch/faces/landing/panelSearch.jspx?searchType=DPNm&searchText=${encodeURIComponent(name)}`;
@@ -24,51 +17,51 @@ function isNameMatch(resultName, queryName) {
   return rn.includes(qn) || qn.includes(rn);
 }
 
-async function checkDirector(directorName) {
-  const searchUrl = buildSearchUrl(directorName);
+// Exported so tests can call it directly against sample HTML.
+function parseDisqualifiedResults(html, directorName, searchUrl) {
+  const $ = cheerio.load(html);
   const matches = [];
 
-  try {
-    const { data } = await axios.get(searchUrl, {
-      headers: HEADERS,
-      timeout: 15000,
-      maxRedirects: 5,
+  $('table tbody tr').each((_, row) => {
+    const $cells = $(row).find('td');
+    if ($cells.length < 2) return;
+
+    const personName = $cells.eq(0).text().trim();
+    if (!personName || !isNameMatch(personName, directorName)) return;
+
+    const orderDate = $cells.eq(1)?.text().trim() || '';
+    const expiryDate = $cells.eq(2)?.text().trim() || '';
+    const reason = $cells.eq(3)?.text().trim() || '';
+
+    matches.push({
+      title: `${personName} — disqualified from managing corporations`,
+      url: searchUrl,
+      date: expiryDate ? `Order expires: ${expiryDate}` : orderDate,
+      status: 'Disqualified',
+      description: reason || 'Listed on the ASIC Disqualified Persons Register',
+      metadata: {
+        'Director Name': personName,
+        'Order Date': orderDate,
+        'Expiry Date': expiryDate,
+        Reason: reason,
+      },
     });
-    const $ = cheerio.load(data);
-
-    $('table tbody tr').each((_, row) => {
-      const $cells = $(row).find('td');
-      if ($cells.length < 2) return;
-
-      const personName = $cells.eq(0).text().trim();
-      if (!personName || !isNameMatch(personName, directorName)) return;
-
-      const orderDate = $cells.eq(1)?.text().trim() || '';
-      const expiryDate = $cells.eq(2)?.text().trim() || '';
-      const reason = $cells.eq(3)?.text().trim() || '';
-
-      matches.push({
-        title: `${personName} — disqualified from managing corporations`,
-        url: searchUrl,
-        date: expiryDate ? `Order expires: ${expiryDate}` : orderDate,
-        status: 'Disqualified',
-        description: reason || 'Listed on the ASIC Disqualified Persons Register',
-        metadata: {
-          'Director Name': personName,
-          'Order Date': orderDate,
-          'Expiry Date': expiryDate,
-          Reason: reason,
-        },
-      });
-    });
-  } catch {
-    // non-fatal — leave matches empty
-  }
+  });
 
   return matches;
 }
 
-async function searchASICDisqualified(directors) {
+async function checkDirector(directorName, captchaApiKey) {
+  const searchUrl = buildSearchUrl(directorName);
+  try {
+    const html = await fetchAdfPageWithCaptcha(searchUrl, captchaApiKey);
+    return parseDisqualifiedResults(html, directorName, searchUrl);
+  } catch {
+    return [];
+  }
+}
+
+async function searchASICDisqualified(directors, captchaApiKey) {
   const fallbackUrl = `${BASE}/RegistrySearch/faces/landing/panelSearch.jspx?searchType=DPNm`;
 
   if (!directors || directors.length === 0) {
@@ -82,13 +75,28 @@ async function searchASICDisqualified(directors) {
     };
   }
 
+  if (!captchaApiKey) {
+    return {
+      source: 'ASIC — Disqualified Persons Register',
+      jurisdiction: 'Federal',
+      category: 'identity',
+      results: [],
+      searchUrl: fallbackUrl,
+      summary: `${directors.length} director(s) — automated check unavailable, verify manually via ASIC Connect`,
+    };
+  }
+
   const allMatches = [];
   let firstUrl = fallbackUrl;
 
-  for (const director of directors) {
-    if (!director) continue;
-    if (firstUrl === fallbackUrl) firstUrl = buildSearchUrl(director);
-    const matches = await checkDirector(director);
+  const checked = directors.filter(Boolean).slice(0, 6);
+  if (checked[0]) firstUrl = buildSearchUrl(checked[0]);
+
+  const perDirector = await Promise.all(
+    checked.map((d) => checkDirector(d, captchaApiKey))
+  );
+
+  for (const matches of perDirector) {
     allMatches.push(...matches);
   }
 
@@ -101,8 +109,8 @@ async function searchASICDisqualified(directors) {
     summary:
       allMatches.length > 0
         ? `${allMatches.length} director(s) found on the ASIC disqualified persons register`
-        : `${directors.length} director(s) checked — no disqualification records found`,
+        : `${checked.length} director(s) checked — no disqualification records found`,
   };
 }
 
-module.exports = { searchASICDisqualified };
+module.exports = { searchASICDisqualified, parseDisqualifiedResults };
