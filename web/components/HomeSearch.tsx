@@ -19,18 +19,19 @@ export function HomeSearch() {
   const [pendingSearch, setPendingSearch] = useState<SearchFormData | null>(null);
   const [disambigMatches, setDisambigMatches] = useState<EntityMatch[]>([]);
 
-  const navigateToSearch = (companyName: string, abn: string, licenceNumber: string) => {
+  const navigateToSearch = (companyName: string, abn: string, licenceNumber: string, acn = '') => {
     const params = new URLSearchParams();
     if (companyName) params.set('companyName', companyName);
     if (abn) params.set('abn', abn);
+    if (acn) params.set('acn', acn);
     if (licenceNumber) params.set('licenceNumber', licenceNumber);
     router.push(`/search?${params.toString()}`);
   };
 
   const handleSearch = async (data: SearchFormData) => {
-    // ABN provided — identity is unambiguous, skip disambiguation
-    if (data.abn) {
-      navigateToSearch(data.companyName, data.abn, data.licenceNumber);
+    // ABN or ACN provided — identity is unambiguous, skip disambiguation
+    if (data.abn || data.acn) {
+      navigateToSearch(data.companyName, data.abn, data.licenceNumber, data.acn);
       return;
     }
     setPendingSearch(data);

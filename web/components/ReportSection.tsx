@@ -99,9 +99,7 @@ export function ReportSection({
                 <a
                   key={i}
                   href={item.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  aria-label={`${item.title} (opens in new tab)`}
+                  aria-label={item.title}
                   onClick={() => trackEvent('partner_link_clicked', { title: item.title, url: item.url })}
                   className="flex items-center justify-between py-3 px-1 gap-3 hover:bg-surface-alt/50 transition group focus:outline-none focus-visible:ring-2 focus-visible:ring-primary rounded"
                 >
@@ -146,9 +144,7 @@ export function ReportSection({
                   <a
                     key={i}
                     href={src.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    aria-label={`${src.label} (opens in new tab)`}
+                    aria-label={src.label}
                     className="text-xs font-semibold text-primary-light hover:text-primary transition"
                   >
                     {src.label} →

@@ -3,8 +3,15 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 
-function formatABN(raw: string): string {
+function formatIdentifier(raw: string): string {
   const digits = raw.replace(/\D/g, '').slice(0, 11);
+  if (digits.length <= 9) {
+    // ACN format: XXX XXX XXX
+    if (digits.length <= 3) return digits;
+    if (digits.length <= 6) return `${digits.slice(0, 3)} ${digits.slice(3)}`;
+    return `${digits.slice(0, 3)} ${digits.slice(3, 6)} ${digits.slice(6)}`;
+  }
+  // ABN format: XX XXX XXX XXX
   if (digits.length <= 2) return digits;
   if (digits.length <= 5) return `${digits.slice(0, 2)} ${digits.slice(2)}`;
   if (digits.length <= 8) return `${digits.slice(0, 2)} ${digits.slice(2, 5)} ${digits.slice(5)}`;
@@ -14,12 +21,13 @@ function formatABN(raw: string): string {
 export interface SearchFormData {
   companyName: string;
   abn: string;
+  acn: string;
   licenceNumber: string;
 }
 
 interface Errors {
   companyName?: string;
-  abn?: string;
+  identifier?: string;
 }
 
 interface SearchBarProps {
@@ -29,17 +37,18 @@ interface SearchBarProps {
 export function SearchBar({ onSearch }: SearchBarProps = {}) {
   const router = useRouter();
   const [companyName, setCompanyName] = useState('');
-  const [abn, setAbn] = useState('');
+  const [identifier, setIdentifier] = useState('');
   const [licenceNumber, setLicenceNumber] = useState('');
   const [errors, setErrors] = useState<Errors>({});
 
   const validate = (): boolean => {
     const errs: Errors = {};
-    if (!companyName.trim() && !abn.trim()) {
-      errs.companyName = 'Enter a builder name or ABN to search';
+    const digits = identifier.replace(/\D/g, '');
+    if (!companyName.trim() && !digits) {
+      errs.companyName = 'Enter a builder name, ABN, or ACN to search';
     }
-    if (abn.trim() && abn.replace(/\D/g, '').length !== 11) {
-      errs.abn = 'ABN must be 11 digits';
+    if (digits && digits.length !== 9 && digits.length !== 11) {
+      errs.identifier = 'Enter an 11-digit ABN or 9-digit ACN';
     }
     setErrors(errs);
     return Object.keys(errs).length === 0;
@@ -48,9 +57,12 @@ export function SearchBar({ onSearch }: SearchBarProps = {}) {
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!validate()) return;
+    const digits = identifier.replace(/\D/g, '');
+    const isAcn = digits.length === 9;
     const data: SearchFormData = {
       companyName: companyName.trim(),
-      abn: abn.replace(/\D/g, ''),
+      abn: isAcn ? '' : digits,
+      acn: isAcn ? digits : '',
       licenceNumber: licenceNumber.trim(),
     };
     if (onSearch) {
@@ -60,6 +72,7 @@ export function SearchBar({ onSearch }: SearchBarProps = {}) {
     const params = new URLSearchParams();
     if (data.companyName) params.set('companyName', data.companyName);
     if (data.abn) params.set('abn', data.abn);
+    if (data.acn) params.set('acn', data.acn);
     if (data.licenceNumber) params.set('licenceNumber', data.licenceNumber);
     router.push(`/search?${params.toString()}`);
   };
@@ -97,23 +110,23 @@ export function SearchBar({ onSearch }: SearchBarProps = {}) {
         )}
       </div>
 
-      {/* ABN */}
+      {/* ABN or ACN */}
       <div className="mb-4">
-        <label htmlFor="sb-abn" className="block text-sm font-semibold text-text-secondary mb-1">ABN</label>
-        <p id="sb-abn-hint" className="text-xs text-text-muted mb-1.5">Australian Business Number — 11 digits</p>
+        <label htmlFor="sb-identifier" className="block text-sm font-semibold text-text-secondary mb-1">ABN or ACN</label>
+        <p id="sb-identifier-hint" className="text-xs text-text-muted mb-1.5">11-digit ABN or 9-digit ACN</p>
         <input
-          id="sb-abn"
-          aria-describedby="sb-abn-hint"
+          id="sb-identifier"
+          aria-describedby="sb-identifier-hint"
           type="text"
           inputMode="numeric"
-          value={abn}
-          onChange={(e) => setAbn(formatABN(e.target.value))}
+          value={identifier}
+          onChange={(e) => setIdentifier(formatIdentifier(e.target.value))}
           placeholder="e.g. 51 824 753 556"
           className={`w-full border rounded-lg px-3.5 py-3 text-sm text-text-primary bg-surface placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-primary-light focus:border-primary-light transition ${
-            errors.abn ? 'border-danger' : 'border-border'
+            errors.identifier ? 'border-danger' : 'border-border'
           }`}
         />
-        {errors.abn && <p className="text-xs text-danger mt-1">{errors.abn}</p>}
+        {errors.identifier && <p className="text-xs text-danger mt-1">{errors.identifier}</p>}
       </div>
 
       {/* Licence number */}

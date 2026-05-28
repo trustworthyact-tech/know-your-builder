@@ -60,13 +60,13 @@ export function SearchContent() {
   const input: BuilderInput = {
     companyName:   params.get('companyName') ?? '',
     abn:           params.get('abn') ?? '',
+    acn:           params.get('acn') ?? '',
     licenceNumber: params.get('licenceNumber') || undefined,
-    acn:           '',
     tradingName:   '',
     directors:     [],
   };
 
-  const entityLabel = input.companyName || input.abn || 'this builder';
+  const entityLabel = input.companyName || input.abn || input.acn || 'this builder';
 
   const [step, setStep] = useState<Step>('persona');
   const [persona, setPersona] = useState<Persona | null>(null);
