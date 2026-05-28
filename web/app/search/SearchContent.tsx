@@ -31,7 +31,6 @@ const INITIAL_SEARCHES: SearchResult[] = [
   { key: 'vicBpc',           label: 'VIC Building Authority — Disciplinary Register', status: 'idle' },
   { key: 'waBuildingEnergy', label: 'WA Building and Energy — Enforcement',         status: 'idle' },
   { key: 'asicExtract',      label: 'ASIC — Director Company History',              status: 'idle' },
-  { key: 'links',            label: 'Additional Database Links',                    status: 'idle' },
 ];
 
 // Additional entries appended when isDeepCheck is true (inserted before 'links')

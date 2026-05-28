@@ -21,7 +21,6 @@ const TOC_SECTIONS = [
   { id: 's83', short: '8.3 Financial' },
   { id: 's84', short: '8.4 Payment' },
   { id: 's85', short: '8.5 Enforcement' },
-  { id: 's86', short: '8.6 Manual Review' },
 ] as const;
 
 function isAllErrored(statuses: SearchStatus[]): boolean {
@@ -218,6 +217,12 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
   const asicExtract = byKey('asicExtract');
   const afsaNpii = byKey('afsaNpii');
   const links = byKey('links');
+  const allLinkItems: ResultItem[] = links?.results ?? [];
+  const licenceLinks = allLinkItems.filter((r) => r.category === 'license');
+  const fwcLinks = allLinkItems.filter((r) => r.category === 'fwc');
+  const enforcementLinks = allLinkItems.filter(
+    (r) => r.category !== 'license' && r.category !== 'fwc'
+  );
 
   // Entity card data
   const entityName =
@@ -251,8 +256,9 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
   })();
 
   // Stats
-  const nonLinkResults = results.filter((r) => r.key !== 'links');
-  const totalHits = nonLinkResults.reduce((n, r) => n + (r.results?.length ?? 0), 0);
+  const totalHits = results
+    .filter((r) => r.key !== 'links')
+    .reduce((n, r) => n + (r.results?.length ?? 0), 0);
   const courtHits = austliiResults.reduce((n, r) => n + (r.results?.length ?? 0), 0);
 
   // Per-section result sets
@@ -292,7 +298,6 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
     ...vicBpcItems,
     ...waBuildingEnergyItems,
   ];
-  const linkItems: ResultItem[] = links?.results ?? [];
 
   // Section risk levels — derived from risk groups, falling back to scraper-status baseline
   const s81Risk = deriveRiskLevel(
@@ -592,6 +597,7 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
           searchResults={qbcc ? [licenceSearch] : []}
           riskLevel={s82Risk}
           resultsOverride={licenceItems}
+          supplementalLinks={licenceLinks}
         />
 
         {/* 8.3 Financial Risk Signals */}
@@ -602,6 +608,7 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
           searchResults={[asicInsolvency, atoDebt, afsaNpiiSearch, paymentTimes, modernSlavery].filter(Boolean) as SearchResult[]}
           riskLevel={s83Risk}
           resultsOverride={financialItems}
+          supplementalLinks={fwcLinks}
           criticalBanner={
             insolvencyItems.length > 0
               ? (() => {
@@ -634,17 +641,7 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
           riskLevel={s85Risk}
           resultsOverride={courtItems}
           showJurisdiction
-        />
-
-        {/* 8.6 Additional Databases — Manual Review */}
-        <ReportSection
-          id="s86"
-          title="8.6 Additional Databases — Manual Review"
-          icon="🔗"
-          searchResults={links ? [links] : []}
-          riskLevel="unavailable"
-          isLinkSection
-          resultsOverride={linkItems}
+          supplementalLinks={enforcementLinks}
         />
 
         {/* Disclaimer */}
