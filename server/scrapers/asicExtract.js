@@ -1,7 +1,89 @@
+const axios = require('axios');
 const cheerio = require('cheerio');
 const { getBrowser } = require('./browser');
 
 const BASE = 'https://connectonline.asic.gov.au';
+const DATA_API_BASE = 'https://data.asic.gov.au/api/v1';
+
+function abnToAcn(abn) {
+  const clean = (abn || '').replace(/\s/g, '');
+  return clean.length === 11 ? clean.slice(2) : null;
+}
+
+async function dataApiFetch(path, apiKey) {
+  const { data } = await axios.get(`${DATA_API_BASE}${path}`, {
+    headers: { 'x-api-key': apiKey, Accept: 'application/json' },
+    timeout: 15_000,
+  });
+  return data;
+}
+
+function officerFullName(o) {
+  return o.fullName ?? o.name ?? [o.givenName, o.familyName].filter(Boolean).join(' ') ?? '';
+}
+
+// Officers (current + former) of targetAcn → per-officer company history via person officerships.
+async function searchViaDataApi(targetAcn, apiKey) {
+  const fallbackUrl = `${BASE}/RegistrySearch/faces/landing/SearchRegisters.jspx?searchType=OfficerPersonNm`;
+
+  const officersPayload = await dataApiFetch(
+    `/companies/${targetAcn}/officers?includeFormer=true`,
+    apiKey,
+  );
+  const officers = officersPayload?.officers ?? officersPayload ?? [];
+
+  const seen = new Set([targetAcn]);
+  const resultItems = [];
+
+  await Promise.all(
+    officers.slice(0, 6).map(async (officer) => {
+      const personId = officer.personId ?? officer.id;
+      if (!personId) return;
+      try {
+        const personPayload = await dataApiFetch(`/persons/${personId}/officerships`, apiKey);
+        const officerships = personPayload?.officerships ?? personPayload ?? [];
+        const name = officerFullName(officer);
+        for (const co of officerships) {
+          const coAcn = (co.acn ?? co.organisationNumber ?? '').replace(/\s/g, '');
+          if (!coAcn || seen.has(coAcn)) continue;
+          seen.add(coAcn);
+          const role = officer.role ?? co.role ?? '';
+          const status = co.status ?? co.companyStatus ?? '';
+          resultItems.push({
+            title: co.companyName ?? co.name ?? coAcn,
+            url: `${BASE}/RegistrySearch/faces/landing/orgDetails.jspx?searchType=OrgAndBusNm&orgKey=${coAcn}`,
+            status,
+            description: [role ? `Role: ${role}` : null, `Director: ${name}`]
+              .filter(Boolean)
+              .join(' — '),
+            metadata: { ACN: coAcn, Director: name, Role: role, Status: status },
+          });
+        }
+      } catch {
+        // non-fatal — skip this person
+      }
+    }),
+  );
+
+  const deregisteredCount = resultItems.filter((r) =>
+    /deregistered|cancelled|wound.?up|struck.?off/i.test(r.status ?? ''),
+  ).length;
+
+  return {
+    source: 'ASIC — Director Company History (Deep Check)',
+    jurisdiction: 'Federal',
+    category: 'identity',
+    results: resultItems,
+    searchUrl: fallbackUrl,
+    summary:
+      resultItems.length > 0
+        ? `${resultItems.length} associated compan${resultItems.length !== 1 ? 'ies' : 'y'} found for ${officers.length} director(s)` +
+          (deregisteredCount > 0
+            ? ` — ${deregisteredCount} deregistered or cancelled`
+            : ' — no deregistered entities found')
+        : `${officers.length} director(s) checked — no additional company associations found`,
+  };
+}
 
 async function fetchAdfPage(url) {
   const browser = await getBrowser();
@@ -127,6 +209,18 @@ async function fetchDirectorCompanies(directorName) {
 
 async function searchAsicExtract(companyName, abn, acn, directorNames) {
   const fallbackUrl = `${BASE}/RegistrySearch/faces/landing/SearchRegisters.jspx?searchType=OfficerPersonNm`;
+
+  // ASIC Data API path — direct ACN lookup, works for deregistered companies
+  // and includes historical (resigned) directors that ASIC Connect omits.
+  const apiKey = process.env.ASIC_DATA_API_KEY;
+  const cleanAcn = (acn || '').replace(/\s/g, '') || abnToAcn(abn) || '';
+  if (apiKey && cleanAcn) {
+    try {
+      return await searchViaDataApi(cleanAcn, apiKey);
+    } catch {
+      // fall through to ASIC Connect path
+    }
+  }
 
   if (!directorNames || directorNames.length === 0) {
     return {

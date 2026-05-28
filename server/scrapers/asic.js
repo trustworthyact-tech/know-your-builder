@@ -1,7 +1,9 @@
+const axios = require('axios');
 const cheerio = require('cheerio');
 const { getBrowser } = require('./browser');
 
 const BASE = 'https://connectonline.asic.gov.au';
+const DATA_API_BASE = 'https://data.asic.gov.au/api/v1';
 
 function buildSearchUrl(query) {
   return `${BASE}/RegistrySearch/faces/landing/SearchRegisters.jspx?searchType=OrgAndBusNm&searchText=${encodeURIComponent(query)}`;
@@ -142,11 +144,67 @@ function abnToAcn(abn) {
   return clean.length === 11 ? clean.slice(2) : null;
 }
 
+// Returns [companyItem, ...directorItems] using the ASIC Data API.
+// Used as a fallback when ASIC Connect cannot find the company (e.g. deregistered).
+async function fetchFromDataApi(acn, apiKey, companyName) {
+  const headers = { 'x-api-key': apiKey, Accept: 'application/json' };
+  const detailUrl = buildDetailUrl(acn);
+
+  const { data: co } = await axios.get(`${DATA_API_BASE}/companies/${acn}`, {
+    headers,
+    timeout: 15_000,
+  });
+
+  const name = co?.name ?? co?.companyName ?? companyName ?? acn;
+  const status = co?.status ?? co?.companyStatus ?? '';
+
+  const companyItem = {
+    title: name,
+    url: detailUrl,
+    status,
+    date: co?.registrationDate ?? co?.dateOfRegistration ?? '',
+    metadata: {
+      ACN: co?.organisationNumber ?? co?.acn ?? acn,
+      Type: co?.type ?? co?.companyType ?? '',
+      Status: status,
+      'Registration Date': co?.registrationDate ?? co?.dateOfRegistration ?? '',
+      'Registered Office': co?.registeredOffice?.address ?? co?.registeredOfficeAddress ?? '',
+      'Principal Place of Business':
+        co?.principalPlaceOfBusiness?.address ?? co?.principalBusinessAddress ?? '',
+      Charges: String(co?.chargesCount ?? co?.numberOfCharges ?? ''),
+    },
+  };
+
+  // Current officers only (asic.js shows present-state; historical goes in asicExtract)
+  const { data: officersPayload } = await axios
+    .get(`${DATA_API_BASE}/companies/${acn}/officers`, { headers, timeout: 15_000 })
+    .catch(() => ({ data: null }));
+
+  const officers = officersPayload?.officers ?? officersPayload ?? [];
+  const directorItems = officers
+    .filter((o) => /director/i.test(o.role ?? ''))
+    .map((o) => {
+      const fullName =
+        o.fullName ?? o.name ?? [o.givenName, o.familyName].filter(Boolean).join(' ') ?? '';
+      return {
+        title: fullName,
+        url: detailUrl,
+        date: o.appointmentDate ?? o.appointedDate ?? '',
+        metadata: {
+          Role: 'Director',
+          'Appointment Date': o.appointmentDate ?? o.appointedDate ?? '',
+        },
+      };
+    });
+
+  return [companyItem, ...directorItems];
+}
+
 async function searchASIC(companyName, abn, acn) {
   const derivedAcn = (acn || '').replace(/\s/g, '') || abnToAcn(abn) || '';
   const query = derivedAcn || companyName || '';
   const searchUrl = buildSearchUrl(query);
-  const results = [];
+  let results = [];
 
   try {
     const searchHtml = await fetchAdfPage(searchUrl);
@@ -204,6 +262,19 @@ async function searchASIC(companyName, abn, acn) {
     }
   } catch {
     // non-fatal — empty results returned
+  }
+
+  // Data API fallback: used when ASIC Connect returns nothing (deregistered companies,
+  // CAPTCHA blocks, etc.). Requires ASIC_DATA_API_KEY and a known ACN.
+  if (results.length === 0) {
+    const apiKey = process.env.ASIC_DATA_API_KEY;
+    if (apiKey && derivedAcn) {
+      try {
+        results = await fetchFromDataApi(derivedAcn, apiKey, companyName);
+      } catch {
+        // non-fatal
+      }
+    }
   }
 
   const companyCount = results.filter((r) => r.metadata?.Role !== 'Director').length;
