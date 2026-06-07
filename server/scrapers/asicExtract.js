@@ -1,6 +1,6 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
-const { getBrowser } = require('./browser');
+const { fetchAdfPageWithCaptcha } = require('./browser');
 
 const BASE = 'https://connectonline.asic.gov.au';
 const DATA_API_BASE = 'https://data.asic.gov.au/api/v1';
@@ -85,32 +85,6 @@ async function searchViaDataApi(targetAcn, apiKey) {
   };
 }
 
-async function fetchAdfPage(url) {
-  const browser = await getBrowser();
-  const page = await browser.newPage();
-  try {
-    await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-AU,en;q=0.9' });
-    await page.goto(url, { waitUntil: 'networkidle2', timeout: 45_000 });
-
-    const deadline = Date.now() + 15_000;
-    while (Date.now() < deadline) {
-      const title = await page.title();
-      const isChallenge =
-        title === 'Just a moment...' ||
-        title === 'Please Wait...' ||
-        title === 'Attention Required!' ||
-        title === '';
-      if (!isChallenge) break;
-      await new Promise((r) => setTimeout(r, 1_000));
-    }
-
-    await new Promise((r) => setTimeout(r, 3_000));
-    return await page.content();
-  } finally {
-    await page.close().catch(() => {});
-  }
-}
-
 // Officers-by-person-name search — returns all company associations for a named individual
 function officerSearchUrl(name) {
   return `${BASE}/RegistrySearch/faces/landing/panelSearch.jspx?searchType=OfficerPersonNm&searchText=${encodeURIComponent(name)}`;
@@ -124,15 +98,13 @@ function isAcn(text) {
   return /^\d{3}\s?\d{3}\s?\d{3}$/.test(text.trim());
 }
 
-// Fetch the list of company associations for one director name.
-// ASIC Connect officer search returns a table where each row is a
-// (person, company) pair — one row per company the person is/was an officer of.
-async function fetchDirectorCompanies(directorName) {
+// Fetch the list of company associations for one director name via ASIC Connect.
+async function fetchDirectorCompanies(directorName, captchaApiKey) {
   const searchUrl = officerSearchUrl(directorName);
   const companies = [];
 
   try {
-    const html = await fetchAdfPage(searchUrl);
+    const html = await fetchAdfPageWithCaptcha(searchUrl, captchaApiKey);
     const $ = cheerio.load(html);
 
     $('table tbody tr').each((_, row) => {
@@ -207,7 +179,7 @@ async function fetchDirectorCompanies(directorName) {
   return companies.slice(0, 15);
 }
 
-async function searchAsicExtract(companyName, abn, acn, directorNames) {
+async function searchAsicExtract(companyName, abn, acn, directorNames, captchaApiKey) {
   const fallbackUrl = `${BASE}/RegistrySearch/faces/landing/panelSearch.jspx?searchType=OfficerPersonNm`;
 
   // ASIC Data API path — direct ACN lookup, works for deregistered companies
@@ -233,12 +205,25 @@ async function searchAsicExtract(companyName, abn, acn, directorNames) {
     };
   }
 
+  if (!captchaApiKey) {
+    return {
+      source: 'ASIC — Director Company History (Deep Check)',
+      jurisdiction: 'Federal',
+      category: 'identity',
+      results: [],
+      searchUrl: fallbackUrl,
+      summary: `${directorNames.length} director(s) — automated check unavailable, verify manually via ASIC Connect`,
+    };
+  }
+
   // Limit to 4 directors — avoids excessive requests
   const directorsToCheck = directorNames.slice(0, 4).filter(Boolean);
   const seen = new Set();
   const allCompanies = [];
 
-  const perDirector = await Promise.all(directorsToCheck.map(fetchDirectorCompanies));
+  const perDirector = await Promise.all(
+    directorsToCheck.map((d) => fetchDirectorCompanies(d, captchaApiKey))
+  );
 
   for (const companies of perDirector) {
     for (const co of companies) {

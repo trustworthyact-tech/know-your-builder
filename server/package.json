@@ -5,7 +5,7 @@
   "scripts": {
     "start": "node --env-file=.env index.js",
     "dev": "nodemon --env-file=.env index.js",
-    "test": "node --test scrapers/captcha.test.js scrapers/asicDisqualified.test.js"
+    "test": "node --test scrapers/captcha.test.js scrapers/asicDisqualified.test.js scrapers/asic.test.js"
   },
   "dependencies": {
     "axios": "^1.7.9",

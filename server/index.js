@@ -50,7 +50,7 @@ app.post('/api/search', async (req, res) => {
   const send = (result) => res.write(JSON.stringify(result) + '\n');
 
   // Shared promise so asicDisqualified can wait for ASIC directors without a second HTTP call
-  const asicPromise = searchASIC(companyName, abn, acn);
+  const asicPromise = searchASIC(companyName, abn, acn, process.env.CAPTCHA_API_KEY);
 
   const searches = [
     { key: 'abn', label: 'ABR — Business Register', fn: () => searchABN(abn, companyName) },
@@ -163,7 +163,7 @@ app.post('/api/search', async (req, res) => {
           .map((r) => r.title)
           .filter(Boolean);
         const allDirectors = [...new Set([...(directors ?? []), ...asicDirectors])];
-        return searchAsicExtract(companyName, abn, acn, allDirectors);
+        return searchAsicExtract(companyName, abn, acn, allDirectors, process.env.CAPTCHA_API_KEY);
       },
     },
     {

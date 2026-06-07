@@ -1,6 +1,6 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
-const { getBrowser } = require('./browser');
+const { fetchAdfPageWithCaptcha } = require('./browser');
 
 const BASE = 'https://connectonline.asic.gov.au';
 const DATA_API_BASE = 'https://data.asic.gov.au/api/v1';
@@ -11,36 +11,6 @@ function buildSearchUrl(query) {
 
 function buildDetailUrl(acn) {
   return `${BASE}/RegistrySearch/faces/landing/orgDetails.jspx?searchType=OrgAndBusNm&orgKey=${acn.replace(/\s/g, '')}`;
-}
-
-// Navigate to an Oracle ADF page, wait for all AJAX to settle, then return rendered HTML.
-async function fetchAdfPage(url) {
-  const browser = await getBrowser();
-  const page = await browser.newPage();
-  try {
-    await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-AU,en;q=0.9' });
-    await page.goto(url, { waitUntil: 'networkidle2', timeout: 45_000 });
-
-    // Wait for WAF/Cloudflare challenge to clear
-    const deadline = Date.now() + 15_000;
-    while (Date.now() < deadline) {
-      const title = await page.title();
-      const isChallenge =
-        title === 'Just a moment...' ||
-        title === 'Please Wait...' ||
-        title === 'Attention Required!' ||
-        title === '';
-      if (!isChallenge) break;
-      await new Promise((r) => setTimeout(r, 1_000));
-    }
-
-    // ADF components continue rendering DOM after the last network request
-    await new Promise((r) => setTimeout(r, 3_000));
-
-    return await page.content();
-  } finally {
-    await page.close().catch(() => {});
-  }
 }
 
 // Locate the results table by its column headers rather than a fixed CSS class,
@@ -200,14 +170,14 @@ async function fetchFromDataApi(acn, apiKey, companyName) {
   return [companyItem, ...directorItems];
 }
 
-async function searchASIC(companyName, abn, acn) {
+async function searchASIC(companyName, abn, acn, captchaApiKey) {
   const derivedAcn = (acn || '').replace(/\s/g, '') || abnToAcn(abn) || '';
   const query = derivedAcn || companyName || '';
   const searchUrl = buildSearchUrl(query);
   let results = [];
 
   try {
-    const searchHtml = await fetchAdfPage(searchUrl);
+    const searchHtml = await fetchAdfPageWithCaptcha(searchUrl, captchaApiKey);
     const $ = cheerio.load(searchHtml);
     const matches = parseSearchResults($);
 
@@ -233,7 +203,7 @@ async function searchASIC(companyName, abn, acn) {
       if (bestMatch.acn) {
         try {
           const detailUrl = buildDetailUrl(bestMatch.acn);
-          const detailHtml = await fetchAdfPage(detailUrl);
+          const detailHtml = await fetchAdfPageWithCaptcha(detailUrl, captchaApiKey);
           const $d = cheerio.load(detailHtml);
           const fields = parseCompanyDetail($d);
 
@@ -259,13 +229,44 @@ async function searchASIC(companyName, abn, acn) {
       } else {
         results.push(companyItem);
       }
+    } else if (derivedAcn) {
+      // When searching by ACN, ASIC Connect returns the company detail inline on
+      // the search results page (ADF renders a single expanded result). The standard
+      // list-format table that parseSearchResults expects is absent. Fall back to
+      // parseCompanyDetail, which handles th/td row-per-field tables.
+      // Note: ASIC Connect no longer exposes a free-access officer/director listing —
+      // director info requires a paid "Roles and relationship extract" ($23 on ASIC).
+      // Directors are retrieved from ASIC_DATA_API_KEY fallback below if set.
+      const fields = parseCompanyDetail($);
+      const name = fields['Name'] || companyName || '';
+      const status = fields['Status'] || '';
+
+      if (name) {
+        const companyItem = {
+          title: name,
+          url: searchUrl,
+          status,
+          date: fields['Registration date'] || fields['Date of registration'] || '',
+          metadata: {
+            ACN: fields['ACN'] || derivedAcn,
+            Type: fields['Type'] || '',
+            Status: status,
+            'Registration Date': fields['Registration date'] || '',
+            'Registered Office': fields['Locality of registered office'] || '',
+            'Principal Place of Business': fields['Principal place of business'] || '',
+            Charges: fields['Number of charges'] || '',
+            ...(fields['Former name(s)'] ? { 'Former Names': fields['Former name(s)'] } : {}),
+          },
+        };
+        results.push(companyItem);
+      }
     }
   } catch {
-    // non-fatal — empty results returned
+    // non-fatal — fall through to Data API
   }
 
   // Data API fallback: used when ASIC Connect returns nothing (deregistered companies,
-  // CAPTCHA blocks, etc.). Requires ASIC_DATA_API_KEY and a known ACN.
+  // missing CAPTCHA key, etc.). Requires ASIC_DATA_API_KEY and a known ACN.
   if (results.length === 0) {
     const apiKey = process.env.ASIC_DATA_API_KEY;
     if (apiKey && derivedAcn) {
@@ -295,4 +296,4 @@ async function searchASIC(companyName, abn, acn) {
   };
 }
 
-module.exports = { searchASIC };
+module.exports = { searchASIC, parseSearchResults, parseCompanyDetail, parseDirectors };
