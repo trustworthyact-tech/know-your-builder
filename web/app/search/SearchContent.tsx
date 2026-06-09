@@ -56,13 +56,14 @@ export function SearchContent() {
   const router = useRouter();
   const params = useSearchParams();
 
+  const directorName = params.get('directorName') || undefined;
   const input: BuilderInput = {
-    companyName:   params.get('companyName') ?? '',
-    abn:           params.get('abn') ?? '',
-    acn:           params.get('acn') ?? '',
-    licenceNumber: params.get('licenceNumber') || undefined,
-    tradingName:   '',
-    directors:     [],
+    companyName:  params.get('companyName') ?? '',
+    abn:          params.get('abn') ?? '',
+    acn:          params.get('acn') ?? '',
+    directorName,
+    tradingName:  '',
+    directors:    directorName ? [directorName] : [],
   };
 
   const entityLabel = input.companyName || input.abn || input.acn || 'this builder';

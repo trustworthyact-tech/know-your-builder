@@ -4,7 +4,7 @@ export interface BuilderInput {
   companyName: string;
   tradingName: string;
   directors: string[];
-  licenceNumber?: string;
+  directorName?: string;
 }
 
 export interface ResultItem {

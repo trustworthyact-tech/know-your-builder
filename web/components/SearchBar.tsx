@@ -22,7 +22,7 @@ export interface SearchFormData {
   companyName: string;
   abn: string;
   acn: string;
-  licenceNumber: string;
+  directorName: string;
 }
 
 interface Errors {
@@ -38,14 +38,14 @@ export function SearchBar({ onSearch }: SearchBarProps = {}) {
   const router = useRouter();
   const [companyName, setCompanyName] = useState('');
   const [identifier, setIdentifier] = useState('');
-  const [licenceNumber, setLicenceNumber] = useState('');
+  const [directorName, setDirectorName] = useState('');
   const [errors, setErrors] = useState<Errors>({});
 
   const validate = (): boolean => {
     const errs: Errors = {};
     const digits = identifier.replace(/\D/g, '');
-    if (!companyName.trim() && !digits) {
-      errs.companyName = 'Enter a builder name, ABN, or ACN to search';
+    if (!companyName.trim() && !digits && !directorName.trim()) {
+      errs.companyName = 'Enter a builder name, ABN, ACN, or director name to search';
     }
     if (digits && digits.length !== 9 && digits.length !== 11) {
       errs.identifier = 'Enter an 11-digit ABN or 9-digit ACN';
@@ -63,7 +63,7 @@ export function SearchBar({ onSearch }: SearchBarProps = {}) {
       companyName: companyName.trim(),
       abn: isAcn ? '' : digits,
       acn: isAcn ? digits : '',
-      licenceNumber: licenceNumber.trim(),
+      directorName: directorName.trim(),
     };
     if (onSearch) {
       onSearch(data);
@@ -73,7 +73,7 @@ export function SearchBar({ onSearch }: SearchBarProps = {}) {
     if (data.companyName) params.set('companyName', data.companyName);
     if (data.abn) params.set('abn', data.abn);
     if (data.acn) params.set('acn', data.acn);
-    if (data.licenceNumber) params.set('licenceNumber', data.licenceNumber);
+    if (data.directorName) params.set('directorName', data.directorName);
     router.push(`/search?${params.toString()}`);
   };
 
@@ -129,21 +129,22 @@ export function SearchBar({ onSearch }: SearchBarProps = {}) {
         {errors.identifier && <p className="text-xs text-danger mt-1">{errors.identifier}</p>}
       </div>
 
-      {/* Licence number */}
+      {/* Director / person name */}
       <div className="mb-6">
-        <label htmlFor="sb-licence" className="block text-sm font-semibold text-text-secondary mb-1">
-          Licence Number
+        <label htmlFor="sb-director" className="block text-sm font-semibold text-text-secondary mb-1">
+          Director / Person Name
         </label>
-        <p id="sb-licence-hint" className="text-xs text-text-muted mb-1.5">
-          QBCC, NSW Fair Trading, or other state licence
+        <p id="sb-director-hint" className="text-xs text-text-muted mb-1.5">
+          Search for an individual across all databases — links them to companies they control
         </p>
         <input
-          id="sb-licence"
-          aria-describedby="sb-licence-hint"
+          id="sb-director"
+          aria-describedby="sb-director-hint"
           type="text"
-          value={licenceNumber}
-          onChange={(e) => setLicenceNumber(e.target.value)}
-          placeholder="e.g. 1234567"
+          value={directorName}
+          onChange={(e) => setDirectorName(e.target.value)}
+          autoCapitalize="words"
+          placeholder="e.g. John Smith"
           className="w-full border border-border rounded-lg px-3.5 py-3 text-sm text-text-primary bg-surface placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-primary-light focus:border-primary-light transition"
         />
       </div>

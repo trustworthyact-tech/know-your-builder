@@ -19,19 +19,24 @@ export function HomeSearch() {
   const [pendingSearch, setPendingSearch] = useState<SearchFormData | null>(null);
   const [disambigMatches, setDisambigMatches] = useState<EntityMatch[]>([]);
 
-  const navigateToSearch = (companyName: string, abn: string, licenceNumber: string, acn = '') => {
+  const navigateToSearch = (companyName: string, abn: string, directorName: string, acn = '') => {
     const params = new URLSearchParams();
     if (companyName) params.set('companyName', companyName);
     if (abn) params.set('abn', abn);
     if (acn) params.set('acn', acn);
-    if (licenceNumber) params.set('licenceNumber', licenceNumber);
+    if (directorName) params.set('directorName', directorName);
     router.push(`/search?${params.toString()}`);
   };
 
   const handleSearch = async (data: SearchFormData) => {
     // ABN or ACN provided — identity is unambiguous, skip disambiguation
     if (data.abn || data.acn) {
-      navigateToSearch(data.companyName, data.abn, data.licenceNumber, data.acn);
+      navigateToSearch(data.companyName, data.abn, data.directorName, data.acn);
+      return;
+    }
+    // Director-only search bypasses disambiguation (no company to disambiguate)
+    if (!data.companyName && data.directorName) {
+      navigateToSearch('', '', data.directorName);
       return;
     }
     setPendingSearch(data);
@@ -48,13 +53,13 @@ export function HomeSearch() {
         setDisambigMatches(matches);
         setView('disambiguate');
       } else if (matches.length === 1) {
-        navigateToSearch(matches[0].name, matches[0].abn, data.licenceNumber);
+        navigateToSearch(matches[0].name, matches[0].abn, data.directorName);
       } else {
-        navigateToSearch(data.companyName, '', data.licenceNumber);
+        navigateToSearch(data.companyName, '', data.directorName);
       }
     } catch {
       // disambiguation failure is non-fatal — proceed with name-only search
-      navigateToSearch(data.companyName, '', data.licenceNumber);
+      navigateToSearch(data.companyName, '', data.directorName);
     }
   };
 
@@ -81,7 +86,6 @@ export function HomeSearch() {
     const params = new URLSearchParams();
     if (data.builderName) params.set('companyName', data.builderName);
     if (data.abn) params.set('abn', data.abn.replace(/\s/g, ''));
-    if (data.licenceNumber) params.set('licenceNumber', data.licenceNumber);
     router.push(`/search?${params.toString()}`);
   };
 
@@ -124,10 +128,10 @@ export function HomeSearch() {
         companyName={pendingSearch.companyName}
         matches={disambigMatches}
         onSelect={(match) =>
-          navigateToSearch(match.name, match.abn, pendingSearch.licenceNumber)
+          navigateToSearch(match.name, match.abn, pendingSearch.directorName)
         }
         onSkip={() =>
-          navigateToSearch(pendingSearch.companyName, '', pendingSearch.licenceNumber)
+          navigateToSearch(pendingSearch.companyName, '', pendingSearch.directorName)
         }
       />
     );

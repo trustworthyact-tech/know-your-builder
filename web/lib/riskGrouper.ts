@@ -207,24 +207,15 @@ export function riskGrouper(findings: Record<string, SearchResult>): RiskGroupRe
     const qbcc = findings['qbcc'];
     const licenceResults = qbcc?.licenceResults ?? [];
 
-    if (qbcc?.status === 'done') {
-      if (licenceResults.length === 0) {
+    if (qbcc?.status === 'done' && licenceResults.length > 0) {
+      const inactiveLicences = licenceResults.filter(hasInactiveStatus);
+      if (inactiveLicences.length > 0) {
         severity = 'significant';
         triggers.push({
           scraperKey: 'qbcc',
-          finding: 'No active QBCC licence found for the entity',
+          finding: `${inactiveLicences.length} licence(s) with expired, suspended, or cancelled status`,
           anchor: '#s82',
         });
-      } else {
-        const inactiveLicences = licenceResults.filter(hasInactiveStatus);
-        if (inactiveLicences.length > 0) {
-          severity = 'significant';
-          triggers.push({
-            scraperKey: 'qbcc',
-            finding: `${inactiveLicences.length} licence(s) with expired, suspended, or cancelled status`,
-            anchor: '#s82',
-          });
-        }
       }
     }
 

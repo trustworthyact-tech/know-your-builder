@@ -240,6 +240,14 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
   const isStale = reportAgeMs > STALE_DAYS * 24 * 60 * 60 * 1000;
   const reportAgeDays = Math.floor(reportAgeMs / (24 * 60 * 60 * 1000));
 
+  // Overall risk — highest severity across all groups
+  const overallRisk: RiskLevel =
+    riskGroups.length === 0
+      ? 'clear'
+      : riskGroups.some((g) => g.severity === 'significant')
+        ? 'significant'
+        : 'findings';
+
   const recheckUrl = (() => {
     const p = new URLSearchParams();
     p.set('companyName', input.companyName || entityName);
@@ -269,7 +277,10 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
     (r) => r.metadata?.Role === 'Director'
   );
   const disqualifiedItems: ResultItem[] = asicDisqualified?.results ?? [];
-  const asicExtractItems: ResultItem[] = asicExtract?.results ?? [];
+  const FLAGGED_STATUS = /deregistered|cancelled|wound.?up|struck.?off|dissolved|externally.adm/i;
+  const asicExtractItems: ResultItem[] = (asicExtract?.results ?? []).filter(
+    (r) => FLAGGED_STATUS.test(r.status ?? '')
+  );
   const identityItems: ResultItem[] = [
     ...(abn?.results ?? []),
     ...asicCompanyItems,
@@ -359,8 +370,8 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
     searchUrl: qbcc?.searchUrl,
     summary:
       licenceItems.length > 0
-        ? `${licenceItems.length} licence record(s) found`
-        : 'No QBCC licence records found',
+        ? `${licenceItems.length} QBCC licence record(s) found`
+        : 'No records found in the QBCC register — verify licences with the relevant state building authority using the links below',
   };
 
   const adjSearch: SearchResult = {
@@ -549,7 +560,7 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
             </div>
             <div className="flex-1 text-center px-3">
               <p className="text-xs text-text-muted mb-1">Risk indicator</p>
-              <RiskBadge level={s85Risk} />
+              <RiskBadge level={overallRisk} />
             </div>
           </div>
 
