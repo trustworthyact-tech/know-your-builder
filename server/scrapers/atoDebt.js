@@ -25,9 +25,11 @@ function isAtoDebtNotice(text) {
   return ATO_KEYWORDS.some((k) => lower.includes(k));
 }
 
-function buildSearchUrl(companyName, abn) {
+function buildSearchUrl(companyName, abn, acn) {
   // The ATO debt notice category uses a distinct filter on the same notices register
-  const q = abn ? abn.replace(/\s/g, '') : companyName || '';
+  const q = abn ? abn.replace(/\s/g, '') :
+            acn ? acn.replace(/\s/g, '') :
+            companyName || '';
   return `${BASE}/notices?q=${encodeURIComponent(q)}&noticeType=ATP`;
 }
 
@@ -126,8 +128,8 @@ function parseCardLayout($, searchUrl) {
   return results;
 }
 
-async function searchAtoDebt(companyName, abn) {
-  const searchUrl = buildSearchUrl(companyName, abn);
+async function searchAtoDebt(companyName, abn, acn) {
+  const searchUrl = buildSearchUrl(companyName, abn, acn);
   let results = [];
 
   try {

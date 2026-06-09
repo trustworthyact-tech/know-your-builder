@@ -7,8 +7,10 @@ const HEADERS = {
   Accept: 'application/json, text/html',
 };
 
-async function searchPaymentTimes(companyName, abn) {
-  const query = abn ? abn.replace(/\s/g, '') : companyName;
+async function searchPaymentTimes(companyName, abn, acn) {
+  const query = abn ? abn.replace(/\s/g, '') :
+                acn ? acn.replace(/\s/g, '') :
+                companyName;
   const results = [];
 
   // Try the PTRR JSON API first

@@ -7,7 +7,18 @@ const HEADERS = {
   Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
 };
 
-async function searchABN(abn, companyName) {
+// Normalise to "pty ltd" form so "Proprietary Limited" and "Pty Ltd" compare equal.
+function normaliseName(s) {
+  return (s || '')
+    .toLowerCase()
+    .replace(/\bproprietary\b/g, 'pty')
+    .replace(/\blimited\b/g, 'ltd')
+    .replace(/[.,]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+async function searchABN(abn, companyName, acn) {
   const results = [];
 
   if (abn) {
@@ -55,6 +66,7 @@ async function searchABN(abn, companyName) {
   }
 
   if (companyName && results.length === 0) {
+    const nameResults = [];
     try {
       const encoded = encodeURIComponent(companyName);
       const { data } = await axios.get(
@@ -71,7 +83,7 @@ async function searchABN(abn, companyName) {
         const abnValue = abnLink.text().trim().replace(/\s/g, '');
         const name = cells.eq(1).text().trim();
         if (!name || !abnValue) return;
-        results.push({
+        nameResults.push({
           title: name,
           url: abnLink.attr('href')
             ? `https://abr.business.gov.au${abnLink.attr('href')}`
@@ -86,6 +98,26 @@ async function searchABN(abn, companyName) {
       });
     } catch {
       // ignore
+    }
+
+    // Narrow to the specific entity when an identifier is available.
+    // ABN = 2-digit prefix + 9-digit ACN, so last 9 digits of ABN == ACN.
+    const cleanAcn = (acn || '').replace(/\s/g, '');
+    const cleanAbn = (abn || '').replace(/\s/g, '');
+    if (cleanAcn) {
+      const byAcn = nameResults.filter(r => (r.metadata.ABN || '').slice(2) === cleanAcn);
+      results.push(...(byAcn.length > 0 ? byAcn : nameResults.filter(r =>
+        normaliseName(r.title) === normaliseName(companyName)
+      )));
+    } else if (cleanAbn) {
+      const byAbn = nameResults.filter(r => r.metadata.ABN === cleanAbn);
+      results.push(...(byAbn.length > 0 ? byAbn : nameResults.filter(r =>
+        normaliseName(r.title) === normaliseName(companyName)
+      )));
+    } else {
+      // Name-only: exact normalised match, fall back to all results if nothing matches.
+      const byName = nameResults.filter(r => normaliseName(r.title) === normaliseName(companyName));
+      results.push(...(byName.length > 0 ? byName : nameResults));
     }
   }
 

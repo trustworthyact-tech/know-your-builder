@@ -82,9 +82,9 @@ function parseResults($) {
   return results;
 }
 
-async function searchAsicInsolvency(companyName, abn) {
-  const acn = abnToAcn(abn);
-  const searchTerm = acn || companyName || '';
+async function searchAsicInsolvency(companyName, abn, acn) {
+  const derivedAcn = (acn || '').replace(/\s/g, '') || abnToAcn(abn);
+  const searchTerm = derivedAcn || companyName || '';
   let results = [];
 
   const browser = await getBrowser();

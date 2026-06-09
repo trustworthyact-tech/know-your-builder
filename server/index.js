@@ -53,7 +53,7 @@ app.post('/api/search', async (req, res) => {
   const asicPromise = searchASIC(companyName, abn, acn, process.env.CAPTCHA_API_KEY);
 
   const searches = [
-    { key: 'abn', label: 'ABR — Business Register', fn: () => searchABN(abn, companyName) },
+    { key: 'abn', label: 'ABR — Business Register', fn: () => searchABN(abn, companyName, acn) },
     {
       key: 'asic',
       label: 'ASIC Connect — Company Search',
@@ -75,12 +75,12 @@ app.post('/api/search', async (req, res) => {
     {
       key: 'asicInsolvency',
       label: 'ASIC Published Notices — Insolvency',
-      fn: () => searchAsicInsolvency(companyName, abn),
+      fn: () => searchAsicInsolvency(companyName, abn, acn),
     },
     {
       key: 'atoDebt',
       label: 'ASIC Published Notices — ATO Tax Debt',
-      fn: () => searchAtoDebt(companyName, abn),
+      fn: () => searchAtoDebt(companyName, abn, acn),
     },
     {
       key: 'austlii_federal',
@@ -130,7 +130,7 @@ app.post('/api/search', async (req, res) => {
     {
       key: 'paymentTimes',
       label: 'Payment Times Reporting Register',
-      fn: () => searchPaymentTimes(companyName, abn),
+      fn: () => searchPaymentTimes(companyName, abn, acn),
     },
     {
       key: 'modernSlavery',

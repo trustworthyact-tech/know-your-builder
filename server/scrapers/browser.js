@@ -5,6 +5,7 @@ const { solveCaptcha } = require('./captcha');
 puppeteer.use(StealthPlugin());
 
 let browserInstance = null;
+let launchPromise = null;
 let idleTimer = null;
 const IDLE_TIMEOUT_MS = 120_000;
 
@@ -24,29 +25,38 @@ async function getBrowser() {
     return browserInstance;
   }
 
+  // Prevent concurrent launches: if a launch is already in progress, wait for it.
+  if (launchPromise) return launchPromise;
+
   const launchArgs = [
     '--no-sandbox',
     '--disable-setuid-sandbox',
     '--disable-dev-shm-usage',
     '--disable-gpu',
     '--no-first-run',
-    '--no-zygote',
     '--disable-accelerated-2d-canvas',
   ];
 
-  browserInstance = await puppeteer.launch({
-    headless: process.env.PUPPETEER_HEADLESS === 'true' ? 'shell' : false,
+  launchPromise = puppeteer.launch({
+    headless: process.env.PUPPETEER_HEADLESS === 'false' ? false : 'shell',
     executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
     args: launchArgs,
+  }).then((b) => {
+    browserInstance = b;
+    launchPromise = null;
+    b.on('disconnected', () => {
+      browserInstance = null;
+      launchPromise = null;
+      clearTimeout(idleTimer);
+    });
+    scheduleClose();
+    return b;
+  }).catch((err) => {
+    launchPromise = null;
+    throw err;
   });
 
-  browserInstance.on('disconnected', () => {
-    browserInstance = null;
-    clearTimeout(idleTimer);
-  });
-
-  scheduleClose();
-  return browserInstance;
+  return launchPromise;
 }
 
 // Returns the rendered HTML of a page after bot-protection challenges have resolved.
