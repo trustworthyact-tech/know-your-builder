@@ -8,13 +8,15 @@ function buildSearchUrl(name) {
 }
 
 function normalise(s) {
-  return (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  return (s || '').toLowerCase().replace(/[^a-z0-9\s]/g, '').trim();
 }
 
+// Order-independent word match — handles ASIC surname-first formatting.
+// "ROBERTS Veronica" correctly matches query "Veronica Roberts".
 function isNameMatch(resultName, queryName) {
-  const rn = normalise(resultName);
-  const qn = normalise(queryName);
-  return rn.includes(qn) || qn.includes(rn);
+  const rWords = new Set(normalise(resultName).split(/\s+/));
+  const qWords = normalise(queryName).split(/\s+/).filter(Boolean);
+  return qWords.length > 0 && qWords.every((w) => rWords.has(w));
 }
 
 // Exported so tests can call it directly against sample HTML.
