@@ -3,53 +3,69 @@ function generateLinks({ abn, acn, companyName }) {
 
   const links = [
     // ── Licences (→ 8.2) ─────────────────────────────────────────────────────
+    // URLs verified 2026-06-11 via probe tests (server/tests/test-*-licence.js).
+    // These are landing/search pages for manual lookup — none support automated
+    // deep-linking directly into results.
     {
       jurisdiction: 'NSW',
       category: 'license',
       source: 'NSW Fair Trading — Licence Check',
-      url: `https://www.onlineservices.fairtrading.nsw.gov.au/ftsonline/licence/form.do?licence_action=SEARCH&q=${q}`,
+      // Old domain (onlineservices.fairtrading.nsw.gov.au) is defunct; licence
+      // search is now hosted on fairtrading.nsw.gov.au under licences-and-credentials.
+      url: `https://www.fairtrading.nsw.gov.au/business-and-economy/licences-and-credentials`,
       description: 'NSW contractor, building and trade licence verification',
     },
     {
       jurisdiction: 'VIC',
       category: 'license',
       source: 'Victorian Building Authority — Licence Check',
-      url: `https://www.vba.vic.gov.au/check/licence?name=${q}`,
+      // Old path (/check/licence) returns 404; current practitioner search is
+      // at /find-a-practitioner but requires JavaScript — direct link to that page.
+      url: `https://www.vba.vic.gov.au/find-a-practitioner`,
       description: 'VIC building practitioner registration and licence status',
     },
     {
       jurisdiction: 'WA',
       category: 'license',
       source: 'Building & Energy WA — Licence Check',
-      url: `https://www.commerce.wa.gov.au/building-and-energy/licence-search?name=${q}`,
+      // commerce.wa.gov.au path now redirects to wa.gov.au licence search page.
+      url: `https://www.wa.gov.au/organisation/building-and-energy/building-and-energy-licence-and-registration-search`,
       description: 'WA building contractor and occupational licence verification',
     },
     {
       jurisdiction: 'SA',
       category: 'license',
       source: 'Consumer & Business Services SA — Licence Check',
-      url: `https://www.cbs.sa.gov.au/licences/check-a-licence?q=${q}`,
+      // Old /licences/check-a-licence path is gone; CBS licence check now
+      // requires JavaScript — link to the licensing landing page.
+      url: `https://www.cbs.sa.gov.au/licensing`,
       description: 'SA building work contractor licence verification',
     },
     {
       jurisdiction: 'NT',
       category: 'license',
       source: 'NT Building Practitioners Board — Licence Check',
-      url: `https://buildinglicences.nt.gov.au/search?name=${q}`,
+      // buildinglicences.nt.gov.au DNS no longer resolves (2026-06-11).
+      // NT licence check now appears to be under nt.gov.au — link to info page.
+      url: `https://nt.gov.au/property/building-and-construction`,
       description: 'NT building practitioner licence verification',
     },
     {
       jurisdiction: 'ACT',
       category: 'license',
       source: 'ACT Access Canberra — Licence Check',
-      url: `https://www.accesscanberra.act.gov.au/licence-and-registration/check-a-licence?q=${q}`,
+      // Previous path was removed from Access Canberra (2026-06-11).
+      // Licence check is now via the Access Canberra licences portal.
+      url: `https://www.accesscanberra.act.gov.au/licences`,
       description: 'ACT builder and contractor licence verification',
     },
     {
       jurisdiction: 'TAS',
       category: 'license',
       source: 'Consumer, Building & Occupational Services TAS — Licence Check',
-      url: `https://www.cbos.tas.gov.au/topics/licensing/check-a-licence?q=${q}`,
+      // /topics/licensing/check-a-licence returns 404; OLAS portal
+      // (olas.cbos.tas.gov.au) is the current licence lookup system.
+      url: `https://www.cbos.tas.gov.au/topics/licensing`,
       description: 'TAS building practitioner licence verification',
     },
 

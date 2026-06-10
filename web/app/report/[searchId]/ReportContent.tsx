@@ -299,8 +299,10 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
   const fwoItems: ResultItem[] = fwo?.results ?? [];
   const vicBpcItems: ResultItem[] = vicBpc?.results ?? [];
   const waBuildingEnergyItems: ResultItem[] = waBuildingEnergy?.results ?? [];
+  const qbccEnforcementItems: ResultItem[] = qbcc?.enforcementResults ?? [];
   const licenceItems: ResultItem[] = [
     ...(qbcc?.licenceResults ?? []),
+    ...qbccEnforcementItems,
     ...vicBpcItems,
     ...waBuildingEnergyItems,
   ];
@@ -363,16 +365,16 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
   // Synthetic SearchResult objects for sections that split one source across sections
   const licenceSearch: SearchResult = {
     key: 'qbcc_licence',
-    label: 'QBCC Licence Register',
+    label: 'QBCC Licence & Enforcement Register',
     status: qbcc?.status ?? 'done',
     source: 'QBCC — Queensland Building & Construction Commission',
     jurisdiction: 'QLD',
     category: 'license',
     searchUrl: qbcc?.searchUrl,
-    results: qbcc?.licenceResults ?? [],
+    results: [...(qbcc?.licenceResults ?? []), ...qbccEnforcementItems],
     summary:
-      (qbcc?.licenceResults?.length ?? 0) > 0
-        ? `${qbcc?.licenceResults?.length} QBCC licence record(s) found`
+      (qbcc?.licenceResults?.length ?? 0) > 0 || qbccEnforcementItems.length > 0
+        ? `${qbcc?.licenceResults?.length ?? 0} QBCC licence record(s) and ${qbccEnforcementItems.length} enforcement outcome(s) found`
         : 'No records found in the QBCC register',
   };
 

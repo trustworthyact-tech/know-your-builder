@@ -116,21 +116,42 @@ function parseResults($, searchUrl, companyName) {
   return results;
 }
 
-async function searchWABuildingEnergy(companyName, abn) {
-  const searchUrl = buildSearchUrl(companyName, abn);
-  let results = [];
-
+async function fetchWAResults(query, entityName) {
+  const url = `${BASE}/about/publications/media-releases?q=${encodeURIComponent(query)}`;
   try {
-    const { data } = await axios.get(searchUrl, {
-      headers: HEADERS,
-      timeout: 20000,
-      maxRedirects: 5,
-    });
+    const { data } = await axios.get(url, { headers: HEADERS, timeout: 20000, maxRedirects: 5 });
     const $ = cheerio.load(data);
-    results = parseResults($, searchUrl, companyName);
+    return parseResults($, url, entityName);
   } catch {
-    // non-fatal — return empty results
+    return [];
   }
+}
+
+async function searchWABuildingEnergy(companyName, abn, directors) {
+  const searchUrl = buildSearchUrl(companyName, abn);
+  const allResults = [];
+
+  // Company/ABN search
+  const companyResults = await fetchWAResults(
+    abn ? abn.replace(/\s/g, '') : companyName,
+    companyName
+  );
+  allResults.push(...companyResults);
+
+  // Per-director searches
+  for (const director of (directors || [])) {
+    if (!director) continue;
+    const hits = await fetchWAResults(director, director);
+    allResults.push(...hits);
+  }
+
+  // Deduplicate by URL
+  const seen = new Set();
+  const results = allResults.filter((r) => {
+    if (seen.has(r.url)) return false;
+    seen.add(r.url);
+    return true;
+  });
 
   return {
     source: 'WA Building and Energy',

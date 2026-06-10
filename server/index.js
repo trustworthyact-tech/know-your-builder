@@ -49,8 +49,19 @@ app.post('/api/search', async (req, res) => {
 
   const send = (result) => res.write(JSON.stringify(result) + '\n');
 
-  // Shared promise so asicDisqualified can wait for ASIC directors without a second HTTP call
+  // Shared promise so scrapers can wait for ASIC directors without a second HTTP call
   const asicPromise = searchASIC(companyName, abn, acn, process.env.CAPTCHA_API_KEY);
+
+  // Returns the union of request-supplied directors and those discovered by ASIC.
+  // Safe to call concurrently — all callers await the same promise.
+  async function resolveDirectors() {
+    const asicResult = await asicPromise;
+    const asicDirectors = (asicResult.results ?? [])
+      .filter((r) => r.metadata?.Role === 'Director')
+      .map((r) => r.title)
+      .filter(Boolean);
+    return [...new Set([...(directors ?? []), ...asicDirectors])];
+  }
 
   const searches = [
     { key: 'abn', label: 'ABR — Business Register', fn: () => searchABN(abn, companyName, acn) },
@@ -62,15 +73,7 @@ app.post('/api/search', async (req, res) => {
     {
       key: 'asicDisqualified',
       label: 'ASIC — Disqualified Persons Register',
-      fn: async () => {
-        const asicResult = await asicPromise;
-        const asicDirectors = (asicResult.results ?? [])
-          .filter((r) => r.metadata?.Role === 'Director')
-          .map((r) => r.title)
-          .filter(Boolean);
-        const allDirectors = [...new Set([...(directors ?? []), ...asicDirectors])];
-        return searchASICDisqualified(allDirectors, process.env.CAPTCHA_API_KEY);
-      },
+      fn: async () => searchASICDisqualified(await resolveDirectors(), process.env.CAPTCHA_API_KEY),
     },
     {
       key: 'asicInsolvency',
@@ -85,47 +88,47 @@ app.post('/api/search', async (req, res) => {
     {
       key: 'austlii_federal',
       label: 'Federal Courts (AustLII)',
-      fn: () => searchAustLII(companyName, directors, 'federal'),
+      fn: async () => searchAustLII(companyName, await resolveDirectors(), 'federal'),
     },
     {
       key: 'austlii_qld',
       label: 'QLD Courts & Tribunals (AustLII)',
-      fn: () => searchAustLII(companyName, directors, 'qld'),
+      fn: async () => searchAustLII(companyName, await resolveDirectors(), 'qld'),
     },
     {
       key: 'austlii_nsw',
       label: 'NSW Courts & Tribunals (AustLII)',
-      fn: () => searchAustLII(companyName, directors, 'nsw'),
+      fn: async () => searchAustLII(companyName, await resolveDirectors(), 'nsw'),
     },
     {
       key: 'austlii_vic',
       label: 'VIC Courts & Tribunals (AustLII)',
-      fn: () => searchAustLII(companyName, directors, 'vic'),
+      fn: async () => searchAustLII(companyName, await resolveDirectors(), 'vic'),
     },
     {
       key: 'austlii_wa',
       label: 'WA Courts & Tribunals (AustLII)',
-      fn: () => searchAustLII(companyName, directors, 'wa'),
+      fn: async () => searchAustLII(companyName, await resolveDirectors(), 'wa'),
     },
     {
       key: 'austlii_sa',
       label: 'SA Courts & Tribunals (AustLII)',
-      fn: () => searchAustLII(companyName, directors, 'sa'),
+      fn: async () => searchAustLII(companyName, await resolveDirectors(), 'sa'),
     },
     {
       key: 'austlii_nt',
       label: 'NT Courts & Tribunals (AustLII)',
-      fn: () => searchAustLII(companyName, directors, 'nt'),
+      fn: async () => searchAustLII(companyName, await resolveDirectors(), 'nt'),
     },
     {
       key: 'austlii_act',
       label: 'ACT Courts & Tribunals (AustLII)',
-      fn: () => searchAustLII(companyName, directors, 'act'),
+      fn: async () => searchAustLII(companyName, await resolveDirectors(), 'act'),
     },
     {
       key: 'austlii_tas',
       label: 'TAS Courts & Tribunals (AustLII)',
-      fn: () => searchAustLII(companyName, directors, 'tas'),
+      fn: async () => searchAustLII(companyName, await resolveDirectors(), 'tas'),
     },
     {
       key: 'paymentTimes',
@@ -137,34 +140,30 @@ app.post('/api/search', async (req, res) => {
       label: 'Modern Slavery Statements Register',
       fn: () => searchModernSlavery(companyName, abn),
     },
-    { key: 'qbcc', label: 'QBCC — Licence Register', fn: () => searchQBCC(companyName, abn) },
+    {
+      key: 'qbcc',
+      label: 'QBCC — Licence Register',
+      fn: async () => searchQBCC(companyName, abn, await resolveDirectors()),
+    },
     {
       key: 'fwo',
       label: 'Fair Work Ombudsman — Enforcement Outcomes',
-      fn: () => searchFWO(companyName, abn),
+      fn: async () => searchFWO(companyName, abn, await resolveDirectors()),
     },
     {
       key: 'vicBpc',
       label: 'VIC Building Authority — Disciplinary Register',
-      fn: () => searchVicBpc(companyName, abn),
+      fn: async () => searchVicBpc(companyName, abn, await resolveDirectors()),
     },
     {
       key: 'waBuildingEnergy',
       label: 'WA Building and Energy — Enforcement',
-      fn: () => searchWABuildingEnergy(companyName, abn),
+      fn: async () => searchWABuildingEnergy(companyName, abn, await resolveDirectors()),
     },
     {
       key: 'asicExtract',
       label: 'ASIC — Director Company History',
-      fn: async () => {
-        const asicResult = await asicPromise;
-        const asicDirectors = (asicResult.results ?? [])
-          .filter((r) => r.metadata?.Role === 'Director')
-          .map((r) => r.title)
-          .filter(Boolean);
-        const allDirectors = [...new Set([...(directors ?? []), ...asicDirectors])];
-        return searchAsicExtract(companyName, abn, acn, allDirectors, process.env.CAPTCHA_API_KEY);
-      },
+      fn: async () => searchAsicExtract(companyName, abn, acn, await resolveDirectors(), process.env.CAPTCHA_API_KEY),
     },
     {
       key: 'links',
@@ -179,15 +178,7 @@ app.post('/api/search', async (req, res) => {
       {
         key: 'afsaNpii',
         label: 'AFSA NPII — Director Personal Insolvency (Deep Check)',
-        fn: async () => {
-          const asicResult = await asicPromise;
-          const asicDirectors = (asicResult.results ?? [])
-            .filter((r) => r.metadata?.Role === 'Director')
-            .map((r) => r.title)
-            .filter(Boolean);
-          const allDirectors = [...new Set([...(directors ?? []), ...asicDirectors])];
-          return searchAfsaNpii(allDirectors);
-        },
+        fn: async () => searchAfsaNpii(await resolveDirectors()),
       }
     );
   }

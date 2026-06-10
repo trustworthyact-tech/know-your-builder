@@ -70,23 +70,33 @@ function parseAccordionItems($, companyName) {
   return results;
 }
 
-async function searchVicBpc(companyName, abn) {
-  let results = [];
+async function searchVicBpc(companyName, abn, directors) {
+  const allResults = [];
+  const seen = new Set();
 
-  // Search term: strip Pty Ltd suffix so List.js matches on the distinctive words.
-  const searchTerm = companyName.replace(/\s*pty\s*ltd\.?\s*$/i, '').trim();
+  const queries = [
+    // Strip Pty Ltd so List.js matches on the distinctive words
+    companyName.replace(/\s*pty\s*ltd\.?\s*$/i, '').trim(),
+    ...(directors || []).filter(Boolean),
+  ];
 
-  // Try prosecution register (completed orders, disqualifications) first,
-  // then current proceedings register. Both use the same List.js search pattern.
   const urls = [PROSECUTION_REGISTER_URL, CURRENT_PROCEEDINGS_URL];
-  for (const url of urls) {
-    try {
-      const html = await fetchWithBrowserSearch(url, searchTerm, '#listjs-search');
-      const $ = cheerio.load(html);
-      const found = parseAccordionItems($, companyName);
-      results.push(...found);
-    } catch {
-      // non-fatal — silently skip if page is unreachable
+  for (const query of queries) {
+    for (const url of urls) {
+      try {
+        const html = await fetchWithBrowserSearch(url, query, '#listjs-search');
+        const $ = cheerio.load(html);
+        // Match against the query term (company name or director name)
+        const found = parseAccordionItems($, query);
+        for (const r of found) {
+          if (!seen.has(r.title + r.date)) {
+            seen.add(r.title + r.date);
+            allResults.push(r);
+          }
+        }
+      } catch {
+        // non-fatal
+      }
     }
   }
 
@@ -94,11 +104,11 @@ async function searchVicBpc(companyName, abn) {
     source: 'Victorian Building Authority — Disciplinary Register',
     jurisdiction: 'VIC',
     category: 'regulatory',
-    results,
+    results: allResults,
     searchUrl: PROSECUTION_REGISTER_URL,
     summary:
-      results.length > 0
-        ? `${results.length} VBA disciplinary proceeding(s) found`
+      allResults.length > 0
+        ? `${allResults.length} VBA disciplinary proceeding(s) found`
         : 'No VBA disciplinary proceedings found for this entity',
   };
 }
