@@ -122,8 +122,8 @@ async function fetchWithBrowserSearch(url, query, inputSelector, { challengeTime
 }
 
 // Navigates to an Oracle ADF page protected by reCAPTCHA invisible, solves the challenge
-// via 2captcha, injects the token into the ADF callback, waits for search results, and
-// returns rendered HTML. Throws if captchaApiKey is absent.
+// via 2captcha, fires the ADF callback with the token, and returns rendered HTML.
+// Throws if captchaApiKey is absent.
 async function fetchAdfPageWithCaptcha(url, captchaApiKey) {
   if (!captchaApiKey) throw new Error('CAPTCHA_API_KEY not set');
 
@@ -132,26 +132,20 @@ async function fetchAdfPageWithCaptcha(url, captchaApiKey) {
   try {
     await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-AU,en;q=0.9' });
     await page.goto(url, { waitUntil: 'networkidle2', timeout: 45_000 });
-
-    // Allow ADF framework and reCAPTCHA widget to fully initialise before solving
     await new Promise((r) => setTimeout(r, 3_000));
 
     const token = await solveCaptcha(url, captchaApiKey);
 
-    // Fill the hidden textarea reCAPTCHA expects, then fire the ADF callback that
-    // re-queues the search with the valid token attached.
     await page.evaluate((t) => {
-      const textarea = document.getElementById('g-recaptcha-response');
-      if (textarea) textarea.value = t;
-      window.isExtRecaptchaSuccessful?.(t);
+      const ta = document.getElementById('g-recaptcha-response');
+      if (ta) ta.value = t;
+      const widget = document.querySelector('[data-callback]');
+      const name = widget?.dataset?.callback;
+      if (name && typeof window[name] === 'function') window[name](t);
+      else window.isTemplRecaptchaSuccessful?.(t);
     }, token);
 
-    // Wait for the results table to appear — more reliable than networkidle2 here
-    // because ADF fires partial-page XHR updates after the reCAPTCHA callback fires.
-    await page
-      .waitForSelector('table tbody tr', { timeout: 25_000 })
-      .catch(() => {});
-
+    await new Promise((r) => setTimeout(r, 1_500));
     await page.waitForNetworkIdle({ timeout: 15_000 }).catch(() => {});
     await new Promise((r) => setTimeout(r, 2_000));
 
@@ -161,4 +155,72 @@ async function fetchAdfPageWithCaptcha(url, captchaApiKey) {
   }
 }
 
-module.exports = { getBrowser, fetchWithBrowser, fetchWithBrowserSearch, fetchAdfPageWithCaptcha };
+// ASIC Connect DPN (Disqualified Persons) search.
+//
+// The DPN form's surname/givenName fields have zero bounding boxes in headless mode and
+// cannot be filled via keyboard events. Instead we intercept the ADF XHR POST that fires
+// when the Go button is clicked and inject the required fields + 2captcha token directly
+// into the POST body. This bypasses both the DOM interaction problem and the fact that
+// isTemplRecaptchaSuccessful is never exposed on window.
+//
+// Field constants are the ADF component IDs for the DPN search form.
+const DPN_URL = 'https://connectonline.asic.gov.au/RegistrySearch/faces/landing/panelSearch.jspx?searchType=DPNm';
+const DPN_F_TYPE = 'bnConnectionTemplate:pt_s5:templateSearchTypesListOfValuesId';
+const DPN_F_SURNAME = 'bnConnectionTemplate:pt_s5:searchSurname';
+const DPN_F_FIRSTNAME = 'bnConnectionTemplate:pt_s5:searchFirstName';
+const DPN_GO_BTN = '[id="bnConnectionTemplate:pt_s5:searchButtonId"]';
+
+async function fetchAdfDpnSearch(surname, givenName, captchaApiKey) {
+  if (!captchaApiKey) throw new Error('CAPTCHA_API_KEY not set');
+
+  const browser = await getBrowser();
+  const page = await browser.newPage();
+  try {
+    await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-AU,en;q=0.9' });
+    await page.goto(DPN_URL, { waitUntil: 'networkidle2', timeout: 45_000 });
+    await new Promise((r) => setTimeout(r, 2_000));
+
+    // Solve CAPTCHA while the page settles — token must exist before clicking Go.
+    const token = await solveCaptcha(DPN_URL, captchaApiKey);
+
+    // When Go is clicked, ADF fires a POST without the CAPTCHA token (the
+    // isTemplRecaptchaSuccessful callback is never exposed on window in headless
+    // mode). We intercept that POST and inject all required DPN form fields + the
+    // token so ASIC's server receives a valid, complete request.
+    await page.setRequestInterception(true);
+    let injected = false;
+
+    page.on('request', async (req) => {
+      try {
+        if (
+          !injected &&
+          req.method() === 'POST' &&
+          req.url().includes('connectonline.asic.gov.au') &&
+          req.url().includes('Adf-Window-Id') &&
+          (req.postData() || '').includes(DPN_F_SURNAME + '=')
+        ) {
+          injected = true;
+          let body = req.postData() || '';
+          body = body.replace(DPN_F_TYPE + '=', DPN_F_TYPE + '=4');
+          body = body.replace(DPN_F_SURNAME + '=', `${DPN_F_SURNAME}=${encodeURIComponent(surname)}`);
+          body = body.replace(DPN_F_FIRSTNAME + '=', `${DPN_F_FIRSTNAME}=${encodeURIComponent(givenName || '')}`);
+          body += '&g-recaptcha-response=' + encodeURIComponent(token);
+          await req.continue({ postData: body });
+        } else {
+          await req.continue();
+        }
+      } catch { /* ignore detached-frame errors after ADF navigation */ }
+    });
+
+    await page.click(DPN_GO_BTN).catch(() => {});
+
+    await page.waitForNetworkIdle({ timeout: 20_000 }).catch(() => {});
+    await new Promise((r) => setTimeout(r, 2_000));
+
+    return await page.content();
+  } finally {
+    await page.close().catch(() => {});
+  }
+}
+
+module.exports = { getBrowser, fetchWithBrowser, fetchWithBrowserSearch, fetchAdfPageWithCaptcha, fetchAdfDpnSearch };

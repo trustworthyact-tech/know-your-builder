@@ -277,10 +277,7 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
     (r) => r.metadata?.Role === 'Director'
   );
   const disqualifiedItems: ResultItem[] = asicDisqualified?.results ?? [];
-  const FLAGGED_STATUS = /deregistered|cancelled|wound.?up|struck.?off|dissolved|externally.adm/i;
-  const asicExtractItems: ResultItem[] = (asicExtract?.results ?? []).filter(
-    (r) => FLAGGED_STATUS.test(r.status ?? '')
-  );
+  const asicExtractItems: ResultItem[] = asicExtract?.results ?? [];
   const identityItems: ResultItem[] = [
     ...(abn?.results ?? []),
     ...asicCompanyItems,
@@ -288,7 +285,6 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
     ...disqualifiedItems,
     ...asicExtractItems,
   ];
-  const licenceItems: ResultItem[] = qbcc?.licenceResults ?? [];
   const adjItems: ResultItem[] = qbcc?.adjudicationResults ?? [];
   const insolvencyItems: ResultItem[] = asicInsolvency?.results ?? [];
   const atoDebtItems: ResultItem[] = atoDebt?.results ?? [];
@@ -303,11 +299,14 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
   const fwoItems: ResultItem[] = fwo?.results ?? [];
   const vicBpcItems: ResultItem[] = vicBpc?.results ?? [];
   const waBuildingEnergyItems: ResultItem[] = waBuildingEnergy?.results ?? [];
+  const licenceItems: ResultItem[] = [
+    ...(qbcc?.licenceResults ?? []),
+    ...vicBpcItems,
+    ...waBuildingEnergyItems,
+  ];
   const courtItems: ResultItem[] = [
     ...austliiResults.flatMap((r) => r.results ?? []),
     ...fwoItems,
-    ...vicBpcItems,
-    ...waBuildingEnergyItems,
   ];
 
   // Section risk levels — derived from risk groups, falling back to scraper-status baseline
@@ -326,7 +325,11 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
   const s82Risk = deriveRiskLevel(
     riskGroups,
     '#s82',
-    isAllErrored([qbcc?.status ?? 'done']) ? 'unavailable' : 'clear'
+    isAllErrored([
+      qbcc?.status ?? 'done',
+      vicBpc?.status ?? 'done',
+      waBuildingEnergy?.status ?? 'done',
+    ]) ? 'unavailable' : 'clear'
   );
   const s83Risk = deriveRiskLevel(
     riskGroups,
@@ -352,8 +355,6 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
     isAllErrored([
       ...austliiResults.map((r) => r.status),
       fwo?.status ?? 'done',
-      vicBpc?.status ?? 'done',
-      waBuildingEnergy?.status ?? 'done',
     ])
       ? 'unavailable'
       : 'clear'
@@ -368,10 +369,11 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
     jurisdiction: 'QLD',
     category: 'license',
     searchUrl: qbcc?.searchUrl,
+    results: qbcc?.licenceResults ?? [],
     summary:
-      licenceItems.length > 0
-        ? `${licenceItems.length} QBCC licence record(s) found`
-        : 'No records found in the QBCC register — verify licences with the relevant state building authority using the links below',
+      (qbcc?.licenceResults?.length ?? 0) > 0
+        ? `${qbcc?.licenceResults?.length} QBCC licence record(s) found`
+        : 'No records found in the QBCC register',
   };
 
   const adjSearch: SearchResult = {
@@ -422,6 +424,7 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
     jurisdiction: 'VIC',
     category: 'regulatory',
     searchUrl: vicBpc?.searchUrl,
+    results: vicBpc?.results ?? [],
     summary: vicBpc?.summary ?? 'No VBA disciplinary proceedings found',
   };
 
@@ -433,6 +436,7 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
     jurisdiction: 'WA',
     category: 'regulatory',
     searchUrl: waBuildingEnergy?.searchUrl,
+    results: waBuildingEnergy?.results ?? [],
     summary: waBuildingEnergy?.summary ?? 'No WA Building and Energy enforcement actions found',
   };
 
@@ -605,10 +609,14 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
           id="s82"
           title="8.2 Licences & Registrations"
           icon="🏗"
-          searchResults={qbcc ? [licenceSearch] : []}
+          searchResults={[
+            ...(qbcc ? [licenceSearch] : []),
+            vicBpcSearch,
+            waBuildingEnergySearch,
+          ]}
           riskLevel={s82Risk}
           resultsOverride={licenceItems}
-          supplementalLinks={licenceLinks}
+          linksRequireResults
         />
 
         {/* 8.3 Financial Risk Signals */}
@@ -648,7 +656,7 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
           id="s85"
           title="8.5 Courts, Enforcement & Disciplinary"
           icon="⚖️"
-          searchResults={[courtSearch, fwoSearch, vicBpcSearch, waBuildingEnergySearch]}
+          searchResults={[courtSearch, fwoSearch]}
           riskLevel={s85Risk}
           resultsOverride={courtItems}
           showJurisdiction

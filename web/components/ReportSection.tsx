@@ -21,6 +21,8 @@ interface Props {
   criticalBanner?: string;
   /** Additional manual-check databases appended below automated results */
   supplementalLinks?: ResultItem[];
+  /** When true, "Verify directly" links are only shown for sources that returned results */
+  linksRequireResults?: boolean;
 }
 
 export function ReportSection({
@@ -34,6 +36,7 @@ export function ReportSection({
   showJurisdiction,
   criticalBanner,
   supplementalLinks,
+  linksRequireResults = false,
 }: Props) {
   const [open, setOpen] = useState(true);
 
@@ -45,7 +48,7 @@ export function ReportSection({
     .map((sr) => sr.summary as string);
 
   const directSources = searchResults
-    .filter((sr) => sr.searchUrl)
+    .filter((sr) => sr.searchUrl && (!linksRequireResults || (sr.results?.length ?? 0) > 0))
     .map((sr) => ({ label: sr.source || sr.label, url: sr.searchUrl as string }));
 
   return (

@@ -16,21 +16,28 @@ export function ResultCard({ item, showJurisdiction }: Props) {
 
   return (
     <div className="bg-surface rounded-xl border border-border shadow-sm mb-3 overflow-hidden">
-      <button
-        type="button"
-        className={`w-full text-left px-4 py-3 flex items-start gap-2 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset ${hasExtras ? 'hover:bg-surface-alt/50 cursor-pointer' : 'cursor-default'}`}
-        onClick={hasExtras ? () => setExpanded((e) => !e) : undefined}
-        aria-expanded={hasExtras ? expanded : undefined}
-      >
+      {/* Card header — split into link title + optional expand toggle */}
+      <div className={`px-4 py-3 flex items-start gap-2 transition ${hasExtras ? 'hover:bg-surface-alt/50' : ''}`}>
         <div className="flex-1 min-w-0">
           {showJurisdiction && item.jurisdiction && (
             <span className="inline-block bg-info-bg text-info text-xs font-semibold px-2 py-0.5 rounded mb-1.5">
               {item.jurisdiction}
             </span>
           )}
-          <p className={`text-sm font-medium text-text-primary ${expanded ? '' : 'line-clamp-2'}`}>
-            {item.title}
-          </p>
+          {item.url ? (
+            <a
+              href={item.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className={`text-sm font-medium text-primary-light hover:text-primary hover:underline transition ${expanded ? '' : 'line-clamp-2'}`}
+            >
+              {item.title}
+            </a>
+          ) : (
+            <p className={`text-sm font-medium text-text-primary ${expanded ? '' : 'line-clamp-2'}`}>
+              {item.title}
+            </p>
+          )}
           {item.date && (
             <p className="text-xs text-text-muted mt-1">{item.date}</p>
           )}
@@ -45,11 +52,17 @@ export function ResultCard({ item, showJurisdiction }: Props) {
           )}
         </div>
         {hasExtras && (
-          <span className="text-text-muted text-xs shrink-0 mt-0.5" aria-hidden="true">
+          <button
+            type="button"
+            onClick={() => setExpanded((e) => !e)}
+            aria-expanded={expanded}
+            aria-label={expanded ? 'Collapse details' : 'Expand details'}
+            className="text-text-muted text-xs shrink-0 mt-0.5 p-1 hover:text-text-primary transition focus:outline-none focus-visible:ring-2 focus-visible:ring-primary rounded"
+          >
             {expanded ? '▲' : '▼'}
-          </span>
+          </button>
         )}
-      </button>
+      </div>
 
       {expanded && (
         <div className="px-4 pb-4 border-t border-border-light">
@@ -68,31 +81,6 @@ export function ResultCard({ item, showJurisdiction }: Props) {
               )}
             </dl>
           )}
-          {item.url && (
-            <a
-              href={item.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              aria-label={`View source for ${item.title} (opens in new tab)`}
-              className="mt-3 inline-flex items-center gap-1 text-xs font-semibold text-primary-light hover:text-primary transition"
-            >
-              View source →
-            </a>
-          )}
-        </div>
-      )}
-
-      {!hasExtras && item.url && (
-        <div className="px-4 pb-3">
-          <a
-            href={item.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            aria-label={`Open ${item.title} (opens in new tab)`}
-            className="text-xs font-semibold text-primary-light hover:text-primary transition"
-          >
-            Open →
-          </a>
         </div>
       )}
     </div>

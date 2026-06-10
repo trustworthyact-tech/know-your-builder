@@ -15,11 +15,17 @@ function normalise(s) {
   return (s || '').toLowerCase().replace(/[^a-z\s]/g, '').trim();
 }
 
-// Split "Given Family" → { givenNames, surname }
 function splitName(fullName) {
   const parts = (fullName || '').trim().split(/\s+/).filter(Boolean);
   if (parts.length === 0) return { surname: '', givenNames: '' };
   if (parts.length === 1) return { surname: parts[0], givenNames: '' };
+  // ASIC Connect officer tables use SURNAME-first format (e.g. "ROBERTS Digby").
+  // Detect: first word is 2+ uppercase letters only.
+  const firstWord = parts[0];
+  if (/^[A-Z]{2,}$/.test(firstWord)) {
+    return { surname: firstWord, givenNames: parts.slice(1).join(' ') };
+  }
+  // Standard given-name-first: surname is the last word.
   return { surname: parts[parts.length - 1], givenNames: parts.slice(0, -1).join(' ') };
 }
 

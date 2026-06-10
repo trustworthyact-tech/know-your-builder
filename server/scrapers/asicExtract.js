@@ -168,7 +168,8 @@ async function fetchDirectorCompanies(directorName, captchaApiKey) {
         }
       });
 
-      if (!companyName) return;
+      // Navigation links (View Cart, Sitemap, etc.) lack ACNs — skip them.
+      if (!companyName || !acn) return;
 
       companies.push({ companyName, companyUrl, acn, role, status, director: directorName });
     });

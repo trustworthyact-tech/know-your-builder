@@ -224,7 +224,7 @@ export function riskGrouper(findings: Record<string, SearchResult>): RiskGroupRe
       triggers.push({
         scraperKey: 'vicBpc',
         finding: `${vicBpc.length} VIC Building and Plumbing Commission enforcement action(s) found`,
-        anchor: '#s85',
+        anchor: '#s82',
       });
     }
 
@@ -233,7 +233,7 @@ export function riskGrouper(findings: Record<string, SearchResult>): RiskGroupRe
       triggers.push({
         scraperKey: 'waBuildingEnergy',
         finding: `${waBuildingEnergy.length} WA Building and Energy enforcement action(s) found`,
-        anchor: '#s85',
+        anchor: '#s82',
       });
     }
 
