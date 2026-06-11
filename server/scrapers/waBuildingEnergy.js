@@ -1,14 +1,27 @@
 const axios = require('axios');
-const cheerio = require('cheerio');
 
-const BASE = 'https://www.buildingandenergywa.gov.au';
+// WA Building and Energy enforcement announcements moved to wa.gov.au when
+// www.buildingandenergywa.gov.au (DEMIRS/Building and Energy) was restructured
+// into the Department of Local Government, Industry Regulation and Safety (LGIRS).
+// The new enforcement content lives at:
+//   https://www.wa.gov.au/government/document-collections/disciplinary-and-prosecution-media-releases-builders
+// Search is powered by an Elastic Cloud index whose read-only credentials are
+// embedded in every wa.gov.au page (public, not a secret).
 
-const HEADERS = {
-  'User-Agent':
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-  Referer: 'https://www.buildingandenergywa.gov.au/',
-};
+const BASE = 'https://www.wa.gov.au';
+const ELASTIC_HOST = 'https://wa-gov-au-syd-v8-prd.es.ap-southeast-2.aws.found.io:443';
+const ELASTIC_INDEX = 'production-wagov-blue-pipeline-cms-search-alias';
+const ELASTIC_AUTH = { username: 'client', password: '43674c65465000' };
+
+// All Building and Energy disciplinary/prosecution collection page URLs
+const COLLECTION_URLS = [
+  '/government/document-collections/disciplinary-and-prosecution-media-releases-builders',
+  '/government/document-collections/disciplinary-and-prosecutions-media-releases-electrical',
+  '/government/document-collections/disciplinary-and-prosecutions-media-releases-gas',
+  '/government/document-collections/disciplinary-and-prosecutions-media-releases-painters',
+  '/government/document-collections/disciplinary-and-prosecutions-media-releases-plumbing',
+  '/government/document-collections/disciplinary-and-prosecutions-media-releases-building-surveyors',
+];
 
 const ENFORCEMENT_KEYWORDS = [
   'prosecut',
@@ -48,80 +61,84 @@ function nameMatchesEntity(text, companyName) {
 }
 
 function buildSearchUrl(companyName, abn) {
+  // Point the public-facing search URL at the builders collection page
   const q = abn ? abn.replace(/\s/g, '') : companyName || '';
-  return `${BASE}/about/publications/media-releases?q=${encodeURIComponent(q)}`;
+  return `${BASE}${COLLECTION_URLS[0]}`;
 }
 
-function resolveUrl(href) {
-  if (!href) return '';
-  return href.startsWith('http') ? href : `${BASE}${href.startsWith('/') ? '' : '/'}${href}`;
-}
+// Search the wa.gov.au Elastic index for Building and Energy enforcement announcements
+// matching the given query term (company name or ABN).
+async function fetchWAResults(query, entityName) {
+  if (!query) return [];
+  const url = `${ELASTIC_HOST}/${ELASTIC_INDEX}/_search`;
+  const body = {
+    query: {
+      bool: {
+        must: [
+          {
+            multi_match: {
+              query,
+              fields: ['title', 'body', 'rendered_item', 'field_description'],
+              type: 'phrase',
+            },
+          },
+        ],
+        filter: [
+          { term: { content_type: 'announcement_content' } },
+          { match: { field_provider_title: 'Building and Energy' } },
+        ],
+      },
+    },
+    size: 20,
+    _source: ['title', 'url', 'field_published_date', 'body', 'field_description'],
+  };
 
-function parseResults($, searchUrl, companyName) {
-  const results = [];
+  try {
+    const { data } = await axios.post(url, body, {
+      auth: ELASTIC_AUTH,
+      headers: { 'Content-Type': 'application/json' },
+      timeout: 20000,
+    });
 
-  const selectors = [
-    'article',
-    '.news-item',
-    '.media-release',
-    '.search-result',
-    '.listing-item',
-    '[class*="release"] li',
-    'li.result',
-  ];
+    const hits = (data.hits && data.hits.hits) || [];
+    const results = [];
 
-  for (const sel of selectors) {
-    const $items = $(sel);
-    if ($items.length === 0) continue;
+    for (const hit of hits) {
+      const src = hit._source || {};
+      const title = Array.isArray(src.title) ? src.title[0] : src.title || '';
+      const relUrl = Array.isArray(src.url) ? src.url[0] : src.url || '';
+      const fullUrl = relUrl ? `${BASE}${relUrl}` : '';
+      const ts = Array.isArray(src.field_published_date)
+        ? src.field_published_date[0]
+        : src.field_published_date;
+      const date = ts
+        ? new Date(ts * 1000).toISOString().slice(0, 10)
+        : '';
+      const description = Array.isArray(src.field_description)
+        ? src.field_description[0]
+        : src.field_description || '';
+      const bodyText = Array.isArray(src.body) ? src.body[0] : src.body || '';
+      const fullText = `${title} ${description} ${bodyText}`;
 
-    $items.each((_, el) => {
-      const $el = $(el);
-      const fullText = $el.text();
-
-      if (!isEnforcementOutcome(fullText)) return;
-      if (!nameMatchesEntity(fullText, companyName)) return;
-
-      const $link = $el.find('a').first();
-      const href = $link.attr('href') || '';
-      const url = resolveUrl(href) || searchUrl;
-      const title =
-        $el.find('h2, h3, h4, .title, .heading').first().text().trim() ||
-        $link.text().trim() ||
-        fullText.slice(0, 100);
-      const date =
-        $el.find('time').attr('datetime') ||
-        $el.find('time, [class*="date"], .date').first().text().trim() ||
-        '';
-      const description = $el.find('p').first().text().trim() || '';
-
-      if (!title) return;
+      if (!title) continue;
+      if (!isEnforcementOutcome(fullText) && !isEnforcementOutcome(title)) continue;
+      if (!nameMatchesEntity(fullText, entityName)) continue;
 
       results.push({
         title,
-        url,
+        url: fullUrl || `${BASE}${COLLECTION_URLS[0]}`,
         date,
         status: 'WA Building & Energy enforcement action',
-        description: description || 'WA Building and Energy enforcement or prosecution outcome',
+        description: description || bodyText.slice(0, 200) || 'WA Building and Energy enforcement or prosecution outcome',
         jurisdiction: 'WA',
         metadata: {
           Source: 'WA Building and Energy',
           Date: date,
         },
       });
-    });
+    }
 
-    if (results.length > 0) break;
-  }
-
-  return results;
-}
-
-async function fetchWAResults(query, entityName) {
-  const url = `${BASE}/about/publications/media-releases?q=${encodeURIComponent(query)}`;
-  try {
-    const { data } = await axios.get(url, { headers: HEADERS, timeout: 20000, maxRedirects: 5 });
-    const $ = cheerio.load(data);
-    return parseResults($, url, entityName);
+    return results;
   } catch {
     return [];
   }
@@ -131,12 +148,16 @@ async function searchWABuildingEnergy(companyName, abn, directors) {
   const searchUrl = buildSearchUrl(companyName, abn);
   const allResults = [];
 
-  // Company/ABN search
-  const companyResults = await fetchWAResults(
-    abn ? abn.replace(/\s/g, '') : companyName,
-    companyName
-  );
+  // Company/ABN search — prefer ABN (more precise), fall back to name
+  const companyQuery = abn ? abn.replace(/\s/g, '') : companyName;
+  const companyResults = await fetchWAResults(companyQuery, companyName);
   allResults.push(...companyResults);
+
+  // If ABN search returned nothing, also try the name
+  if (abn && companyResults.length === 0 && companyName) {
+    const nameResults = await fetchWAResults(companyName, companyName);
+    allResults.push(...nameResults);
+  }
 
   // Per-director searches
   for (const director of (directors || [])) {

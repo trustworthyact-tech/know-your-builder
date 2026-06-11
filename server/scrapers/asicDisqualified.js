@@ -96,7 +96,8 @@ async function checkDirector(directorName, captchaApiKey) {
     if (!surname || !given) return [];
     const html = await fetchAdfDpnSearch(surname, given, captchaApiKey);
     return parseDisqualifiedResults(html, directorName, searchUrl);
-  } catch {
+  } catch (err) {
+    console.warn(`[asicDisqualified] checkDirector failed for "${directorName}":`, err.message);
     return [];
   }
 }

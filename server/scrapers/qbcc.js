@@ -13,13 +13,19 @@ const EXCLUDED_REGISTER_URL = 'https://my.qbcc.qld.gov.au/myQBCC/s/excluded-indi
 
 // Splits a director name into { firstName, lastName }.
 // Handles ASIC SURNAME-first format (e.g. "SMITH John") and normal order.
+// ASIC format: first token is all-caps AND at least one later token is mixed-case.
+// If all tokens are all-caps (e.g. "CASCINDRA KAY SMITH"), treat as normal order.
 function splitDirectorName(fullName) {
   const parts = (fullName || '').trim().split(/\s+/).filter(Boolean);
   if (parts.length === 0) return { firstName: '', lastName: '' };
   if (parts.length === 1) return { firstName: '', lastName: parts[0] };
-  if (/^[A-Z]{2,}$/.test(parts[0])) {
+  const firstIsAllCaps = /^[A-Z]{2,}$/.test(parts[0]);
+  const restHasMixedCase = parts.slice(1).some((p) => /[a-z]/.test(p));
+  if (firstIsAllCaps && restHasMixedCase) {
+    // ASIC surname-first: "SMITH John" → { firstName: 'John', lastName: 'SMITH' }
     return { firstName: parts.slice(1).join(' '), lastName: parts[0] };
   }
+  // Normal order: "CASCINDRA KAY SMITH" or "John Smith" → last token is surname
   return { firstName: parts.slice(0, -1).join(' '), lastName: parts[parts.length - 1] };
 }
 

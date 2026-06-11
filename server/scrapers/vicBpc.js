@@ -23,45 +23,69 @@ function nameMatchesEntity(text, companyName) {
 // The VBA prosecution register uses an accordion layout.
 // Each .accordion__block has a .da_name button (practitioner name) and a
 // .da_record div (registration, proceeding type, date, action details).
+//
+// The page has two entry types:
+//   1. Disciplinary entries  — da_name is just the practitioner name;
+//      uses "Decision date:", "Disciplinary proceeding:", "Disciplinary action taken" h3
+//   2. Prosecution entries   — da_name is "Prosecution of <Name>";
+//      uses "Outcome date:", "Prosecuted for:" h3, "Outcome:" h3
 function parseAccordionItems($, companyName) {
   const results = [];
 
   $('.accordion__block').each((_, block) => {
     const $block = $(block);
-    const name = $block.find('.da_name').text().trim();
+    const rawHeading = $block.find('.da_name').text().trim();
     const fullText = $block.text();
 
     if (!nameMatchesEntity(fullText, companyName)) return;
 
     const $record = $block.find('.da_record');
-    const registration = $record.find('p').first().text().replace('Registration:', '').trim();
+
+    // Date: accept "Decision date:" (disciplinary) or "Outcome date:" (prosecution)
+    const dateRaw =
+      $record.find('p:contains("Decision date")').text().replace('Decision date:', '').trim() ||
+      $record.find('p:contains("Outcome date")').text().replace('Outcome date:', '').trim();
+
+    // Registration (disciplinary entries only)
+    const registrationRaw = $record.find('p:contains("Registration")').text()
+      .replace('Registration:', '').trim();
+
+    // Proceeding type (disciplinary entries only)
     const proceeding = $record.find('p:contains("Disciplinary proceeding")').text()
       .replace('Disciplinary proceeding:', '').trim();
-    const date = $record.find('p:contains("Decision date")').text()
-      .replace('Decision date:', '').trim();
 
-    const actionHeading = $record.find('h3').filter((_, h) => $(h).text().includes('Disciplinary action'));
+    // Action text — covers both "Disciplinary action taken" and "Outcome:" headings
+    const actionHeading = $record.find('h3').filter((_, h) =>
+      $(h).text().includes('Disciplinary action') || $(h).text().includes('Outcome'));
     const actionText = actionHeading.next('p').text().trim() + ' ' +
       actionHeading.nextAll('ul').first().text().trim();
 
+    // Grounds text (disciplinary entries)
     const groundsHeading = $record.find('h3').filter((_, h) => $(h).text().includes('grounds'));
     const grounds = groundsHeading.next('p').text().trim();
+
+    // Prosecution entries label the h3 "Prosecuted for:" — use its following text as grounds
+    const prosecutedForHeading = $record.find('h3').filter((_, h) =>
+      $(h).text().includes('Prosecuted for'));
+    const prosecutedFor = prosecutedForHeading.next('p').text().trim() +
+      ' ' + prosecutedForHeading.nextAll('p').first().text().trim();
 
     // Link to the register page (no per-case deep-link available)
     const url = PROSECUTION_REGISTER_URL;
 
     results.push({
-      title: name,
+      title: rawHeading,
       url,
-      date: date.replace(/\s+/g, ' '),
-      status: actionText.trim().slice(0, 120) || proceeding || 'Disciplinary action',
-      description: grounds.slice(0, 250) || `VBA disciplinary proceeding — ${proceeding}`,
+      date: dateRaw.replace(/\s+/g, ' '),
+      status: actionText.trim().slice(0, 120) || proceeding || 'VBA action',
+      description: (grounds || prosecutedFor.trim()).slice(0, 250) ||
+        `VBA proceeding — ${proceeding || rawHeading}`,
       jurisdiction: 'VIC',
       metadata: {
         Source: 'Victorian Building Authority',
-        Registration: registration,
+        Registration: registrationRaw,
         Proceeding: proceeding,
-        Date: date.replace(/\s+/g, ' '),
+        Date: dateRaw.replace(/\s+/g, ' '),
         Action: actionText.trim().slice(0, 200),
       },
     });
