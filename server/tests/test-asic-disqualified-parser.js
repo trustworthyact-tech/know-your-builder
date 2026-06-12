@@ -217,5 +217,46 @@ step('Case 9: Single-word query — should return no match (requires both surnam
   passed++;
 }
 
+// Case 10: ADF nested-table triplication — same row appearing under 3 ancestor <table>s.
+// Cheerio's descendant selector visits it 3 times; dedup must collapse to 1.
+step('Case 10: ADF nested tables — row matched 3× must be deduplicated to 1');
+{
+  const innerRow = row('DPN010', 'RABER Genna', 'Disqualified Person Notice', '01 Feb 2022', '01 Feb 2027', 'Brisbane QLD');
+  // Simulate ADF nesting: outer > middle > inner table, each containing the same tr
+  const html = `<table><tbody><tr><td>
+    <table><tbody><tr><td>
+      <table><tbody>${innerRow}</tbody></table>
+    </td></tr></tbody></table>
+  </td></tr></tbody></table>`;
+  const results = parseDisqualifiedResults(html, 'Genna Raber', SEARCH_URL);
+  if (results.length !== 1) {
+    fail('Case 10', `expected 1 result after dedup, got ${results.length}`);
+    failed++;
+  } else {
+    pass('Case 10', 'triplicated row collapsed to 1 result');
+    passed++;
+  }
+}
+
+// Case 11: Two distinct orders, each appearing 3× — must yield exactly 2 results.
+step('Case 11: Two distinct DPN orders × 3 nesting = 6 raw matches, must deduplicate to 2');
+{
+  const row1 = row('DPN011a', 'RABER Genna', 'Disqualified Person Notice', '01 Feb 2022', '01 Feb 2027', 'Brisbane QLD');
+  const row2 = row('DPN011b', 'RABER Genna', 'Disqualified Person Notice', '01 Mar 2020', '01 Mar 2025', 'Sydney NSW');
+  const html = `<table><tbody><tr><td>
+    <table><tbody><tr><td>
+      <table><tbody>${row1}${row2}</tbody></table>
+    </td></tr></tbody></table>
+  </td></tr></tbody></table>`;
+  const results = parseDisqualifiedResults(html, 'Genna Raber', SEARCH_URL);
+  if (results.length !== 2) {
+    fail('Case 11', `expected 2 results after dedup, got ${results.length}`);
+    failed++;
+  } else {
+    pass('Case 11', 'two distinct orders deduplicated correctly to 2 results');
+    passed++;
+  }
+}
+
 summary(passed, failed);
 process.exit(failed > 0 ? 1 : 0);

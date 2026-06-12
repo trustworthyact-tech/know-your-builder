@@ -1,14 +1,11 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
 
-const HEADERS = {
-  'User-Agent':
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  Accept: 'text/html,application/xhtml+xml',
-};
-
-// AustLII database prefixes keyed by jurisdiction
-const JURISDICTION_MASK = {
+// URL path prefixes used to filter results by jurisdiction.
+// mask_path is NOT sent to AustLII — it excludes specialist tribunals (QCAT, VCAT, SAT etc.)
+// from its search index even when their cases live under the same path. Instead we do a
+// global search and post-filter by URL prefix here.
+const JURISDICTION_PATH = {
   federal: '/au/cases/cth',
   qld: '/au/cases/qld',
   nsw: '/au/cases/nsw',
@@ -86,61 +83,82 @@ const JURISDICTION_SOURCES = {
   tas: ['TAS Supreme Court', 'TAS Magistrates Court'],
 };
 
+// Pending-promise cache: term → Promise<ResultItem[]>
+// Deduplicates concurrent calls from all 9 jurisdiction searches for the same term
+// so only one ScraperAPI request is made per term per search.
+const pendingFetches = new Map();
+
+function fetchTermResults(term) {
+  if (pendingFetches.has(term)) return pendingFetches.get(term);
+
+  const promise = (async () => {
+    const scraperApiKey = process.env.SCRAPERAPI_KEY;
+    const searchUrl = `https://www.austlii.edu.au/cgi-bin/sinosrch.cgi?method=auto&query=${encodeURIComponent(term)}&results=20`;
+    const fetchUrl = scraperApiKey
+      ? `http://api.scraperapi.com?api_key=${scraperApiKey}&url=${encodeURIComponent(searchUrl)}`
+      : searchUrl;
+
+    const { data } = await axios.get(fetchUrl, { timeout: 30_000 });
+    const $ = cheerio.load(data);
+    const results = [];
+
+    $('li').each((_, el) => {
+      const link = $(el).find('a').first();
+      const href = link.attr('href');
+      const title = link.text().trim();
+      if (!href || !title || !href.includes('/cases/')) return;
+
+      const snippet = $(el).text().replace(title, '').trim().replace(/\s+/g, ' ').slice(0, 200);
+      const fullUrl = href.startsWith('http') ? href : `https://www.austlii.edu.au${href}`;
+      results.push({ title, url: fullUrl, description: snippet || undefined, matchedTerm: term });
+    });
+
+    // Fallback: older AustLII numbered-list format
+    if (results.length === 0) {
+      $('ol li').each((_, el) => {
+        const link = $(el).find('a').first();
+        const href = link.attr('href');
+        const title = link.text().trim();
+        if (!href || !title) return;
+        const fullUrl = href.startsWith('http') ? href : `https://www.austlii.edu.au${href}`;
+        const snippet = $(el).text().replace(title, '').trim().replace(/\s+/g, ' ').slice(0, 200);
+        results.push({ title, url: fullUrl, description: snippet || undefined, matchedTerm: term });
+      });
+    }
+
+    return results;
+  })().then(
+    (results) => {
+      // Success: keep cached for 30 s so all 9 concurrent jurisdiction calls share it.
+      setTimeout(() => pendingFetches.delete(term), 30_000);
+      return results;
+    },
+    (err) => {
+      // Failure: evict immediately so the next request retries rather than replaying
+      // a stale rejection.
+      pendingFetches.delete(term);
+      throw err;
+    }
+  );
+
+  pendingFetches.set(term, promise);
+  return promise;
+}
+
 async function searchAustLII(companyName, directors = [], jurisdiction = 'federal') {
-  const maskPath = JURISDICTION_MASK[jurisdiction] || '';
+  const pathPrefix = JURISDICTION_PATH[jurisdiction] || '';
   const jLabel = JURISDICTION_LABELS[jurisdiction] || jurisdiction.toUpperCase();
 
-  // Build search terms: company name + each director
   const terms = [companyName, ...(directors || []).filter(Boolean)];
   const allResults = [];
 
   for (const term of terms) {
     if (!term) continue;
-    const query = `"${term}"`;
-    const searchUrl = `https://www.austlii.edu.au/cgi-bin/sinosrch.cgi?method=auto&query=${encodeURIComponent(query)}&mask_path=${encodeURIComponent(maskPath)}&results=20`;
-
     try {
-      const { data } = await axios.get(searchUrl, { headers: HEADERS, timeout: 20000 });
-      const $ = cheerio.load(data);
-      const parsed = [];
-
-      // AustLII results are typically in <li> elements with <a> links
-      $('li').each((_, el) => {
-        const link = $(el).find('a').first();
-        const href = link.attr('href');
-        const title = link.text().trim();
-        if (!href || !title || !href.includes('/cases/')) return;
-
-        const snippet = $(el).text().replace(title, '').trim().replace(/\s+/g, ' ').slice(0, 200);
-        const fullUrl = href.startsWith('http') ? href : `https://www.austlii.edu.au${href}`;
-
-        parsed.push({
-          title,
-          url: fullUrl,
-          description: snippet || undefined,
-          matchedTerm: term,
-        });
-      });
-
-      // Also check older AustLII result format (numbered list in <ol>)
-      if (parsed.length === 0) {
-        $('ol li').each((_, el) => {
-          const link = $(el).find('a').first();
-          const href = link.attr('href');
-          const title = link.text().trim();
-          if (!href || !title) return;
-          const fullUrl = href.startsWith('http') ? href : `https://www.austlii.edu.au${href}`;
-          const snippet = $(el)
-            .text()
-            .replace(title, '')
-            .trim()
-            .replace(/\s+/g, ' ')
-            .slice(0, 200);
-          parsed.push({ title, url: fullUrl, description: snippet || undefined, matchedTerm: term });
-        });
-      }
-
-      allResults.push(...parsed);
+      const results = await fetchTermResults(term);
+      // Keep only results whose URL falls under this jurisdiction's path
+      const filtered = results.filter(r => r.url.includes(pathPrefix));
+      allResults.push(...filtered);
     } catch {
       // skip this term on error
     }
@@ -154,7 +172,7 @@ async function searchAustLII(companyName, directors = [], jurisdiction = 'federa
     return true;
   });
 
-  const primarySearchUrl = `https://www.austlii.edu.au/cgi-bin/sinosrch.cgi?method=auto&query=${encodeURIComponent(`"${companyName}"`)}&mask_path=${encodeURIComponent(maskPath)}&results=20`;
+  const primarySearchUrl = `https://www.austlii.edu.au/cgi-bin/sinosrch.cgi?method=auto&query=${encodeURIComponent(companyName)}&results=20`;
 
   return {
     source: `${jLabel} Courts & Tribunals`,

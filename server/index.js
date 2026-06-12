@@ -39,8 +39,9 @@ app.post('/api/search/disambiguate', async (req, res) => {
 app.post('/api/search', async (req, res) => {
   const { abn, acn, companyName, tradingName, directors, isDeepCheck } = req.body;
 
-  if (!companyName && !abn) {
-    return res.status(400).json({ error: 'Company name or ABN is required' });
+  const hasDirectors = Array.isArray(directors) && directors.some(Boolean);
+  if (!companyName && !abn && !hasDirectors) {
+    return res.status(400).json({ error: 'Company name, ABN, or director name is required' });
   }
 
   res.setHeader('Content-Type', 'application/x-ndjson');

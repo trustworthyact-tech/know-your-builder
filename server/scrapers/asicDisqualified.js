@@ -48,6 +48,7 @@ function isNameMatch(resultName, queryName) {
 function parseDisqualifiedResults(html, directorName, searchUrl) {
   const $ = cheerio.load(html);
   const matches = [];
+  const seen = new Set();
 
   $('table tr').each((_, row) => {
     const $cells = $(row).find('td');
@@ -63,11 +64,19 @@ function parseDisqualifiedResults(html, directorName, searchUrl) {
     const hiddenSpans = $nameCell.find('span').filter(
       (_, s) => /display\s*:\s*none/.test($(s).attr('style') || '')
     );
+    const dpnNumber = hiddenSpans.eq(0).text().trim();
     const fullName = hiddenSpans.eq(1).text().trim();
     if (!fullName || !isNameMatch(fullName, directorName)) return;
 
+    // ADF's nested table structure causes $('table tr') to visit the same row
+    // once per ancestor <table>. Deduplicate by DPN number (first hidden span)
+    // or by a fullName+date composite key when the DPN number is absent.
     const orderDate = $cells.eq(4).text().trim();
     const expiryDate = $cells.eq(5).text().trim();
+    const dedupKey = dpnNumber || `${fullName}::${orderDate}::${expiryDate}`;
+    if (seen.has(dedupKey)) return;
+    seen.add(dedupKey);
+
     const address = $cells.eq(6)?.text().trim() || '';
 
     matches.push({

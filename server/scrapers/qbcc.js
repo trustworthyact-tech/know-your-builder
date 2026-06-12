@@ -23,10 +23,13 @@ function splitDirectorName(fullName) {
   const restHasMixedCase = parts.slice(1).some((p) => /[a-z]/.test(p));
   if (firstIsAllCaps && restHasMixedCase) {
     // ASIC surname-first: "SMITH John" → { firstName: 'John', lastName: 'SMITH' }
-    return { firstName: parts.slice(1).join(' '), lastName: parts[0] };
+    // Use only the first given-name token — Salesforce prefix-match finds "John Michael"
+    // from "John" but "John Michael" would not find "John"-only registrations.
+    return { firstName: parts[1], lastName: parts[0] };
   }
-  // Normal order: "CASCINDRA KAY SMITH" or "John Smith" → last token is surname
-  return { firstName: parts.slice(0, -1).join(' '), lastName: parts[parts.length - 1] };
+  // Normal order: use first token as given name, last token as surname.
+  // Middle names dropped so the Salesforce search prefix-matches all name variants.
+  return { firstName: parts[0], lastName: parts[parts.length - 1] };
 }
 
 // Parses the innerText of div.slds-grid.results into individual records.
