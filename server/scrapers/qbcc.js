@@ -275,30 +275,89 @@ async function searchQBCC(companyName, abn, directors) {
     }
   }
 
-  // QBCC Adjudication decisions search
+  // QBCC Adjudication decisions search — myQBCC Salesforce Aura API
+  // The old /adjudication-decisions page was removed; decisions are now at
+  // https://my.qbcc.qld.gov.au/myQBCC/s/adjudication-registry (Salesforce SPA).
+  // The underlying Apex action is publicly accessible without authentication.
+  const ADJUDICATION_REGISTRY_URL = 'https://my.qbcc.qld.gov.au/myQBCC/s/adjudication-registry';
+  const AURA_ENDPOINT = 'https://my.qbcc.qld.gov.au/myQBCC/s/sfsites/aura?r=0&aura.ApexAction.execute=1';
+
+  async function callAdjudicationApi(searchBy, lastName) {
+    const message = {
+      actions: [{
+        id: '1;a',
+        descriptor: 'aura://ApexActionController/ACTION$execute',
+        callingDescriptor: 'UNKNOWN',
+        params: {
+          namespace: '',
+          classname: 'QBCCAdjudicationSearchController',
+          method: 'getAdjudicationRegistryDecisionBy',
+          params: { searchBy, firstName: '', lastName },
+          cacheable: false,
+          isContinuation: false,
+        },
+      }],
+    };
+    const auraContext = {
+      mode: 'PROD',
+      fwuid: 'scraper',
+      app: 'siteforce:communityApp',
+      loaded: { 'APPLICATION@markup://siteforce:communityApp': 'scraper' },
+      dn: [],
+      globals: {},
+      uad: true,
+    };
+    const body = new URLSearchParams({
+      message: JSON.stringify(message),
+      'aura.context': JSON.stringify(auraContext),
+      'aura.token': 'null',
+    });
+    const { data } = await axios.post(AURA_ENDPOINT, body.toString(), {
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'User-Agent': HEADERS['User-Agent'],
+        Origin: 'https://my.qbcc.qld.gov.au',
+        Referer: ADJUDICATION_REGISTRY_URL,
+      },
+      timeout: 15000,
+    });
+    return data?.actions?.[0]?.returnValue?.returnValue || [];
+  }
+
   const adjudicationResults = [];
   try {
-    const { data: adjData } = await axios.get(
-      `https://www.qbcc.qld.gov.au/adjudication-decisions?search=${encodeURIComponent(companyName)}`,
-      { headers: { ...HEADERS, Accept: 'text/html' }, timeout: 15000 }
-    );
-    const $ = cheerio.load(adjData);
+    // Search both as respondent (builder being claimed against) and claimant.
+    const [asRespondent, asClaimant] = await Promise.all([
+      callAdjudicationApi('respondentName', companyName),
+      callAdjudicationApi('claimantName', companyName),
+    ]);
 
-    $('table tbody tr, [class*="decision"], article').each((_, el) => {
-      const link = $(el).find('a').first();
-      const title = link.text().trim() || $(el).find('td').first().text().trim();
-      if (!title) return;
-      const href = link.attr('href');
+    const seen = new Set();
+    for (const item of [...asRespondent, ...asClaimant]) {
+      if (!item || seen.has(item.id)) continue;
+      seen.add(item.id);
+
+      const date = item.decisionDate ? item.decisionDate.slice(0, 10) : '';
+      const description =
+        `Claimant: ${item.claimant || ''}. Respondent: ${item.respondent || ''}. ` +
+        `Site: ${item.siteSuburb || ''}. Application: ${item.applicationNumber || ''}.`;
+
       adjudicationResults.push({
-        title,
-        url: href
-          ? href.startsWith('http') ? href : `https://www.qbcc.qld.gov.au${href}`
-          : 'https://www.qbcc.qld.gov.au/adjudication-decisions',
-        description: $(el).text().trim().slice(0, 200),
+        title: `${item.claimant || 'Unknown'} v ${item.respondent || 'Unknown'} (${item.applicationNumber || ''})`,
+        url: ADJUDICATION_REGISTRY_URL,
+        date,
+        description: description.slice(0, 300),
+        metadata: {
+          Claimant: item.claimant || '',
+          Respondent: item.respondent || '',
+          'Application Number': item.applicationNumber || '',
+          'Site Suburb': item.siteSuburb || '',
+          'Decision Date': date,
+        },
       });
-    });
+    }
   } catch {
-    // ignore
+    // ignore — non-fatal
   }
 
   // QBCC Excluded Individual Register — search by each director name
@@ -319,7 +378,7 @@ async function searchQBCC(companyName, abn, directors) {
     adjudicationResults,
     enforcementResults: excludedResults,
     searchUrl: `https://my.qbcc.qld.gov.au/myQBCC/s/findlocalcontractor`,
-    adjudicationSearchUrl: `https://www.qbcc.qld.gov.au/adjudication-decisions`,
+    adjudicationSearchUrl: `https://my.qbcc.qld.gov.au/myQBCC/s/adjudication-registry`,
     enforcementSearchUrl: EXCLUDED_REGISTER_URL,
     summary:
       allResults.length > 0

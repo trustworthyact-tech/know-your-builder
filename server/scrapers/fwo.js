@@ -50,7 +50,7 @@ function nameMatchesEntity(text, companyName) {
 
 function buildSearchUrl(companyName, abn) {
   const q = abn ? abn.replace(/\s/g, '') : companyName || '';
-  return `${BASE}/newsroom/news/list?Keywords=${encodeURIComponent(q)}`;
+  return `${BASE}/newsroom/news-and-media-search?keys=${encodeURIComponent(q)}`;
 }
 
 function resolveUrl(href) {
@@ -61,6 +61,44 @@ function resolveUrl(href) {
 function parseNewsItems($, searchUrl, companyName) {
   const results = [];
 
+  // Primary selector for /newsroom/news-and-media-search?keys= results page
+  // Structure: ol.searchResultsInfo > li.media
+  //   title: .search-highlight a  (href is relative)
+  //   description: .clsResultDescr span
+  const $primary = $('ol.searchResultsInfo li.media, li.media');
+  if ($primary.length > 0) {
+    $primary.each((_, el) => {
+      const $el = $(el);
+      const $link = $el.find('.search-highlight a').first();
+      const title = $link.text().trim();
+      if (!title) return;
+
+      const href = $link.attr('href') || '';
+      const url = resolveUrl(href) || searchUrl;
+      const description = $el.find('.clsResultDescr span').first().text().trim() || '';
+      const fullText = title + ' ' + description;
+
+      if (!isEnforcementOutcome(fullText)) return;
+      if (!nameMatchesEntity(fullText, companyName)) return;
+
+      results.push({
+        title,
+        url,
+        date: '',
+        status: 'FWO enforcement outcome',
+        description: description || 'Fair Work Ombudsman enforcement action or litigation outcome',
+        jurisdiction: 'Federal',
+        metadata: {
+          Source: 'Fair Work Ombudsman',
+          Date: '',
+        },
+      });
+    });
+
+    if (results.length > 0) return results;
+  }
+
+  // Fallback selectors for legacy page structure
   const selectors = [
     'article',
     '.news-item',
@@ -69,6 +107,7 @@ function parseNewsItems($, searchUrl, companyName) {
     '.module-content li',
     '[class*="news-list"] li',
     'li.result',
+    '.views-row',
   ];
 
   for (const sel of selectors) {
@@ -118,7 +157,7 @@ function parseNewsItems($, searchUrl, companyName) {
 }
 
 async function fetchFwoResults(query, entityName) {
-  const url = `${BASE}/newsroom/news/list?Keywords=${encodeURIComponent(query)}`;
+  const url = `${BASE}/newsroom/news-and-media-search?keys=${encodeURIComponent(query)}`;
   try {
     const { data } = await axios.get(url, { headers: HEADERS, timeout: 20000, maxRedirects: 5 });
     const $ = cheerio.load(data);

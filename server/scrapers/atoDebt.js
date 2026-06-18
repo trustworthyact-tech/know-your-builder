@@ -1,16 +1,11 @@
-const axios = require('axios');
 const cheerio = require('cheerio');
+const { getBrowser } = require('./browser');
 
-const BASE = 'https://insolvencynotices.asic.gov.au';
+// insolvencynotices.asic.gov.au was merged into publishednotices.asic.gov.au.
+// ATO listed tax debt notices (Tax Administration Act s260-45) appear here.
+const BASE = 'https://publishednotices.asic.gov.au';
+const SEARCH_URL = `${BASE}/browsesearch-notices`;
 
-const HEADERS = {
-  'User-Agent':
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-  Referer: 'https://insolvencynotices.asic.gov.au/',
-};
-
-// Keywords identifying ATO tax debt disclosure notices (Tax Administration Act s260-45)
 const ATO_KEYWORDS = [
   'ato',
   'tax debt',
@@ -22,53 +17,55 @@ const ATO_KEYWORDS = [
 
 function isAtoDebtNotice(text) {
   const lower = (text || '').toLowerCase();
-  return ATO_KEYWORDS.some((k) => lower.includes(k));
+  // Word-boundary check for 'ato' to avoid false-matching 'administrator', 'regulatory', etc.
+  return /\bato\b/.test(lower) ||
+    ATO_KEYWORDS.slice(1).some((k) => lower.includes(k));
 }
 
-function buildSearchUrl(companyName, abn, acn) {
-  // The ATO debt notice category uses a distinct filter on the same notices register
-  const q = abn ? abn.replace(/\s/g, '') :
-            acn ? acn.replace(/\s/g, '') :
-            companyName || '';
-  return `${BASE}/notices?q=${encodeURIComponent(q)}&noticeType=ATP`;
+// ACN = last 9 digits of ABN (strip spaces, take chars 2-11)
+function abnToAcn(abn) {
+  const clean = (abn || '').replace(/\s/g, '');
+  return clean.length === 11 ? clean.slice(2) : clean;
 }
 
-function resolveUrl(href) {
-  if (!href) return '';
-  return href.startsWith('http') ? href : `${BASE}${href.startsWith('/') ? '' : '/'}${href}`;
-}
-
-function parseTableRows($, searchUrl) {
+function parseResults($, searchUrl) {
   const results = [];
 
-  $('table tbody tr').each((_, row) => {
-    const $cells = $(row).find('td');
-    if ($cells.length < 2) return;
+  $('div.article-block').each((_, block) => {
+    const $b = $(block);
+    const fullText = $b.text();
 
-    const $link = $(row).find('a').first();
-    const href = $link.attr('href') || '';
-    const url = resolveUrl(href) || searchUrl;
-
-    const texts = $cells.map((_, c) => $(c).text().trim()).get();
-    const fullText = texts.join(' ');
     if (!isAtoDebtNotice(fullText)) return;
 
-    const noticeType = texts.find((t) => isAtoDebtNotice(t)) || 'ATO Listed Tax Debt';
-    const entityName = texts.find((t) => t && !isAtoDebtNotice(t) && t.length > 2) || '';
-    const date = texts.find((t) => /\d{1,2}[\s/.-]\w{3,}[\s/.-]\d{4}|\d{4}-\d{2}-\d{2}/.test(t)) || '';
-    const amount = texts.find((t) => /\$[\d,]+/.test(t)) || '';
+    const noticeType = $b.find('h3').text().replace(/\s+/g, ' ').trim();
+    const date = $b.find('.published-date').text().replace('Published:', '').trim();
+
+    const entityName = $b.find('p').toArray()
+      .map((el) => $(el).text().trim())
+      .find((t) => t.length > 0) || '';
+
+    const dlFields = {};
+    $b.find('dl dt').each((_, dt) => {
+      const key = $(dt).text().trim().replace(/:$/, '');
+      const val = $(dt).next('dd').text().trim();
+      if (key && val) dlFields[key] = val;
+    });
+
+    const $link = $b.find('a[href*="notice-details"]').first();
+    const href = $link.attr('href') || '';
+    const url = href.startsWith('http') ? href : href ? `${BASE}${href}` : searchUrl;
 
     results.push({
       title: entityName ? `${entityName} — ${noticeType}` : noticeType,
       url,
       date,
       status: 'ATO Tax Debt Disclosed',
-      description: `ATO tax debt notice published by ASIC under Tax Administration Act s260-45${amount ? ` — ${amount}` : ''}`,
+      description: `ATO tax debt notice published by ASIC under Tax Administration Act s260-45`,
       metadata: {
         'Notice Type': noticeType,
         Entity: entityName,
+        ACN: dlFields['ACN'] || '',
         Date: date,
-        Amount: amount,
       },
     });
   });
@@ -76,76 +73,55 @@ function parseTableRows($, searchUrl) {
   return results;
 }
 
-function parseCardLayout($, searchUrl) {
-  const results = [];
-
-  const selectors = [
-    '.notice-item',
-    '.search-result-item',
-    '[class*="notice-result"]',
-    '[class*="notice-card"]',
-    'article',
-  ];
-
-  for (const sel of selectors) {
-    const $items = $(sel);
-    if ($items.length === 0) continue;
-
-    $items.each((_, el) => {
-      const $el = $(el);
-      const fullText = $el.text();
-      if (!isAtoDebtNotice(fullText)) return;
-
-      const $link = $el.find('a').first();
-      const href = $link.attr('href') || '';
-      const url = resolveUrl(href) || searchUrl;
-
-      const noticeType =
-        $el.find('[class*="type"], [class*="category"]').first().text().trim() ||
-        'ATO Listed Tax Debt';
-      const entityName = $el.find('[class*="entity"], [class*="company"], [class*="name"]').text().trim();
-      const date = $el.find('[class*="date"], time').first().text().trim();
-      const amount = (fullText.match(/\$[\d,]+/) || [])[0] || '';
-
-      results.push({
-        title: entityName ? `${entityName} — ${noticeType}` : noticeType,
-        url,
-        date,
-        status: 'ATO Tax Debt Disclosed',
-        description: `ATO tax debt notice published by ASIC under Tax Administration Act s260-45${amount ? ` — ${amount}` : ''}`,
-        metadata: {
-          'Notice Type': noticeType,
-          Entity: entityName,
-          Date: date,
-          Amount: amount,
-        },
-      });
-    });
-
-    if (results.length > 0) break;
-  }
-
-  return results;
-}
-
 async function searchAtoDebt(companyName, abn, acn) {
-  const searchUrl = buildSearchUrl(companyName, abn, acn);
+  const derivedAcn = (acn || '').replace(/\s/g, '') || abnToAcn(abn);
+  const searchTerm = derivedAcn || companyName || '';
   let results = [];
 
+  const browser = await getBrowser();
+  const page = await browser.newPage();
   try {
-    const { data } = await axios.get(searchUrl, {
-      headers: HEADERS,
-      timeout: 20000,
-      maxRedirects: 5,
-    });
-    const $ = cheerio.load(data);
+    await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-AU,en;q=0.9' });
+    await page.goto(SEARCH_URL, { waitUntil: 'networkidle2', timeout: 45_000 });
 
-    results = parseTableRows($, searchUrl);
-    if (results.length === 0) {
-      results = parseCardLayout($, searchUrl);
+    const wafDeadline = Date.now() + 15_000;
+    while (Date.now() < wafDeadline) {
+      const title = await page.title();
+      if (title && title !== 'Please Wait...' && title !== 'Just a moment...' && title !== '') break;
+      await new Promise((r) => setTimeout(r, 1_000));
     }
+
+    const fieldId = '#ContentPlaceHolderDefault_INWMasterContentPlaceHolder_INWPageContentPlaceHolder_SearchNoticeList_3_txtCompanyNameOrACN';
+    await page.click(fieldId, { clickCount: 3 });
+    await page.type(fieldId, searchTerm, { delay: 30 });
+
+    await Promise.all([
+      page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 25_000 }).catch(() => {}),
+      page.evaluate(() => {
+        // eslint-disable-next-line no-undef
+        __doPostBack(
+          'ctl00$ctl00$ctl00$ctl00$ContentPlaceHolderDefault$INWMasterContentPlaceHolder$INWPageContentPlaceHolder$SearchNoticeList_3$searchButton',
+          ''
+        );
+      }),
+    ]);
+
+    const archivedBtnSel = '[id*="ucNoticeResult_btnLoadArchived"]';
+    const hasArchivedBtn = await page.$(archivedBtnSel);
+    if (hasArchivedBtn) {
+      await Promise.all([
+        page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 25_000 }).catch(() => {}),
+        page.click(archivedBtnSel),
+      ]);
+    }
+
+    const html = await page.content();
+    const $ = cheerio.load(html);
+    results = parseResults($, SEARCH_URL);
   } catch {
     // non-fatal — return empty results
+  } finally {
+    await page.close().catch(() => {});
   }
 
   return {
@@ -153,7 +129,7 @@ async function searchAtoDebt(companyName, abn, acn) {
     jurisdiction: 'Federal',
     category: 'financial',
     results,
-    searchUrl,
+    searchUrl: SEARCH_URL,
     summary:
       results.length > 0
         ? `${results.length} ATO tax debt disclosure(s) found — entity has a listed tax debt published by ASIC`
