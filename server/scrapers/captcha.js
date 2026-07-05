@@ -4,17 +4,18 @@ const SITE_KEY = '6LdfxBoUAAAAAO7ItWGgMWT32_h5T_TtD4F1MflL';
 const POLL_INTERVAL_MS = 5_000;
 const MAX_WAIT_MS = 120_000;
 
-// Submits an invisible reCAPTCHA task to 2captcha and polls until the token is ready.
+// Submits a reCAPTCHA task to 2captcha and polls until the token is ready.
 // Throws on submission error, API error, or timeout — callers must handle gracefully.
 // _http is injectable for testing; production callers omit it and get the real axios.
-async function solveCaptcha(pageUrl, apiKey, _http = axios) {
+// invisible=true for invisible reCAPTCHA (e.g. ASIC), false for visible v2 checkbox (e.g. SA).
+async function solveCaptcha(pageUrl, apiKey, _http = axios, siteKey = SITE_KEY, invisible = true) {
   const submitUrl =
     `https://2captcha.com/in.php` +
     `?key=${encodeURIComponent(apiKey)}` +
     `&method=userrecaptcha` +
-    `&googlekey=${encodeURIComponent(SITE_KEY)}` +
+    `&googlekey=${encodeURIComponent(siteKey)}` +
     `&pageurl=${encodeURIComponent(pageUrl)}` +
-    `&invisible=1` +
+    `&invisible=${invisible ? 1 : 0}` +
     `&json=1`;
 
   const { data: submitData } = await _http.get(submitUrl, { timeout: 30_000 });

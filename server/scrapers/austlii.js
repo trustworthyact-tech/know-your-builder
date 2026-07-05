@@ -83,6 +83,27 @@ const JURISDICTION_SOURCES = {
   tas: ['TAS Supreme Court', 'TAS Magistrates Court'],
 };
 
+// Words too generic to use as an entity-match signal in case titles.
+const COMMON_WORDS = new Set([
+  'pty', 'ltd', 'limited', 'the', 'and', 'of', 'a', 'in', 'for', 'by', 'no',
+  'trading', 'services', 'group', 'australia', 'australian', 'holdings',
+  'trust', 'construction', 'constructions', 'building', 'builders',
+  'management', 'solutions', 'operations', 'projects', 'enterprise', 'enterprises',
+]);
+
+// Returns true when at least one distinctive word from `term` appears in `title`.
+// Prevents AustLII's word-OR search from returning cases that only share a
+// generic word (e.g. "Services") with the searched entity.
+function titleMatchesTerm(title, term) {
+  const words = term
+    .toLowerCase()
+    .split(/\W+/)
+    .filter((w) => w.length > 3 && !COMMON_WORDS.has(w));
+  if (words.length === 0) return true; // no distinctive words — can't filter
+  const lower = title.toLowerCase();
+  return words.some((w) => lower.includes(w));
+}
+
 // Pending-promise cache: term → Promise<ResultItem[]>
 // Deduplicates concurrent calls from all 9 jurisdiction searches for the same term
 // so only one ScraperAPI request is made per term per search.
@@ -157,7 +178,8 @@ async function searchAustLII(companyName, directors = [], jurisdiction = 'federa
     try {
       const results = await fetchTermResults(term);
       // Keep only results whose URL falls under this jurisdiction's path
-      const filtered = results.filter(r => r.url.includes(pathPrefix));
+      // AND whose case title contains at least one distinctive word from the search term.
+      const filtered = results.filter(r => r.url.includes(pathPrefix) && titleMatchesTerm(r.title, term));
       allResults.push(...filtered);
     } catch {
       // skip this term on error

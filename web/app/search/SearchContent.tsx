@@ -28,8 +28,15 @@ const INITIAL_SEARCHES: SearchResult[] = [
   { key: 'austlii_act',   label: 'ACT Courts & Tribunals (AustLII)',         status: 'idle' },
   { key: 'austlii_tas',       label: 'TAS Courts & Tribunals (AustLII)',             status: 'idle' },
   { key: 'fwo',              label: 'Fair Work Ombudsman — Enforcement Outcomes',   status: 'idle' },
-  { key: 'vicBpc',           label: 'VIC Building Authority — Disciplinary Register', status: 'idle' },
-  { key: 'waBuildingEnergy', label: 'WA Building and Energy — Enforcement',         status: 'idle' },
+  { key: 'vicBpc',                  label: 'VIC Building Authority — Disciplinary Register',      status: 'idle' },
+  { key: 'vicVbaLicence',           label: 'VIC Building Authority — Licence Register',            status: 'idle' },
+  { key: 'waBuildingEnergy',        label: 'WA Building and Energy — Enforcement',                status: 'idle' },
+  { key: 'nswFairTrading',          label: 'NSW Fair Trading — Contractor Licence Register',      status: 'idle' },
+  { key: 'ntBuildingPractitioners', label: 'NT Building Practitioners Board — Licence Register',  status: 'idle' },
+  { key: 'actLicences',             label: 'ACT Access Canberra — Builder Licence Register',      status: 'idle' },
+  { key: 'waLicenceRegister',       label: 'WA Building Services — Contractor Licence Register',  status: 'idle' },
+  { key: 'saLicenceRegister',       label: 'SA Consumer & Business Services — Licence Register',  status: 'idle' },
+  { key: 'tasLicenceRegister',      label: 'TAS Occupational Licensing — Licence Register',       status: 'idle' },
   { key: 'asicExtract',      label: 'ASIC — Director Company History',              status: 'idle' },
 ];
 

@@ -214,6 +214,12 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
   const fwo = byKey('fwo');
   const vicBpc = byKey('vicBpc');
   const waBuildingEnergy = byKey('waBuildingEnergy');
+  const nswFairTrading = byKey('nswFairTrading');
+  const ntBuildingPractitioners = byKey('ntBuildingPractitioners');
+  const actLicences = byKey('actLicences');
+  const waLicenceRegister = byKey('waLicenceRegister');
+  const saLicenceRegister = byKey('saLicenceRegister');
+  const tasLicenceRegister = byKey('tasLicenceRegister');
   const asicExtract = byKey('asicExtract');
   const afsaNpii = byKey('afsaNpii');
   const links = byKey('links');
@@ -299,12 +305,24 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
   const fwoItems: ResultItem[] = fwo?.results ?? [];
   const vicBpcItems: ResultItem[] = vicBpc?.results ?? [];
   const waBuildingEnergyItems: ResultItem[] = waBuildingEnergy?.results ?? [];
+  const nswFairTradingItems: ResultItem[] = nswFairTrading?.results ?? [];
+  const ntBuildingPractitionersItems: ResultItem[] = ntBuildingPractitioners?.results ?? [];
+  const actLicencesItems: ResultItem[] = actLicences?.results ?? [];
+  const waLicenceRegisterItems: ResultItem[] = waLicenceRegister?.results ?? [];
+  const saLicenceRegisterItems: ResultItem[] = saLicenceRegister?.results ?? [];
+  const tasLicenceRegisterItems: ResultItem[] = tasLicenceRegister?.results ?? [];
   const qbccEnforcementItems: ResultItem[] = qbcc?.enforcementResults ?? [];
   const licenceItems: ResultItem[] = [
     ...(qbcc?.licenceResults ?? []),
     ...qbccEnforcementItems,
     ...vicBpcItems,
     ...waBuildingEnergyItems,
+    ...nswFairTradingItems,
+    ...ntBuildingPractitionersItems,
+    ...actLicencesItems,
+    ...waLicenceRegisterItems,
+    ...saLicenceRegisterItems,
+    ...tasLicenceRegisterItems,
   ];
   const courtItems: ResultItem[] = [
     ...austliiResults.flatMap((r) => r.results ?? []),
@@ -331,6 +349,12 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
       qbcc?.status ?? 'done',
       vicBpc?.status ?? 'done',
       waBuildingEnergy?.status ?? 'done',
+      nswFairTrading?.status ?? 'done',
+      ntBuildingPractitioners?.status ?? 'done',
+      actLicences?.status ?? 'done',
+      waLicenceRegister?.status ?? 'done',
+      saLicenceRegister?.status ?? 'done',
+      tasLicenceRegister?.status ?? 'done',
     ]) ? 'unavailable' : 'clear'
   );
   const s83Risk = deriveRiskLevel(
@@ -440,6 +464,78 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
     searchUrl: waBuildingEnergy?.searchUrl,
     results: waBuildingEnergy?.results ?? [],
     summary: waBuildingEnergy?.summary ?? 'No WA Building and Energy enforcement actions found',
+  };
+
+  const nswFairTradingSearch: SearchResult = {
+    key: 'nswFairTrading',
+    label: 'NSW Fair Trading — Contractor Licence Register',
+    status: nswFairTrading?.status ?? 'done',
+    source: 'NSW Fair Trading',
+    jurisdiction: 'NSW',
+    category: 'license',
+    searchUrl: nswFairTrading?.searchUrl,
+    results: nswFairTrading?.results ?? [],
+    summary: nswFairTrading?.summary ?? 'No NSW contractor licence records found',
+  };
+
+  const ntBuildingPractitionersSearch: SearchResult = {
+    key: 'ntBuildingPractitioners',
+    label: 'NT Building Practitioners Board — Licence Register',
+    status: ntBuildingPractitioners?.status ?? 'done',
+    source: 'NT Building Practitioners Board',
+    jurisdiction: 'NT',
+    category: 'license',
+    searchUrl: ntBuildingPractitioners?.searchUrl,
+    results: ntBuildingPractitioners?.results ?? [],
+    summary: ntBuildingPractitioners?.summary ?? 'No NT building practitioner licence records found',
+  };
+
+  const actLicencesSearch: SearchResult = {
+    key: 'actLicences',
+    label: 'ACT Access Canberra — Builder Licence Register',
+    status: actLicences?.status ?? 'done',
+    source: 'ACT Access Canberra',
+    jurisdiction: 'ACT',
+    category: 'license',
+    searchUrl: actLicences?.searchUrl,
+    results: actLicences?.results ?? [],
+    summary: actLicences?.summary ?? 'No ACT builder licence records found',
+  };
+
+  const waLicenceRegisterSearch: SearchResult = {
+    key: 'waLicenceRegister',
+    label: 'WA Building Services — Contractor Licence Register',
+    status: waLicenceRegister?.status ?? 'done',
+    source: 'WA Building Services',
+    jurisdiction: 'WA',
+    category: 'license',
+    searchUrl: waLicenceRegister?.searchUrl,
+    results: waLicenceRegister?.results ?? [],
+    summary: waLicenceRegister?.summary ?? 'No WA building licence records found',
+  };
+
+  const saLicenceRegisterSearch: SearchResult = {
+    key: 'saLicenceRegister',
+    label: 'SA Consumer & Business Services — Licence Register',
+    status: saLicenceRegister?.status ?? 'done',
+    source: 'SA Consumer & Business Services',
+    jurisdiction: 'SA',
+    category: 'license',
+    searchUrl: saLicenceRegister?.searchUrl,
+    results: saLicenceRegister?.results ?? [],
+    summary: saLicenceRegister?.summary ?? 'No SA licence records found',
+  };
+
+  const tasLicenceRegisterSearch: SearchResult = {
+    key: 'tasLicenceRegister',
+    label: 'TAS Occupational Licensing — Licence Register',
+    status: tasLicenceRegister?.status ?? 'done',
+    source: 'TAS Occupational Licensing',
+    jurisdiction: 'TAS',
+    category: 'license',
+    searchUrl: tasLicenceRegister?.searchUrl,
+    results: tasLicenceRegister?.results ?? [],
+    summary: tasLicenceRegister?.summary ?? 'No TAS building licence records found',
   };
 
   // Deep check synthetic sources — only included when present in results
@@ -615,9 +711,16 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
             ...(qbcc ? [licenceSearch] : []),
             vicBpcSearch,
             waBuildingEnergySearch,
+            nswFairTradingSearch,
+            ntBuildingPractitionersSearch,
+            actLicencesSearch,
+            waLicenceRegisterSearch,
+            saLicenceRegisterSearch,
+            tasLicenceRegisterSearch,
           ]}
           riskLevel={s82Risk}
           resultsOverride={licenceItems}
+          supplementalLinks={licenceLinks}
           linksRequireResults
         />
 

@@ -11,7 +11,14 @@ const { searchAsicInsolvency } = require('./scrapers/asicInsolvency');
 const { searchAtoDebt } = require('./scrapers/atoDebt');
 const { searchFWO } = require('./scrapers/fwo');
 const { searchVicBpc } = require('./scrapers/vicBpc');
+const { searchVicVbaLicence } = require('./scrapers/vicVbaLicence');
 const { searchWABuildingEnergy } = require('./scrapers/waBuildingEnergy');
+const { searchNSWFairTrading } = require('./scrapers/nswFairTrading');
+const { searchNTBuildingPractitioners } = require('./scrapers/ntBuildingPractitioners');
+const { searchACTLicences } = require('./scrapers/actLicences');
+const { searchWALicenceRegister } = require('./scrapers/waLicenceRegister');
+const { searchSALicenceRegister } = require('./scrapers/saLicenceRegister');
+const { searchTASLicenceRegister } = require('./scrapers/tasLicenceRegister');
 const { searchAsicExtract } = require('./scrapers/asicExtract');
 const { searchAfsaNpii } = require('./scrapers/afsaNpii');
 const { generateLinks } = require('./scrapers/links');
@@ -157,9 +164,44 @@ app.post('/api/search', async (req, res) => {
       fn: async () => searchVicBpc(companyName, abn, await resolveDirectors()),
     },
     {
+      key: 'vicVbaLicence',
+      label: 'VIC Building Authority — Licence Register',
+      fn: async () => searchVicVbaLicence(companyName, abn, await resolveDirectors()),
+    },
+    {
       key: 'waBuildingEnergy',
       label: 'WA Building and Energy — Enforcement',
       fn: async () => searchWABuildingEnergy(companyName, abn, await resolveDirectors()),
+    },
+    {
+      key: 'nswFairTrading',
+      label: 'NSW Fair Trading — Contractor Licence Register',
+      fn: async () => searchNSWFairTrading(companyName, abn, await resolveDirectors()),
+    },
+    {
+      key: 'ntBuildingPractitioners',
+      label: 'NT Building Practitioners Board — Licence Register',
+      fn: async () => searchNTBuildingPractitioners(companyName, abn, await resolveDirectors()),
+    },
+    {
+      key: 'actLicences',
+      label: 'ACT Access Canberra — Builder Licence Register',
+      fn: async () => searchACTLicences(companyName, abn, await resolveDirectors()),
+    },
+    {
+      key: 'waLicenceRegister',
+      label: 'WA Building Services — Contractor Licence Register',
+      fn: async () => searchWALicenceRegister(companyName, abn, await resolveDirectors()),
+    },
+    {
+      key: 'saLicenceRegister',
+      label: 'SA Consumer & Business Services — Licence Register',
+      fn: async () => searchSALicenceRegister(companyName, abn, await resolveDirectors(), process.env.CAPTCHA_API_KEY),
+    },
+    {
+      key: 'tasLicenceRegister',
+      label: 'TAS Occupational Licensing — Licence Register',
+      fn: async () => searchTASLicenceRegister(companyName, abn, await resolveDirectors(), process.env.CAPTCHA_API_KEY),
     },
     {
       key: 'asicExtract',

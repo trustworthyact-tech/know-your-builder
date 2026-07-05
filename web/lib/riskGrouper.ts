@@ -292,13 +292,19 @@ export function riskGrouper(findings: Record<string, SearchResult>): RiskGroupRe
       });
     }
 
-    // Recent decisions (within 2 years) — only fire when total < 3 to avoid repetition
-    if (totalCourtHits < 3) {
+    // 1–2 results: distinguish recent vs older, but flag both
+    if (totalCourtHits > 0 && totalCourtHits < 3) {
       const recentResults = allCourtResults.filter((r) => resultIsWithinYears(r, 2));
       if (recentResults.length > 0) {
         triggers.push({
           scraperKey: 'austlii',
           finding: `${recentResults.length} decision(s) found within the past 2 years`,
+          anchor: '#s85',
+        });
+      } else {
+        triggers.push({
+          scraperKey: 'austlii',
+          finding: `${totalCourtHits} court or tribunal decision(s) found`,
           anchor: '#s85',
         });
       }
