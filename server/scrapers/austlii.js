@@ -98,7 +98,7 @@ function titleMatchesTerm(title, term) {
   const words = term
     .toLowerCase()
     .split(/\W+/)
-    .filter((w) => w.length > 3 && !COMMON_WORDS.has(w));
+    .filter((w) => (w.length > 3 || /^\d+$/.test(w)) && !COMMON_WORDS.has(w));
   if (words.length === 0) return true; // no distinctive words — can't filter
   const lower = title.toLowerCase();
   return words.some((w) => lower.includes(w));

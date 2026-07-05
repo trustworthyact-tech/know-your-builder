@@ -15,7 +15,7 @@ function nameMatchesEntity(text, query) {
   const words = query
     .toLowerCase()
     .split(/\s+/)
-    .filter((w) => w.length > 3 && !/^(pty|ltd|limited|the|and|of|a)$/.test(w));
+    .filter((w) => (w.length > 3 || /^\d+$/.test(w)) && !/^(pty|ltd|limited|the|and|of|a)$/.test(w));
   if (words.length === 0) return false;
   const lower = text.toLowerCase();
   return words.every((w) => lower.includes(w));
