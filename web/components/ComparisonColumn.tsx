@@ -11,12 +11,11 @@ export interface ComparisonData {
   isDeepCheck: boolean;
 }
 
-const SECTION_ROWS: { label: string; anchor: string }[] = [
-  { label: '8.1 Identity', anchor: '#s81' },
-  { label: '8.2 Licences', anchor: '#s82' },
-  { label: '8.3 Financial', anchor: '#s83' },
-  { label: '8.4 Payment', anchor: '#s84' },
-  { label: '8.5 Enforcement', anchor: '#s85' },
+const SECTION_ROWS: { label: string; anchors: string[] }[] = [
+  { label: '8.1 Identity', anchors: ['#s81'] },
+  { label: '8.2 Licences', anchors: ['#s82'] },
+  { label: '8.3 Financial', anchors: ['#s83'] },
+  { label: '8.4 Enforcement', anchors: ['#s84', '#s85'] },
 ];
 
 function parseRiskGroups(riskSummary: string | null): RiskGroupResult[] {
@@ -28,8 +27,8 @@ function parseRiskGroups(riskSummary: string | null): RiskGroupResult[] {
   }
 }
 
-function deriveSectionRisk(groups: RiskGroupResult[], anchor: string): RiskLevel {
-  const matching = groups.filter((g) => g.triggers.some((t) => t.anchor === anchor));
+function deriveSectionRisk(groups: RiskGroupResult[], anchors: string[]): RiskLevel {
+  const matching = groups.filter((g) => g.triggers.some((t) => anchors.includes(t.anchor)));
   if (matching.length === 0) return 'clear';
   if (matching.some((g) => g.severity === 'significant')) return 'significant';
   return 'findings';
@@ -102,10 +101,10 @@ export function ComparisonColumn({ data }: { data: ComparisonData }) {
           By section
         </p>
         <div className="space-y-2">
-          {SECTION_ROWS.map(({ label, anchor }) => {
-            const level = deriveSectionRisk(groups, anchor);
+          {SECTION_ROWS.map(({ label, anchors }) => {
+            const level = deriveSectionRisk(groups, anchors);
             return (
-              <div key={anchor} className="flex items-center justify-between gap-2">
+              <div key={anchors[0]} className="flex items-center justify-between gap-2">
                 <span className="text-xs text-text-secondary">{label}</span>
                 <RiskBadge level={level} className="text-[10px] px-2 py-0.5 shrink-0" />
               </div>

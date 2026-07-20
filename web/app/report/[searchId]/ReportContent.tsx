@@ -19,8 +19,7 @@ const TOC_SECTIONS = [
   { id: 's81', short: '8.1 Identity' },
   { id: 's82', short: '8.2 Licences' },
   { id: 's83', short: '8.3 Financial' },
-  { id: 's84', short: '8.4 Payment' },
-  { id: 's85', short: '8.5 Enforcement' },
+  { id: 's85', short: '8.4 Enforcement' },
 ] as const;
 
 function isAllErrored(statuses: SearchStatus[]): boolean {
@@ -31,11 +30,12 @@ function isAllErrored(statuses: SearchStatus[]): boolean {
 // falling back to the baseline when no group applies.
 function deriveRiskLevel(
   groups: RiskGroupResult[],
-  sectionAnchor: string,
+  sectionAnchor: string | string[],
   baseline: RiskLevel
 ): RiskLevel {
   if (baseline === 'unavailable') return 'unavailable';
-  const matching = groups.filter((g) => g.triggers.some((t) => t.anchor === sectionAnchor));
+  const anchors = Array.isArray(sectionAnchor) ? sectionAnchor : [sectionAnchor];
+  const matching = groups.filter((g) => g.triggers.some((t) => anchors.includes(t.anchor)));
   if (matching.length === 0) return baseline;
   if (matching.some((g) => g.severity === 'significant')) return 'significant';
   return 'findings';
@@ -327,6 +327,7 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
   const courtItems: ResultItem[] = [
     ...austliiResults.flatMap((r) => r.results ?? []),
     ...fwoItems,
+    ...adjItems,
   ];
 
   // Section risk levels — derived from risk groups, falling back to scraper-status baseline
@@ -370,17 +371,13 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
       ? 'unavailable'
       : 'clear'
   );
-  const s84Risk = deriveRiskLevel(
-    riskGroups,
-    '#s84',
-    isAllErrored([qbcc?.status ?? 'done']) ? 'unavailable' : 'clear'
-  );
   const s85Risk = deriveRiskLevel(
     riskGroups,
-    '#s85',
+    ['#s84', '#s85'],
     isAllErrored([
       ...austliiResults.map((r) => r.status),
       fwo?.status ?? 'done',
+      qbcc?.status ?? 'done',
     ])
       ? 'unavailable'
       : 'clear'
@@ -746,22 +743,12 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
           }
         />
 
-        {/* 8.4 Payment & Subcontractor Disputes */}
-        <ReportSection
-          id="s84"
-          title="8.4 Payment & Subcontractor Disputes"
-          icon="📋"
-          searchResults={qbcc ? [adjSearch] : []}
-          riskLevel={s84Risk}
-          resultsOverride={adjItems}
-        />
-
-        {/* 8.5 Courts, Enforcement & Disciplinary */}
+        {/* 8.4 Courts, Enforcement & Disciplinary */}
         <ReportSection
           id="s85"
-          title="8.5 Courts, Enforcement & Disciplinary"
+          title="8.4 Courts, Enforcement & Disciplinary"
           icon="⚖️"
-          searchResults={[courtSearch, fwoSearch]}
+          searchResults={[courtSearch, fwoSearch, ...(qbcc ? [adjSearch] : [])]}
           riskLevel={s85Risk}
           resultsOverride={courtItems}
           showJurisdiction

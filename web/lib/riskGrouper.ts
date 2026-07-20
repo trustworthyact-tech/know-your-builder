@@ -145,7 +145,7 @@ export function riskGrouper(findings: Record<string, SearchResult>): RiskGroupRe
       triggers.push({
         scraperKey: 'qbcc',
         finding: `${adjudicationResults.length} QBCC adjudication decision(s) found`,
-        anchor: '#s84',
+        anchor: '#s85',
       });
     }
 
