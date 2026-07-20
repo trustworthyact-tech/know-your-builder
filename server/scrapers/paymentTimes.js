@@ -178,9 +178,10 @@ async function fetchRegisterBuffer() {
  * Strategy:
  *  1. Parse sharedStrings.xml to build a string array.
  *  2. Find all shared-string indices whose value contains the query.
- *  3. For each sheet, find rows where the B column (Business Name) has one of
- *     those indices (or the C column ABN matches directly).
- *  4. Deduplicate by name+ABN and return the most recent report per entity.
+ *  3. For each sheet, parse the header row (row 2) to discover column positions
+ *     dynamically — falls back to known-good hardcoded letters if parsing fails.
+ *  4. Find rows where the name column has a matching index (or ABN column matches).
+ *  5. Deduplicate by name+ABN and return the most recent report per entity.
  */
 function searchWorkbook(buf, query, abn) {
   const queryLower = query ? query.toLowerCase() : '';
@@ -204,6 +205,20 @@ function searchWorkbook(buf, query, abn) {
   const seen = new Map(); // key: "name|abn" → best result
   const cellRe = /<c r="([A-Z]+)\d+" (?:[^>]*t="([^"]*)")?[^>]*>(?:<v>(.*?)<\/v>)?/g;
 
+  // Helper: find the first column whose lowercase header text satisfies ALL hints.
+  // Each argument is tried in order; the first match wins.
+  // An argument can be a string (single hint) or array of strings (all must match).
+  function discover(headerMap, ...alternatives) {
+    for (const alt of alternatives) {
+      const hints = Array.isArray(alt) ? alt : [alt];
+      const entry = Object.entries(headerMap).find(([, text]) =>
+        hints.every(h => text.includes(h))
+      );
+      if (entry) return entry[0];
+    }
+    return null;
+  }
+
   for (const sheetFile of SHEETS_TO_SEARCH) {
     let sheetXml;
     try {
@@ -211,6 +226,46 @@ function searchWorkbook(buf, query, abn) {
     } catch {
       continue;
     }
+
+    // Hardcoded fallback column letters (verified against register as of 2026-07)
+    let nameCol     = 'B',  abnCol      = 'C',  acnCol      = 'D',  typeCol     = 'E',
+        startCol    = 'F',  endCol      = 'G',  stdTermsCol = 'M',
+        avgDaysCol  = 'U',  within30Col = 'Y',  days3160Col = 'Z',  over60Col   = 'AA';
+
+    // Discover columns from header row (row 2)
+    const headerRowMatch = sheetXml.match(/<row r="2"[^>]*>([\s\S]*?)<\/row>/);
+    if (headerRowMatch) {
+      const hdrXml = headerRowMatch[1];
+      const hdrMap = {};
+      const hdrRe  = /<c r="([A-Z]+)\d+"(?:\s[^>]*t="([^"]*)")?[^>]*>(?:<v>(.*?)<\/v>)?/g;
+      let hm;
+      while ((hm = hdrRe.exec(hdrXml)) !== null) {
+        const col = hm[1], t = hm[2] || 'n', v = hm[3];
+        if (v !== undefined && v !== null && v !== '') {
+          hdrMap[col] = (t === 's' ? (strings[parseInt(v, 10)] || '') : v).toLowerCase();
+        }
+      }
+
+      if (Object.keys(hdrMap).length > 0) {
+        nameCol     = discover(hdrMap, 'business name', 'entity name', ['reporting', 'entity']) || nameCol;
+        abnCol      = discover(hdrMap, 'abn')                                                   || abnCol;
+        acnCol      = discover(hdrMap, 'acn')                                                   || acnCol;
+        typeCol     = discover(hdrMap, 'type')                                                   || typeCol;
+        startCol    = discover(hdrMap, ['period', 'start'], 'start')                            || startCol;
+        endCol      = discover(hdrMap, ['period', 'end'], 'end')                                || endCol;
+        stdTermsCol = discover(hdrMap, ['common', 'term'], ['standard', 'term'])                || stdTermsCol;
+        avgDaysCol  = discover(hdrMap, ['average', 'day'], 'average')                           || avgDaysCol;
+        within30Col = discover(hdrMap, '30')                                                     || within30Col;
+        days3160Col = discover(hdrMap, ['31', '60'], '31')                                      || days3160Col;
+        over60Col   = discover(hdrMap, ['more', '60'], ['over', '60'], ['after', '60'])         || over60Col;
+      }
+    }
+
+    // Build quick-check regexes using discovered column letters.
+    // Allow optional style/other attributes before t="s" (some register versions include s="N").
+    const nameQuickRe = new RegExp(`<c r="${nameCol}\\d+"[^>]*t="s"[^>]*><v>(\\d+)<\\/v><\\/c>`);
+    const abnQuickRe  = new RegExp(`<c r="${abnCol}\\d+"[^>]*t="s"[^>]*><v>(\\d+)<\\/v><\\/c>`);
+    const abnNumRe    = new RegExp(`<c r="${abnCol}\\d+"[^>]*><v>(\\d+)<\\/v><\\/c>`);
 
     const rowRe = /<row r="(\d+)"[^>]*>([\s\S]*?)<\/row>/g;
     let rm;
@@ -221,11 +276,9 @@ function searchWorkbook(buf, query, abn) {
       const rowXml = rm[2];
 
       // Quick check: does this row contain any of our matching indices?
-      // Check B column for name match, C column for ABN match
-      const bMatch = rowXml.match(/<c r="B\d+" t="s"><v>(\d+)<\/v><\/c>/);
-      const cMatch = rowXml.match(/<c r="C\d+" t="s"><v>(\d+)<\/v><\/c>/);
-      // Also handle ABN as numeric (non-shared-string) in some sheets
-      const cNum   = rowXml.match(/<c r="C\d+"><v>(\d+)<\/v><\/c>/);
+      const bMatch = rowXml.match(nameQuickRe);
+      const cMatch = rowXml.match(abnQuickRe);
+      const cNum   = rowXml.match(abnNumRe);
 
       const bIdx = bMatch ? parseInt(bMatch[1], 10) : -1;
       const cIdx = cMatch ? parseInt(cMatch[1], 10) : -1;
@@ -247,17 +300,17 @@ function searchWorkbook(buf, query, abn) {
         cells[col] = t === 's' ? (strings[parseInt(v, 10)] || '') : v;
       }
 
-      const name      = cells['B'] || '';
-      const entityAbn = cells['C'] || '';
-      const entityAcn = cells['D'] || '';
-      const type      = cells['E'] || '';
-      const start     = excelDateToISO(cells['F']);
-      const end       = excelDateToISO(cells['G']);
-      const avgDays   = cells['U'] || '';
-      const within30  = cells['Y'] || '';
-      const days3160  = cells['Z'] || '';
-      const over60    = cells['AA'] || '';
-      const stdTerms  = cells['M'] || '';
+      const name      = cells[nameCol]     || '';
+      const entityAbn = cells[abnCol]      || '';
+      const entityAcn = cells[acnCol]      || '';
+      const type      = cells[typeCol]     || '';
+      const start     = excelDateToISO(cells[startCol]);
+      const end       = excelDateToISO(cells[endCol]);
+      const avgDays   = cells[avgDaysCol]  || '';
+      const within30  = cells[within30Col] || '';
+      const days3160  = cells[days3160Col] || '';
+      const over60    = cells[over60Col]   || '';
+      const stdTerms  = cells[stdTermsCol] || '';
 
       const dedupKey = `${name.toLowerCase()}|${entityAbn}`;
 

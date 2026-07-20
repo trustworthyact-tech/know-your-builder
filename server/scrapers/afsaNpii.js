@@ -1,8 +1,19 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
 
-const BASE = 'https://npii.afsa.gov.au';
-const SEARCH_PATH = '/search.xhtml';
+// HARD BLOCKED (investigated 2026-07-07): npii.afsa.gov.au is decommissioned.
+// AFSA migrated the NPII to the Bankruptcy Register Search (BRS) at
+// services.afsa.gov.au/brs/. The BRS 3-step POST flow was fully reverse-engineered:
+//   1. GET /brs/search → CSRF token + cookies
+//   2. POST /brs/search-add-email → name criteria → "Your email address" page
+//   3. POST /brs/searchbyname → customerEmailOpted=false → REDIRECTS to payment
+// Every search (including fictitious names) redirects to:
+//   https://services.afsa.gov.au/payment-service/pay/transaction/paymentoptions
+// There is NO free tier — viewing any result requires per-search payment.
+// This scraper returns empty results until an AFSA BRS account + payment is arranged.
+// See server/tests/README.md "Common failure patterns" for full investigation notes.
+const BASE = 'https://services.afsa.gov.au';
+const SEARCH_PATH = '/brs/search';
 
 const HEADERS = {
   'User-Agent':
@@ -29,7 +40,10 @@ function splitName(fullName) {
   return { surname: parts[parts.length - 1], givenNames: parts.slice(0, -1).join(' ') };
 }
 
-// Fetch the NPII search page and extract JSF session state
+// Fetch the BRS search page and extract session state.
+// The old NPII used JSF ViewState; the new BRS uses CSRF tokens.
+// viewState is returned as empty string so callers that check it
+// will bail out gracefully rather than submitting a malformed POST.
 async function fetchSearchPage() {
   const url = `${BASE}${SEARCH_PATH}`;
   const res = await axios.get(url, {
@@ -38,7 +52,7 @@ async function fetchSearchPage() {
     maxRedirects: 5,
   });
   const $ = cheerio.load(res.data);
-  const viewState = $('input[name="javax.faces.ViewState"]').val() || '';
+  const viewState = '';
   const cookies = [].concat(res.headers['set-cookie'] || []).join('; ');
   return { viewState, cookies };
 }

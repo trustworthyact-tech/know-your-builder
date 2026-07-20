@@ -54,8 +54,17 @@ const cheerio = require('cheerio');
 const { searchAfsaNpii } = require(path.join(__dirname, '../scrapers/afsaNpii'));
 const { pass, fail, step, warn, dump, header, summary } = require('./lib/helpers');
 
-const BASE        = 'https://npii.afsa.gov.au';
-const SEARCH_URL  = `${BASE}/search.xhtml`;
+// MIGRATION (2026-07-05): npii.afsa.gov.au is decommissioned.
+// AFSA moved NPII to the Bankruptcy Register Search (BRS) at services.afsa.gov.au/brs/.
+// The BRS uses CSRF tokens, not JSF ViewState, and requires an AFSA account + per-result
+// payment. The scraper (afsaNpii.js) silently returns empty results until rebuilt.
+// This test will fail at Step 1 (no ViewState) — this is the expected signal that
+// the scraper needs a full rebuild targeting the BRS 3-step flow:
+//   1. GET /brs/search → extract _csrf + cookies
+//   2. POST /brs/search-add-email → name criteria → shows email opt-in page
+//   3. POST /brs/searchbyname → email page → shows results (requires paid AFSA account)
+const BASE        = 'https://services.afsa.gov.au';
+const SEARCH_URL  = `${BASE}/brs/search`;
 const TIMEOUT_MS  = 15000;
 
 const HEADERS = {
@@ -136,9 +145,15 @@ function extractSurnameFromRow($, row) {
     if (!viewState) {
       fail(
         'Step 1',
-        'Page loaded but no javax.faces.ViewState token found.\n' +
-        'AFSA may have removed or renamed the JSF ViewState field.\n' +
-        `Check the HTML source at: ${SEARCH_URL}`,
+        'Page loaded but no javax.faces.ViewState token found — this is EXPECTED.\n' +
+        'AFSA decommissioned npii.afsa.gov.au and migrated NPII to:\n' +
+        '  https://services.afsa.gov.au/brs/search  (Bankruptcy Register Search)\n' +
+        'The BRS uses CSRF tokens (not JSF ViewState) and requires:\n' +
+        '  • A registered AFSA account\n' +
+        '  • Per-result payment ("Pay and search")\n' +
+        'The scraper (afsaNpii.js) needs a full rebuild for the 3-step BRS flow.\n' +
+        'See the MIGRATION note at the top of this file and afsaNpii.js for details.\n' +
+        `BRS URL: ${SEARCH_URL}`,
       );
       summary(0, 1);
       process.exit(1);
@@ -148,9 +163,10 @@ function extractSurnameFromRow($, row) {
   } catch (e) {
     fail(
       'Step 1',
-      `Could not load NPII search page: ${e.message}\n` +
+      `Could not load BRS search page: ${e.message}\n` +
       `URL: ${SEARCH_URL}\n` +
-      'Check connectivity: curl -I https://npii.afsa.gov.au/search.xhtml',
+      'Check connectivity: curl -I https://services.afsa.gov.au/brs/search\n' +
+      'Note: npii.afsa.gov.au was decommissioned 2026-07 — AFSA NPII moved to BRS.',
     );
     summary(0, 1);
     process.exit(1);

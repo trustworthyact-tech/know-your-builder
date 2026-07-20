@@ -148,8 +148,15 @@ function hasDistinctiveWord(name) {
       const href = $(el).attr('href') || '';
       // Full entity block text (includes entity name + ABN + period lines)
       const entityText = $(el).find('.search-results__item-entity').text().trim();
-      // First child div is the clean entity name
-      const entityName = $(el).find('.search-results__item-entity div').first().text().trim();
+      // First child div is the entity name. Cheerio's .text() starts with a
+      // leading newline and includes the "+ N more" badge text from the <em>
+      // child. Normalize whitespace first, then strip the badge and ABN suffix.
+      const rawName = $(el).find('.search-results__item-entity div').first().text();
+      const entityName = rawName
+        .replace(/\s+/g, ' ')
+        .replace(/\s*\+\s*\d+\s*$/, '')
+        .replace(/\s*\([0-9 ]+\)\s*$/, '')
+        .trim();
 
       if (entityText) {
         rawEntities.push({ entityText, entityName: entityName || entityText, href });
