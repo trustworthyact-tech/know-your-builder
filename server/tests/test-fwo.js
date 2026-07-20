@@ -122,6 +122,14 @@ function extractEntityName(title) {
   const m4 = title.match(/["'"]([^"'"]{3,50})["'""]/);
   if (m4) return m4[1].trim();
 
+  // Pattern 5: single- or multi-word entity name (digits/ampersands/"of"/"for"/"and" joiners
+  // allowed) directly followed by an enforcement verb, e.g. "Yooralla signs Enforceable
+  // Undertaking", "G8 Education faces court over...", "The University of NSW signs..."
+  const m5 = title.match(
+    /^((?:The\s+)?[A-Z][A-Za-z0-9&'-]*(?:\s+(?:of|for|and)\s+[A-Z][A-Za-z0-9&'-]*|\s+[A-Z][A-Za-z0-9&'-]*)*)\s+(?:signs?|faces?|agrees?|enters?|reaches?|penali[sz]ed|fined|ordered|prosecuted|convicted|banned|suspended|required|sued|takes?|found)\b/
+  );
+  if (m5 && !genericRoles.test(m5[1] + ' ')) return m5[1].trim();
+
   return null;
 }
 

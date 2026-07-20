@@ -103,8 +103,36 @@ Uses Node.js built-in `node:test` runner — no extra dependencies required.
 | `asicExtract.js` | deep-check | reCAPTCHA blocked; falls back to ASIC_DATA_API_KEY if set |
 | `asicDisqualified.js` | 8.1 | reCAPTCHA blocked; uses 2captcha (CAPTCHA_API_KEY) |
 | `asicInsolvency.js` | 8.5 | ASIC Published Notices — no reCAPTCHA |
-| `austlii.js` | 8.5 | Called 9× (one per jurisdiction) |
+| `austlii.js` | 8.5 | Called 9× (one per jurisdiction); capped at 20 results per query — see known limitation below |
+| `fwo.js` | 8.5 | FWO newsroom only — enforcement outcomes, not FWC tribunal decisions |
 | `links.js` | — | Not a scraper — returns pre-populated deep-link URLs |
 
 `nameMatchesEntity` / `isEntityMatch` guards prevent false positives in
 `modernSlavery.js`, `fwo.js`, `vicBpc.js`, and `waBuildingEnergy.js`.
+
+---
+
+## Known limitations and future upgrades
+
+### Section 8.5 — Fair Work Commission decisions missing for large entities
+
+**Limitation (identified 2026-07-09):** The Fair Work Commission (FWC) is not separately
+scraped. FWC tribunal decisions (FWCFB, FWC) reach section 8.5 only via `austlii.js`,
+which is capped at `results=20` per query against `austlii.edu.au/cgi-bin/sinosrch.cgi`.
+
+For large entities like BHP, Lendlease, or Multiplex that have hundreds of federal court
+and tribunal appearances, the specific FWC case is very unlikely to appear in the top 20
+AustLII search results. A known example: `[2025] FWCFB 188` (BHP, 2025) is not returned
+for a "BHP Group" search.
+
+Additionally, `fwo.js` only covers the **FWO newsroom** (enforcement actions by the Fair
+Work Ombudsman) — it does not search FWC decisions at all.
+
+**Upgrade path:** Add a dedicated FWC search scraper using the FWC decisions search at
+`https://www.fwc.gov.au/decisions-and-orders/search-decisions`. The FWC search supports
+full-text search by party name and can filter by date. This would give direct access to
+FWCFB and FWC decisions without the 20-result cap. Results should be merged into
+`courtItems` in `ReportContent.tsx` alongside the existing AustLII results.
+
+A dedicated FWC scraper would sit alongside `austlii.js` in section 8.5; both sets of
+results feed the combined `courtItems` array already used by the courts `<ReportSection>`.

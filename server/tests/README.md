@@ -10,6 +10,26 @@ register before calling the scraper, so it never relies on stale hardcoded data.
 
 ## Test inventory
 
+### Section 8.3 — Financial Risk Signals (all in run-all.sh except AFSA NPII)
+
+| File | Register | Browser needed | API key needed | Typical run time |
+|------|----------|----------------|----------------|------------------|
+| `test-asic-insolvency.js` | ASIC Published Notices — Insolvency | Yes (Puppeteer) | No | ~60s |
+| `test-ato-debt.js` | ASIC Published Notices — ATO Tax Debt | Yes (Puppeteer) | No | ~60s |
+| `test-payment-times.js` | Payment Times Reporting Register | No | No | ~30–120s (Excel download) |
+| `test-modern-slavery.js` | Modern Slavery Statements Register | No | No | ~15s |
+| `test-afsa-npii.js` | AFSA NPII — Personal Insolvency | No | No | ~15s |
+
+**Note on `test-afsa-npii.js`:** The AFSA NPII scraper is a deep-check-only feature (paid tier). Its test is not included in `run-all.sh` to avoid running deep-check network calls in routine CI. Run it separately: `node server/tests/test-afsa-npii.js`. Use `run-s83.sh` (in this directory) to run all 5 section 8.3 tests including AFSA NPII.
+
+**KNOWN BROKEN (2026-07-05):** `npii.afsa.gov.au` is decommissioned. AFSA migrated NPII to the Bankruptcy Register Search (BRS) at `services.afsa.gov.au/brs/`. The BRS now requires a registered AFSA account and per-result payment. The scraper (`afsaNpii.js`) silently returns empty results and the test fails at Step 1 with a clear diagnosis. A full rebuild is needed — see the "Common failure patterns" section below.
+
+**Note on ASIC Insolvency + ATO Debt:** Both scrape the same site (`publishednotices.asic.gov.au`) via Puppeteer. If both fail simultaneously, the site is likely down or its Cloudflare protection changed — check the site first before debugging individual scrapers.
+
+---
+
+### Section 8.1 / 8.5 — Disqualified persons and courts
+
 ### Scraper integration tests (have automated scrapers)
 
 | File | Register | Browser needed | API key needed | Typical run time |
@@ -19,6 +39,19 @@ register before calling the scraper, so it never relies on stale hardcoded data.
 | `test-qbcc-excluded.js` | QBCC Excluded | Yes (Puppeteer) | No | ~3–5 min |
 | `test-vicbpc.js` | VBA Disciplinary | Yes (Puppeteer) | No | ~30–60s |
 | `test-wa-building.js` | WA B&E Enforcement | No | No | ~20–30s |
+
+### Section 8.5 — Courts, Enforcement & Disciplinary (in run-all.sh; also `run-s85.sh`)
+
+| File | Register | Browser needed | API key needed | Typical run time |
+|------|----------|----------------|----------------|------------------|
+| `test-austlii.js` | AustLII — Courts & Tribunals (9 jurisdictions) | No (via ScraperAPI) | SCRAPERAPI_KEY | ~20–40s |
+| `test-fwo.js` | Fair Work Ombudsman — Enforcement Outcomes | No | No | ~15s |
+| `test-qbcc-adjudication.js` | QBCC — Adjudication Decisions (Salesforce Aura API) | No | No | ~15–30s |
+
+Last verified 2026-07-16: all three PASS. See "Section 8.5 sub-agent prompts" below for
+per-test debugging prompts, and "Common failure patterns" for two issues found and fixed
+during that verification (AustLII's standalone `SCRAPERAPI_KEY` loading, and `test-fwo.js`'s
+narrow fixture-discovery regex).
 
 ### Licence register probe tests (link-only — no scraper yet)
 
@@ -101,6 +134,212 @@ All sub-agent prompts share this structure:
 4. Re-run to confirm
 
 The tests can be given to sub-agents concurrently — they have no shared state.
+
+---
+
+---
+
+## Section 8.3 sub-agent prompts
+
+Each prompt below is self-contained — paste it verbatim into a fresh session or
+sub-agent. No conversation history required. The tests have no shared state and
+can be handed to agents concurrently.
+
+---
+
+### Sub-agent prompt: ASIC Insolvency (Puppeteer, no API key)
+
+```
+Working directory: /Users/jameskwan/know-your-builder
+
+Run this test (from repo root):
+  node server/tests/test-asic-insolvency.js
+
+This test uses Puppeteer to bypass Cloudflare on publishednotices.asic.gov.au.
+Allow ~60 seconds.
+
+Steps:
+  Step 1 — loads ASIC Published Notices via Puppeteer; confirms div.article-block elements exist
+  Step 2 — extracts entity name from the first article block as the live fixture
+  Step 3 — calls searchAsicInsolvency(fixtureName, "", "") which submits the search form via Puppeteer
+  Step 4 — verifies the fixture entity name (significant words) appears in returned results
+
+After running, report:
+1. Full console output (verbatim)
+2. Overall PASS / FAIL
+3. If any step fails, read server/scrapers/asicInsolvency.js and identify the cause:
+   - Step 1 FAIL: publishednotices.asic.gov.au is down, or Cloudflare blocked Puppeteer.
+     Check server/scrapers/browser.js (fetchWithBrowser / stealth options).
+   - Step 2 FAIL: the <p> entity name pattern inside div.article-block changed.
+     Check parseResults in asicInsolvency.js — it reads the first non-empty <p> per block.
+   - Step 3 FAIL (0 results): the __doPostBack target or the form field selector changed.
+     Open publishednotices.asic.gov.au in a browser; inspect the search form field ID and
+     the postback target. Update submitSearch in asicInsolvency.js.
+   - Step 4 FAIL: nameMatchesEntity significant-word filter is too strict for the fixture name.
+     Check sigWords logic in the test and the matching logic in asicInsolvency.js.
+   Propose a targeted fix. Re-run to confirm.
+4. Do NOT modify test files.
+```
+
+---
+
+### Sub-agent prompt: ATO Tax Debt (Puppeteer, no API key)
+
+```
+Working directory: /Users/jameskwan/know-your-builder
+
+Run this test (from repo root):
+  node server/tests/test-ato-debt.js
+
+This test uses Puppeteer to bypass Cloudflare on publishednotices.asic.gov.au.
+Allow ~60 seconds. ATO debt notices are rare — the test exits PASS with a warning
+if none appear on the initial page (this is normal) and you must re-run with
+--name "Entity Name" to test the scraper against a known entry.
+
+Steps:
+  Step 1 — loads ASIC Published Notices via Puppeteer; filters blocks with ATO keywords
+  Step 2 — extracts entity name from the first ATO-keyed block as fixture (or uses --name)
+  Step 3 — calls searchAtoDebt(fixtureName, "", "") via Puppeteer form submit
+  Step 4 — verifies the fixture entity appears in results
+
+After running, report:
+1. Full console output (verbatim)
+2. Overall PASS / FAIL (or PASS-with-warning if no ATO notices currently on the page)
+3. If any step fails, read server/scrapers/atoDebt.js and identify the cause:
+   - Step 1 FAIL: site is down or Cloudflare blocked — check asicInsolvency test too.
+     If both fail simultaneously, the site itself is the problem.
+   - Step 3 FAIL (0 results): the form submit path or article-block selector changed.
+     Check parseResults in atoDebt.js against the current page structure.
+   - Step 4 FAIL: significant-word match failed. Check isAtoText() and sigWords() in
+     both the test and the scraper.
+   Propose a targeted fix. Re-run to confirm.
+4. Do NOT modify test files.
+```
+
+---
+
+### Sub-agent prompt: Payment Times Register (no browser, no API key)
+
+```
+Working directory: /Users/jameskwan/know-your-builder
+
+Run this test (from repo root):
+  node server/tests/test-payment-times.js
+
+No Puppeteer or API key required. The test downloads an Excel workbook from
+register.paymenttimes.gov.au — allow 30–120 seconds on first run; subsequent
+runs use the cached file at /tmp/ptrr_register.xlsx.
+
+Steps:
+  Step 1 — fetches register.paymenttimes.gov.au/files/js/update.js to confirm the
+           register is reachable and extracts the current Excel filename
+  Step 2 — selects "BHP" as the fixture (or uses --name "Entity Name")
+  Step 3 — calls searchPaymentTimes(fixtureName, "", ""); asserts >= 1 result
+  Step 4 — verifies the fixture name appears in at least one result title
+
+After running, report:
+1. Full console output (verbatim)
+2. Overall PASS / FAIL
+3. If any step fails, read server/scrapers/paymentTimes.js and identify the cause:
+   - Step 1 FAIL: register.paymenttimes.gov.au is down, or /files/js/update.js path changed.
+     Check the URL in both the test and paymentTimes.js.
+   - Step 3 FAIL (0 results): the Excel column mapping changed (sheet name, or column letters
+     for entity name / ABN). Download the current Excel manually and inspect sheet2 columns.
+     Update the column constants in paymentTimes.js.
+   - Step 3 FAIL (cache stale): delete /tmp/ptrr_register.xlsx and re-run.
+   - Step 4 FAIL: the entity name column maps to a different field. Check that r.title is
+     populated from the correct column in paymentTimes.js.
+   Propose a targeted fix. Re-run to confirm.
+4. Do NOT modify test files.
+```
+
+---
+
+### Sub-agent prompt: Modern Slavery Register (no browser, no API key)
+
+```
+Working directory: /Users/jameskwan/know-your-builder
+
+Run this test (from repo root):
+  node server/tests/test-modern-slavery.js
+
+No Puppeteer or API key required — axios + cheerio only. Typical run time ~15s.
+
+Steps:
+  Step 1 — fetches modernslaveryregister.gov.au with a broad query ("limited");
+           confirms a.search-results__item elements are present
+  Step 2 — selects the first result with a "distinctive" entity name as fixture
+  Step 3 — calls searchModernSlavery(fixtureName, ""); asserts >= 1 result
+  Step 4 — verifies at least one significant word from the fixture name appears in
+           a result title (the scraper's isEntityMatch already enforced this; this
+           step confirms data flows through to r.title correctly)
+
+After running, report:
+1. Full console output (verbatim)
+2. Overall PASS / FAIL
+3. If any step fails, read server/scrapers/modernSlavery.js and identify the cause:
+   - Step 1 FAIL: register is down or a.search-results__item selector changed.
+     Browse https://modernslaveryregister.gov.au/statements/?q=limited and inspect
+     the result anchor element. Update the selector in modernSlavery.js.
+   - Step 3 FAIL (0 results): isEntityMatch in modernSlavery.js may be filtering all
+     results. Check that isEntityMatch allows the fixture name words to match the
+     .search-results__item-entity text. The fixture name from Step 2 may contain words
+     the entity block doesn't; re-run with --name using the exact register spelling.
+   - Step 4 FAIL: r.title is sourced from the wrong DOM element. Check that
+     .search-results__item-entity div (first child) text contains the entity name words.
+   Propose a targeted fix. Re-run to confirm.
+4. Do NOT modify test files.
+```
+
+---
+
+### Sub-agent prompt: AFSA NPII — personal insolvency (no browser, no API key)
+
+**STATUS: HARD BLOCKED as of 2026-07-07 (investigated).**
+`npii.afsa.gov.au` is decommissioned. AFSA migrated NPII to the Bankruptcy Register
+Search (BRS) at `https://services.afsa.gov.au/brs/`. The BRS 3-step POST flow was
+fully reverse-engineered but every search (including fake names) redirects to a payment
+page — there is no free tier. The feature cannot be rebuilt without an AFSA BRS account
+and per-search payment budget. Recommendation: remove or replace this data source.
+
+The test fails at Step 1 with a clear diagnosis message.
+
+```
+Working directory: /Users/jameskwan/know-your-builder
+
+Run this test (from repo root):
+  node server/tests/test-afsa-npii.js
+
+No Puppeteer or API key required — axios only. Typical run time ~15s.
+This scraper is DEEP-CHECK ONLY (paid tier) and is NOT included in run-all.sh.
+
+KNOWN BROKEN: npii.afsa.gov.au is decommissioned. The test will fail at Step 1
+with a diagnosis explaining the BRS migration. This is expected.
+
+Steps (as designed — currently Step 1 fails intentionally):
+  Step 1 — GETs https://services.afsa.gov.au/brs/search (new BRS URL)
+           Fails because the BRS uses CSRF tokens, not JSF ViewState.
+           The failure message documents what is needed for a full rebuild.
+  Step 2 — (not reached) would POST a broad surname search
+  Step 3 — (not reached) would call searchAfsaNpii([fixtureName])
+  Step 4 — (not reached) would verify fixture surname in results
+
+After running, report:
+1. Full console output (verbatim)
+2. Confirm Step 1 FAIL with the BRS migration message — this is EXPECTED
+3. To rebuild the scraper, read server/scrapers/afsaNpii.js (the MIGRATION NOTE
+   at the top) and the "AFSA NPII — domain decommissioned" section in this README.
+   The BRS rebuild requires:
+   a. Replace JSF ViewState with CSRF token from <meta name="_csrf"> on /brs/search
+   b. 3-step POST flow:
+      1. GET /brs/search → CSRF + cookies
+      2. POST /brs/search-add-email → surname, givenName, searchDobMethod=ANY,
+         _matchNoDateOfBirth=on, searchByName=true → "Your email address" page
+      3. POST /brs/searchbyname → customerEmailOpted=false, emailEntered=true → results
+   c. Verify whether a paid AFSA BRS account is needed for any results
+      (free account may return "no records found"; paid needed for actual records)
+4. Do NOT modify test files unless specifically updating for the BRS rebuild.
+```
 
 ---
 
@@ -298,7 +537,157 @@ After running, report:
 
 ---
 
+## Section 8.5 sub-agent prompts
+
+Courts, Enforcement & Disciplinary (`id="s85"` in `ReportContent.tsx`) is fed by exactly
+three sources: AustLII (9 jurisdictions), FWO, and the QBCC adjudication branch (shared file
+with the QBCC licence/excluded-individual scrapers, which are out of scope here). All three
+were rewritten in `d86cf54` and `dfe56e6` — verified passing again as of 2026-07-16.
+
+### Sub-agent prompt: AustLII courts & tribunals (no API key beyond SCRAPERAPI_KEY)
+
+```
+Working directory: /Users/jameskwan/know-your-builder
+
+Run this test (from repo root):
+  node server/tests/test-austlii.js
+
+This test calls searchAustLII directly for the federal, qld, and nsw jurisdictions (no
+Puppeteer — AustLII is reached via ScraperAPI to bypass a Cloudflare Managed Challenge).
+SCRAPERAPI_KEY must be set in server/.env; the scraper itself calls dotenv.config() to pick
+it up even when the test is run standalone (see server/scrapers/austlii.js top of file), so
+you should not need to export anything manually.
+
+Steps:
+  Step 1 — fetches the AustLII search page directly via ScraperAPI to discover a live
+           fixture case name
+  Step 2 — calls searchAustLII(fixtureName, [], 'federal'); asserts >= 1 result with the
+           correct jurisdiction label
+  Step 3 — spot-checks 'qld' and 'nsw' concurrently via Promise.all, confirming the
+           pending-promise dedup cache and URL-substring jurisdiction post-filter both work
+           under concurrent calls, and that result URLs have the correct /au/cases/<jur> prefix
+
+After running, report:
+1. Full console output (verbatim)
+2. Overall PASS / FAIL
+3. If Step 1 fails with a 403: check SCRAPERAPI_KEY is present and valid in server/.env
+   (`grep SCRAPERAPI_KEY server/.env`) — this is far more likely than AustLII itself being down.
+4. If any step fails otherwise, read server/scrapers/austlii.js and identify the cause:
+   - Cloudflare/ScraperAPI response no longer contains real search HTML (site or ScraperAPI
+     account issue)
+   - The dedup cache in fetchTermResults is serving a stale/failed promise to all 9 callers
+   - The URL-substring post-filter mis-buckets a jurisdiction (check the /au/cases/<jur>
+     prefix mapping)
+   Propose a targeted fix. Re-run to confirm.
+5. Do NOT modify test files.
+```
+
+### Sub-agent prompt: Fair Work Ombudsman enforcement outcomes (no env vars needed)
+
+```
+Working directory: /Users/jameskwan/know-your-builder
+
+Run this test (from repo root):
+  node server/tests/test-fwo.js
+
+No Puppeteer or API key required — axios + cheerio only.
+
+Steps:
+  Step 1 — fetches the FWO newsroom search page; confirms ol.searchResultsInfo li.media
+           elements exist
+  Step 2 — scans articles for enforcement language and extracts an employer name from the
+           heading via extractEntityName() (handles several title patterns: "X Pty Ltd",
+           "against X", "X ordered/penalised/fined...", quoted names, and "X signs/faces/
+           agrees..." — the last pattern was added 2026-07-16 to cover single-word and
+           "The University of NSW"-style entity names FWO headlines commonly use)
+  Step 3 — calls searchFWO(fixtureName, "", []); asserts >= 1 result
+  Step 4 — verifies the fixture's significant words appear in a result
+
+After running, report:
+1. Full console output (verbatim)
+2. Overall PASS / FAIL
+3. If Step 1 fails: the newsroom URL or selectors changed. Check FWO_NEWS_URL and the
+   ARTICLE_SELECTORS list against the live page structure.
+4. If Step 2 fails with "no extractable employer name": this week's headlines may use a
+   phrasing extractEntityName() doesn't cover yet — this is a test-fixture-discovery
+   limitation, not necessarily a scraper bug. Add a new pattern to extractEntityName() in
+   test-fwo.js, or run with --name "Entity Name" (copy a name straight from a current FWO
+   headline) to bypass discovery and isolate whether the production scraper
+   (searchFWO in server/scrapers/fwo.js) itself still works.
+5. If Step 3/4 fail even with --name supplied: the actual scraper is broken — check
+   server/scrapers/fwo.js's selectors and nameMatchesEntity logic.
+6. Do NOT modify server/scrapers/fwo.js unless Step 3/4 fail with a manually-supplied name.
+```
+
+### Sub-agent prompt: QBCC adjudication decisions (no env vars needed)
+
+```
+Working directory: /Users/jameskwan/know-your-builder
+
+Run this test (from repo root):
+  node server/tests/test-qbcc-adjudication.js
+
+No Puppeteer or API key required — the adjudication register is queried directly via QBCC's
+Salesforce Aura API at my.qbcc.qld.gov.au. This file is shared with the QBCC licence-register
+and excluded-individual scrapers (sections 8.2 and 8.1) — only touch the adjudication branch.
+
+Steps:
+  Step 1 — calls the Aura API with a broad (empty respondentName) query; confirms decisions
+           are returned
+  Step 2 — extracts a party name (claimant or respondent) from the first raw result as fixture
+  Step 3 — calls searchQBCC(fixtureName, null, []); asserts adjudicationResults.length >= 1
+  Step 4 — verifies the fixture's significant words appear in a result
+
+After running, report:
+1. Full console output (verbatim)
+2. Overall PASS / FAIL
+3. If any step fails, read ONLY the adjudication-related code in server/scrapers/qbcc.js
+   (search for "adjudication") and check:
+   - The Aura API endpoint/URL is still reachable and returning JSON (not an error page)
+   - The Aura request payload format (message/aura.context/aura.token params) hasn't changed
+   - The response JSON field names (applicationNumber, claimant, respondent, decisionDate,
+     siteSuburb, url, urlLabel) haven't changed
+   Propose a targeted fix scoped to the adjudication branch only. Re-run to confirm.
+4. Do NOT modify the licence-register or excluded-individual branches of qbcc.js, and do NOT
+   modify test files.
+```
+
+---
+
 ## Common failure patterns and fixes
+
+### AFSA NPII — domain decommissioned, now a fully paid service (hard blocker)
+
+`npii.afsa.gov.au` is gone (DNS ENOTFOUND as of 2026-07-05). AFSA migrated the NPII
+to the Bankruptcy Register Search (BRS) at `https://services.afsa.gov.au/brs/`.
+
+**Investigated 2026-07-07 — confirmed fully paid, no free tier:**
+
+The 3-step BRS POST flow was successfully implemented and tested:
+1. GET `/brs/search` → extracts CSRF token + session cookies
+2. POST `/brs/search-add-email` → submits name criteria (surname, givenName,
+   surnameMatchMethod, givenNameMatchMethod, searchDobMethod=ANY,
+   _matchNoDateOfBirth=on, searchByName=true) → returns "Your email address" page
+3. POST `/brs/searchbyname` → submits customerEmailOpted=false, emailEntered=true
+
+Step 3 redirects to:
+`https://services.afsa.gov.au/payment-service/pay/transaction/paymentoptions?reference=NS...`
+
+**Every search, including searches for completely fictitious names, requires payment.**
+There is no "no results found" response without completing a payment transaction.
+The BRS charges per search, not per result found.
+
+This makes automated scraping of the AFSA NPII register impossible without:
+- A registered AFSA BRS account
+- A connected payment method  
+- Budget for per-search fees (pricing not published; requires account to view)
+
+**Recommendation:** Remove the AFSA NPII deep-check feature from the product, or
+replace it with a different director personal insolvency data source. The old free
+NPII public register no longer exists. Contact AFSA directly if a bulk/API pricing
+arrangement is needed.
+
+Until resolved, `searchAfsaNpii()` silently returns empty results for all queries.
 
 ### VIC BPC — `#listjs-search` not found
 The VBA renamed or removed the List.js search input. Check the current selector
@@ -323,3 +712,25 @@ entity name to appear in the article text. Entity names with uncommon words or
 abbreviations (e.g. "SKB Tiling") will be filtered if those words don't appear
 in the article body. Consider relaxing the threshold or using substring matching
 in `nameMatchesEntity` in `waBuildingEnergy.js`.
+
+### AustLII — `SCRAPERAPI_KEY` not loaded when run standalone
+`server/scrapers/austlii.js` reads `process.env.SCRAPERAPI_KEY` but the production server
+only gets it via `node --env-file=.env` in the npm start/dev scripts. Running the module
+directly (e.g. `node server/tests/test-austlii.js`) previously left the key unset, causing
+a 403 from ScraperAPI. Fixed 2026-07-16 by adding `require('dotenv').config(...)` at the top
+of `austlii.js` itself — `dotenv` never overrides an already-set env var, so it's a no-op in
+the real server process and only fills the gap for standalone/test invocations. `dotenv`
+resolves from the shared repo-root `node_modules` (not declared in `server/package.json`,
+same as several `server/tests/debug-*.js` and `test-*-licence-register.js` files already
+relying on it) — if a future `npm install` ever drops it, this require would throw at module
+load and take down the whole server, not just this scraper. Worth adding `dotenv` as an
+explicit `server/package.json` dependency if that's ever a concern.
+
+### FWO — `test-fwo.js` fixture discovery too narrow, scraper itself fine
+If Step 2 of `test-fwo.js` fails to find an extractable employer name, check whether
+`server/scrapers/fwo.js` is actually broken (test with `--name "Entity Name"` copied from a
+live headline) before touching the scraper — `extractEntityName()` in the test file only
+recognises a handful of title phrasings and FWO's headline style varies week to week. Widened
+2026-07-16 to also cover "X signs/faces/agrees..." headlines (single-word entities like
+"Yooralla", and "of/for/and"-joined names like "The University of NSW"), but new phrasings
+will keep appearing — extend the regex in `extractEntityName()`, not the scraper.

@@ -1,5 +1,13 @@
+const path = require('path');
 const axios = require('axios');
 const cheerio = require('cheerio');
+
+// Ensure SCRAPERAPI_KEY is available even when this module is loaded outside the
+// main server process (e.g. `node server/tests/test-austlii.js` directly, without
+// the `--env-file=.env` flag used by the npm start/dev scripts). dotenv does not
+// override already-set env vars, so this is a no-op when the server itself already
+// loaded server/.env via --env-file.
+require('dotenv').config({ path: path.join(__dirname, '../.env') });
 
 // URL path prefixes used to filter results by jurisdiction.
 // mask_path is NOT sent to AustLII — it excludes specialist tribunals (QCAT, VCAT, SAT etc.)

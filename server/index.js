@@ -1,3 +1,9 @@
+// Load server/.env regardless of how this file is launched. `npm start`/`npm run dev`
+// already pass --env-file=.env, but CLAUDE.md also documents plain `node index.js`,
+// which does not — without this, every scraper that needs an API key (CAPTCHA_API_KEY,
+// SCRAPERAPI_KEY) silently sees `undefined` and reports the key as missing.
+require('dotenv').config({ path: require('path').join(__dirname, '.env') });
+
 const express = require('express');
 const cors = require('cors');
 const { searchABN, searchByName } = require('./scrapers/abn');
@@ -57,8 +63,17 @@ app.post('/api/search', async (req, res) => {
 
   const send = (result) => res.write(JSON.stringify(result) + '\n');
 
-  // Shared promise so scrapers can wait for ASIC directors without a second HTTP call
+  // Shared promises so scrapers can reuse results without duplicate HTTP calls
+  const abnPromise  = searchABN(abn, companyName, acn);
   const asicPromise = searchASIC(companyName, abn, acn, process.env.CAPTCHA_API_KEY);
+
+  // Returns the best available ABN: request-supplied first, then first ABN scraper result.
+  // Safe to call concurrently — all callers await the same promise.
+  async function resolveAbn() {
+    if (abn) return abn;
+    const abnResult = await abnPromise;
+    return (abnResult.results ?? [])[0]?.metadata?.ABN?.replace(/\s/g, '') ?? '';
+  }
 
   // Returns the union of request-supplied directors and those discovered by ASIC.
   // Safe to call concurrently — all callers await the same promise.
@@ -72,7 +87,7 @@ app.post('/api/search', async (req, res) => {
   }
 
   const searches = [
-    { key: 'abn', label: 'ABR — Business Register', fn: () => searchABN(abn, companyName, acn) },
+    { key: 'abn', label: 'ABR — Business Register', fn: () => abnPromise },
     {
       key: 'asic',
       label: 'ASIC Connect — Company Search',
@@ -141,7 +156,7 @@ app.post('/api/search', async (req, res) => {
     {
       key: 'paymentTimes',
       label: 'Payment Times Reporting Register',
-      fn: () => searchPaymentTimes(companyName, abn, acn),
+      fn: async () => searchPaymentTimes(companyName, await resolveAbn(), acn),
     },
     {
       key: 'modernSlavery',

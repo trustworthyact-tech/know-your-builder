@@ -85,7 +85,7 @@ HomeScreen → SearchingScreen → ReportScreen
 
 **QBCC split**: the `qbcc` SearchResult carries both `licenceResults` (section 8.2) and `adjudicationResults` (section 8.4). Pass `resultsOverride` to each `<ReportSection>` — do not use `qbcc.results` directly.
 
-**Courts section (8.5)**: one synthetic `courtSearch` provides the summary; `resultsOverride={courtItems}` combines all 9 AustLII jurisdiction results plus FWO/VIC BPC/WA enforcement items; `showJurisdiction` renders per-result badges.
+**Courts section (8.5)**: one synthetic `courtSearch` provides the summary; `resultsOverride={courtItems}` combines all 9 AustLII jurisdiction results plus FWO and QBCC adjudication decisions; `showJurisdiction` renders per-result badges. VIC BPC and WA Building & Energy are *not* included here — they were moved into section 8.2 (`3ddef47`) since they're licence-register-adjacent.
 
 **Directors in ASIC results**: director rows have `metadata.Role = 'Director'` and no `status`. `ReportContent` splits on this marker to separate company vs director display. `riskGrouper` CORPORATE check (`status.length > 0`) naturally skips director items.
 
@@ -189,6 +189,102 @@ if (apiKey && acn) return searchViaDataApi(acn, apiKey);
 
 ---
 
+### Phase — Payment Times dropdown missing (section 8.3)
+
+**Root cause:** `paymentTimes.js` hardcodes column letters (B=name, C=ABN, F/G=dates,
+M=terms, U=avg days, Y/Z/AA=percentages). If the PTRR Excel has shifted those columns,
+only the row *match* survives — giving a `ResultCard` with a title — but all metadata
+fields stay `{}` and `description` is `undefined`, so `hasExtras` is false and no
+dropdown renders. Confirmed symptom: BHP Group ABN 49 004 028 077 shows a hit in
+section 8.3 but has no expand arrow.
+
+**Task 1A — Investigate column structure** (standalone agent, no dependencies)
+```
+Working directory: /Users/jameskwan/know-your-builder
+
+Run the existing payment times test:
+  node server/tests/test-payment-times.js
+
+Then write and run a one-off diagnostic script at server/tests/debug-ptrr-columns.js
+that downloads (or uses the cached /tmp/ptrr_register.xlsx), calls extractZipEntry for
+xl/worksheets/sheet2.xml, reads ONLY row 2 (the header row), and prints each column
+letter → header text. Use the existing extractZipEntry and parseSharedStrings helpers
+already in server/scrapers/paymentTimes.js — copy or require them.
+
+Report:
+1. Full output of test-payment-times.js (PASS / FAIL and why)
+2. The full column-letter-to-header-name map from the live register header row
+3. Which column letters hold: Business Name, ABN, ACN/ARBN, Period Start, Period End,
+   Standard Payment Terms, Average Days, Paid within 30 days, 31-60 days, Over 60 days
+
+Do NOT make any changes to production files.
+```
+
+**Task 2 — Dynamic column detection** (depends on Task 1A findings)
+```
+Working directory: /Users/jameskwan/know-your-builder
+
+You have been given the column-letter-to-header-name map from the PTRR Excel header row
+(Task 1A findings). The file to change is server/scrapers/paymentTimes.js.
+
+Rewrite searchWorkbook() to:
+1. Parse row 2 (the header row) before the main row loop — build a colLetter → headerText
+   map using the same cell regex already in the function.
+2. Invert it to build a headerText → colLetter lookup. Use case-insensitive substring
+   matching on the header texts to find the right column for each field:
+   - Name column: header contains "business name" or "entity name" or "reporting entity"
+   - ABN column: header contains "abn"
+   - ACN column: header contains "acn"
+   - Type column: header contains "type" or "report type"
+   - Period start: header contains "start"
+   - Period end: header contains "end"
+   - Std terms: header contains "standard" and "term"
+   - Avg days: header contains "average" (pick the first match, or the one also containing "all")
+   - Within 30: header contains "30"
+   - 31-60: header contains "31" or "60"
+   - Over 60: header contains "over" or "after"
+3. Replace all hardcoded cells['B'], cells['C'], cells['U'], etc. with the dynamically
+   resolved column letters (e.g. cells[nameCol], cells[abnCol], etc.).
+4. Update the per-row quick-check regexes for name and ABN columns from hardcoded
+   /<c r="B\d+"...> and /<c r="C\d+"...> to use the discovered column letters
+   (build the regex dynamically: new RegExp(`<c r="${nameCol}\\d+" t="s"><v>(\\d+)<\\/v><\\/c>`)).
+5. If no header row can be parsed (edge case), fall back to the old hardcoded letters
+   so the scraper degrades gracefully.
+
+After editing, run:
+  node server/tests/test-payment-times.js
+Confirm PASS and that the returned result for BHP includes populated metadata fields
+(ABN, Reporting period, Average payment time) and a description string.
+```
+
+**Task 3 — Verify** (depends on Task 2)
+```
+Working directory: /Users/jameskwan/know-your-builder
+
+Delete the cached register to force a fresh download:
+  rm -f /tmp/ptrr_register.xlsx /tmp/ptrr_register.etag
+
+Run:
+  node server/tests/test-payment-times.js
+
+Confirm:
+1. Test PASSES (BHP found, >= 1 result)
+2. The returned result object has metadata with at least: ABN, Reporting period,
+   Average payment time populated (non-empty strings)
+3. description is a non-empty string ("Latest report period ending YYYY-MM-DD")
+4. Object.keys(result.metadata).length > 0 is true — so hasExtras = true in ResultCard
+   and the dropdown button will render
+
+Report full test output.
+```
+
+**Execution order:**
+- Task 1A runs first (standalone)
+- Task 2 runs after Task 1A, using its column map findings
+- Task 3 runs after Task 2
+
+---
+
 ## Performance baseline (2026-05-21)
 
 10 sequential `POST /api/search` requests, entity "Multiplex", Express at `localhost:3001`.
@@ -200,3 +296,26 @@ if (apiKey && acn) return searchViaDataApi(acn, apiKey);
 | p90 warm | 0.5 s |
 | Target | < 45 s |
 | Status | PASS ✓ |
+
+---
+
+## Section 8.5 verification (2026-07-16)
+
+Courts, Enforcement & Disciplinary (`id="s85"`, fed by `server/scrapers/austlii.js` × 9
+jurisdictions, `server/scrapers/fwo.js`, and the adjudication branch of `server/scrapers/qbcc.js`)
+was re-verified after its last rewrite (`d86cf54`, `dfe56e6`, both 2026-06). Two real issues
+found and fixed, one false alarm ruled out:
+
+- **AustLII** — `server/scrapers/austlii.js` never loaded `server/.env` itself; it only worked
+  in production because the npm scripts use `node --env-file=.env`. Running the module
+  standalone left `SCRAPERAPI_KEY` unset → 403 from ScraperAPI. Fixed by adding
+  `require('dotenv').config(...)` at the top of the file (a no-op when the key is already set).
+- **FWO** — the scraper (`server/scrapers/fwo.js`) was fine; `test-fwo.js`'s own
+  `extractEntityName()` fixture-discovery regex was too narrow for that week's headline
+  phrasing (single-word entities, "The X of Y" names). Widened the regex in the test file.
+- **QBCC adjudication** — passed with no changes; the Salesforce Aura API and response shape
+  are unchanged since the `dfe56e6` rewrite.
+
+All three tests pass individually and together (`bash server/tests/run-s85.sh`). See
+`server/tests/README.md` — "Section 8.5 sub-agent prompts" and the matching "Common failure
+patterns" entries for AustLII/FWO for future debugging.
