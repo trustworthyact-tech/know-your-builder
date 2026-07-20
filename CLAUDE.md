@@ -189,100 +189,6 @@ if (apiKey && acn) return searchViaDataApi(acn, apiKey);
 
 ---
 
-### Phase — Payment Times dropdown missing (section 8.3)
-
-**Root cause:** `paymentTimes.js` hardcodes column letters (B=name, C=ABN, F/G=dates,
-M=terms, U=avg days, Y/Z/AA=percentages). If the PTRR Excel has shifted those columns,
-only the row *match* survives — giving a `ResultCard` with a title — but all metadata
-fields stay `{}` and `description` is `undefined`, so `hasExtras` is false and no
-dropdown renders. Confirmed symptom: BHP Group ABN 49 004 028 077 shows a hit in
-section 8.3 but has no expand arrow.
-
-**Task 1A — Investigate column structure** (standalone agent, no dependencies)
-```
-Working directory: /Users/jameskwan/know-your-builder
-
-Run the existing payment times test:
-  node server/tests/test-payment-times.js
-
-Then write and run a one-off diagnostic script at server/tests/debug-ptrr-columns.js
-that downloads (or uses the cached /tmp/ptrr_register.xlsx), calls extractZipEntry for
-xl/worksheets/sheet2.xml, reads ONLY row 2 (the header row), and prints each column
-letter → header text. Use the existing extractZipEntry and parseSharedStrings helpers
-already in server/scrapers/paymentTimes.js — copy or require them.
-
-Report:
-1. Full output of test-payment-times.js (PASS / FAIL and why)
-2. The full column-letter-to-header-name map from the live register header row
-3. Which column letters hold: Business Name, ABN, ACN/ARBN, Period Start, Period End,
-   Standard Payment Terms, Average Days, Paid within 30 days, 31-60 days, Over 60 days
-
-Do NOT make any changes to production files.
-```
-
-**Task 2 — Dynamic column detection** (depends on Task 1A findings)
-```
-Working directory: /Users/jameskwan/know-your-builder
-
-You have been given the column-letter-to-header-name map from the PTRR Excel header row
-(Task 1A findings). The file to change is server/scrapers/paymentTimes.js.
-
-Rewrite searchWorkbook() to:
-1. Parse row 2 (the header row) before the main row loop — build a colLetter → headerText
-   map using the same cell regex already in the function.
-2. Invert it to build a headerText → colLetter lookup. Use case-insensitive substring
-   matching on the header texts to find the right column for each field:
-   - Name column: header contains "business name" or "entity name" or "reporting entity"
-   - ABN column: header contains "abn"
-   - ACN column: header contains "acn"
-   - Type column: header contains "type" or "report type"
-   - Period start: header contains "start"
-   - Period end: header contains "end"
-   - Std terms: header contains "standard" and "term"
-   - Avg days: header contains "average" (pick the first match, or the one also containing "all")
-   - Within 30: header contains "30"
-   - 31-60: header contains "31" or "60"
-   - Over 60: header contains "over" or "after"
-3. Replace all hardcoded cells['B'], cells['C'], cells['U'], etc. with the dynamically
-   resolved column letters (e.g. cells[nameCol], cells[abnCol], etc.).
-4. Update the per-row quick-check regexes for name and ABN columns from hardcoded
-   /<c r="B\d+"...> and /<c r="C\d+"...> to use the discovered column letters
-   (build the regex dynamically: new RegExp(`<c r="${nameCol}\\d+" t="s"><v>(\\d+)<\\/v><\\/c>`)).
-5. If no header row can be parsed (edge case), fall back to the old hardcoded letters
-   so the scraper degrades gracefully.
-
-After editing, run:
-  node server/tests/test-payment-times.js
-Confirm PASS and that the returned result for BHP includes populated metadata fields
-(ABN, Reporting period, Average payment time) and a description string.
-```
-
-**Task 3 — Verify** (depends on Task 2)
-```
-Working directory: /Users/jameskwan/know-your-builder
-
-Delete the cached register to force a fresh download:
-  rm -f /tmp/ptrr_register.xlsx /tmp/ptrr_register.etag
-
-Run:
-  node server/tests/test-payment-times.js
-
-Confirm:
-1. Test PASSES (BHP found, >= 1 result)
-2. The returned result object has metadata with at least: ABN, Reporting period,
-   Average payment time populated (non-empty strings)
-3. description is a non-empty string ("Latest report period ending YYYY-MM-DD")
-4. Object.keys(result.metadata).length > 0 is true — so hasExtras = true in ResultCard
-   and the dropdown button will render
-
-Report full test output.
-```
-
-**Execution order:**
-- Task 1A runs first (standalone)
-- Task 2 runs after Task 1A, using its column map findings
-- Task 3 runs after Task 2
-
 ---
 
 ## Performance baseline (2026-05-21)
@@ -319,3 +225,25 @@ found and fixed, one false alarm ruled out:
 All three tests pass individually and together (`bash server/tests/run-s85.sh`). See
 `server/tests/README.md` — "Section 8.5 sub-agent prompts" and the matching "Common failure
 patterns" entries for AustLII/FWO for future debugging.
+
+---
+
+## Section 8.3 — Payment Times dropdown fixed (2026-07-20)
+
+The dropdown in section 8.3's Payment Times result never rendered for any entity. Root cause:
+`paymentTimes.js` hardcoded PTRR Excel column letters (B=name, C=ABN, U=avg days, etc.); the
+live register's columns had shifted, so `metadata` came back `{}` and `description` came back
+`undefined` — `hasExtras` was false in `ResultCard`, so no expand arrow. Fixed by parsing the
+header row (row 2) at request time and resolving each field by case-insensitive substring
+match on header text, falling back to the old hardcoded letters if no header row parses.
+Verified end-to-end: BHP now returns populated metadata (ABN, Reporting period, Average
+payment time, etc.) and a non-empty description.
+
+While verifying, also found and fixed a second, unrelated issue: `fetchRegisterBuffer()`
+intermittently got a 406 from the Azure Front Door WAF in front of the register download —
+not deterministic, not header-dependent, looks like an IP-level soft-block that can persist
+across immediate retries. Added a 5-attempt retry with increasing backoff (3s, 6s, 9s...),
+which recovers most of the time (~7/8 in testing) but not always — this is a genuine external
+limitation, not something fully fixable client-side. See `server/tests/README.md` — "Common
+failure patterns" — "Payment Times — intermittent 406" if `test-payment-times.js` fails on a
+406 after retries; it's very likely this flakiness, not a regression.

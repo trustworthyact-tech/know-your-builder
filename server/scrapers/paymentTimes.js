@@ -146,12 +146,29 @@ async function fetchRegisterBuffer() {
     if (storedEtag) reqHeaders['If-None-Match'] = storedEtag;
   }
 
-  const resp = await axios.get(url, {
-    headers: reqHeaders,
-    responseType: 'arraybuffer',
-    timeout: 120000,
-    validateStatus: s => s === 200 || s === 304,
-  });
+  // The Azure Front Door WAF in front of this host intermittently 406s a well-formed
+  // request for no discernible reason (observed ~1 in 4 requests, no header combination
+  // avoids it reliably) — a same-request retry consistently succeeds. Retry a couple of
+  // times before giving up.
+  let resp;
+  let lastErr;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      resp = await axios.get(url, {
+        headers: reqHeaders,
+        responseType: 'arraybuffer',
+        timeout: 120000,
+        validateStatus: s => s === 200 || s === 304,
+      });
+      lastErr = null;
+      break;
+    } catch (e) {
+      lastErr = e;
+      if (e.response?.status !== 406) throw e;
+      await new Promise(r => setTimeout(r, 3000 * (attempt + 1)));
+    }
+  }
+  if (lastErr) throw lastErr;
 
   if (resp.status === 304 && fs.existsSync(CACHE_PATH)) {
     // Not modified — use cached copy

@@ -24,6 +24,10 @@ register before calling the scraper, so it never relies on stale hardcoded data.
 
 **KNOWN BROKEN (2026-07-05):** `npii.afsa.gov.au` is decommissioned. AFSA migrated NPII to the Bankruptcy Register Search (BRS) at `services.afsa.gov.au/brs/`. The BRS now requires a registered AFSA account and per-result payment. The scraper (`afsaNpii.js`) silently returns empty results and the test fails at Step 1 with a clear diagnosis. A full rebuild is needed — see the "Common failure patterns" section below.
 
+**KNOWN FLAKY (2026-07-20):** `test-payment-times.js` occasionally fails with a 406 from an
+Azure Front Door WAF false-positive on the register download — retried automatically now (see
+"Common failure patterns" below), but not eliminated. A lone 406 failure isn't a regression.
+
 **Note on ASIC Insolvency + ATO Debt:** Both scrape the same site (`publishednotices.asic.gov.au`) via Puppeteer. If both fail simultaneously, the site is likely down or its Cloudflare protection changed — check the site first before debugging individual scrapers.
 
 ---
@@ -734,3 +738,18 @@ recognises a handful of title phrasings and FWO's headline style varies week to 
 2026-07-16 to also cover "X signs/faces/agrees..." headlines (single-word entities like
 "Yooralla", and "of/for/and"-joined names like "The University of NSW"), but new phrasings
 will keep appearing — extend the regex in `extractEntityName()`, not the scraper.
+
+### Payment Times — intermittent 406 downloading the register (known flaky, not fully fixable)
+`register.paymenttimes.gov.au` sits behind Azure Front Door, which occasionally 406s a
+well-formed download request for `fetchRegisterBuffer()` in `server/scrapers/paymentTimes.js`
+with the body "The resource cannot be displayed because the file extension is not being
+accepted by your browser." Investigated 2026-07-20: it's not header-dependent (identical
+requests succeed and fail back-to-back) and looks like a WAF false-positive/soft-block tied
+to the client IP rather than the request itself — once triggered, it can persist across
+several immediate retries from the same process. `fetchRegisterBuffer()` now retries up to 5
+times with increasing backoff (3s, 6s, 9s...), which recovers most of the time (~7/8 in
+testing) but not always. If `test-payment-times.js` fails with a 406 after all retries, it's
+very likely this WAF flakiness, not a real scraper regression — just re-run the test after a
+short pause. This is a genuine external-service limitation, not something fixable purely
+client-side; don't spend time adding more retries or trying alternate headers unless the
+failure rate gets meaningfully worse.
