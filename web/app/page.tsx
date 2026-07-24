@@ -24,7 +24,7 @@ export default function HomePage() {
           </p>
         </div>
 
-        {/* Search form + contract upload toggle */}
+        {/* Search form */}
         <HomeSearch />
 
         {/* What we check */}

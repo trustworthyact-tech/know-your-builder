@@ -63,12 +63,3 @@ export interface RiskGroupResult {
   severity: 'significant' | 'findings';
   triggers: RiskGroupTrigger[];
 }
-
-export interface ContractExtraction {
-  builderName: string;
-  abn: string;
-  licenceNumber: string;
-  contractValue?: string;
-  projectAddress?: string;
-  confidence: 'high' | 'medium' | 'low';
-}
