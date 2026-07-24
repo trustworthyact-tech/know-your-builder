@@ -18,6 +18,44 @@ plan (nothing from the audit has been committed yet) — check `git status` befo
 
 ---
 
+## Execution status (2026-07-24)
+
+Waves A, B, and C are **landed and committed**:
+- `f9cfff2` — Resolved section (contract-upload/extraction removal)
+- `ff825d2` — Wave A
+- `1fc272e` — Wave B
+- `f530dc4` — Wave C
+
+**B2 (Next.js major-version upgrade) was deliberately skipped this pass** — user decision,
+since it's the plan's own flagged highest-risk item. A4's research is done and is worth reading
+before picking it up: target `next@15.5.21` (not 16.x) — 16.x forces an unplanned `next-auth` v4
+→ Auth.js v5 rewrite (peer-dep incompatibility) plus a `middleware.ts` → `proxy.ts` rename and
+`serverRuntimeConfig` removal, none of which are in scope for "fix the CVEs." 15.5.21 carries
+every relevant CVE fix without any of that. Biggest mechanical cost either way: this app's
+`params`/`searchParams` are used unawaited throughout the App Router routes/pages and need the
+Next 15 Async Request APIs migration (`await params`) — a codemod exists
+(`npx @next/codemod@canary upgrade latest`) but the number of affected files (route handlers
+first, they guard data) warrants manual review after running it. No Server Actions, no
+`next/image` usage, no `rewrites()`/`redirects()` in this app, so those breaking-change surfaces
+don't apply.
+
+D1 (middleware manual verification) and D3 (rate-limit trip script) were **not executed** —
+this environment has no local Redis/Docker (`web/lib/rateLimit.ts` needs Redis to function at
+all), and `DATABASE_URL` in `.env` points at a live remote Supabase instance that a test run
+shouldn't be pointed at without explicit sign-off. Whoever resumes this should run `web/`'s dev
+server + `server/`'s + a local Redis and actually exercise: each `web/middleware.ts` matcher
+route while logged out (expect redirect for pages / 401 for the API routes) and as the wrong
+user where ownership applies; and script N+1 requests at one of the C1-C4 rate-limited endpoints
+to confirm the N+1th 429s.
+
+D4 (re-run `npm audit`) **was** run and confirms the remaining vulnerabilities are exactly the
+ones deliberately deferred, not regressions: `web/` has 5 (1 low, 3 high, 1 critical), all
+transitively from `next@14.2.35` and gone once B2 lands; root (Expo) has 12 (11 moderate, 1
+high), all requiring `--force`/breaking changes in `@expo/*`/`ws` — a separate deliberate call,
+not part of this plan; `server/` is clean (0 vulnerabilities).
+
+---
+
 ## Resolved
 
 | Original Finding | Resolution |
@@ -190,3 +228,44 @@ Each is an independent route file/group — parallel-safe:
   in its own branch with its own review, separate from the rest.
 - Finding severities and file:line references are from the 2026-07-23 audit; re-grep before
   trusting a specific line number, since Wave A/earlier work will have shifted some of them.
+
+---
+
+## Potential gaps found during execution (2026-07-24)
+
+Surfaced while doing A3's route audit and Wave D verification — none were in-scope for this
+pass, flagging for a future session:
+
+- **`web/app/api/events/route.ts`** — the analytics-beacon endpoint is intentionally public (no
+  session), but has zero abuse controls: no payload-size cap on `properties`, no rate limit.
+  Low severity (it's a client telemetry sink, not a data-mutating endpoint) but cheap to fix —
+  worth folding into a future rate-limiting pass alongside C1-C4, or at least adding a body-size
+  guard.
+- **`web/app/report/[searchId]/page.tsx` and `web/app/report/share/[token]/page.tsx`** —
+  neither page has its own server-side auth check; both are pass-throughs to client components
+  that call the real API routes, which is fine functionally (the API route enforces
+  authorization) but means **these are not safe candidates for a blanket middleware
+  "must be logged in" matcher entry**, even though `/report/*` looks like an obvious pattern —
+  doing so would break guest report viewing and public share links. `web/middleware.ts`
+  correctly omits them; if anyone edits the matcher later, don't add `/report/:path*`.
+- **`web/app/api/report/[searchId]/pdf/route.ts`** — forwards the caller's raw session cookie
+  (`__Secure-next-auth.session-token` / `next-auth.session-token`) into a headless Puppeteer
+  browser context to render the authenticated page as a PDF. Not flagged as a confirmed bug —
+  `browser.close()` is already in a `finally` — but it's a more sensitive code path than a
+  typical route handler (the session token transits through a real browser cookie jar) and is
+  worth a second look by whoever owns that route next.
+- **Root `tsconfig.json`** (`extends: expo/tsconfig.base`, no `exclude`) has always swept
+  `web/**` into the mobile app's `npx tsc --noEmit` (confirmed via `git log` — unchanged since
+  the initial commit, not introduced by this plan), producing a wall of spurious
+  `Cannot find module '@/...'` errors since the mobile project doesn't have `web/`'s path
+  aliases configured. Not a security item, but it means the "mobile" typecheck command in
+  CLAUDE.md is currently unusable as a real signal; worth adding `"exclude": ["web"]` at some
+  point.
+- **`web/app/report/[searchId]/ReportContent.tsx:316`** — `qbcc?.enforcementResults` references
+  a property that doesn't exist on the `SearchResult` type (compile error), currently blocking
+  `npm run build` in `web/`. This is in unrelated, already-in-progress uncommitted work (the
+  QBCC decision-PDF-proxy feature, not part of this security plan) that predates this session —
+  left untouched since it wasn't this plan's file to fix, but it's a real build blocker right
+  now and should be resolved (likely either populate `enforcementResults` on `SearchResult` in
+  `web/src/types/index.ts`, or the reference is a leftover typo for `adjudicationResults` —
+  needs whoever owns that feature to confirm which).
