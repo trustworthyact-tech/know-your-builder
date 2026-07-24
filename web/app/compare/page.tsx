@@ -1,4 +1,6 @@
 import Link from 'next/link';
+import { getServerSession } from 'next-auth/next';
+import { authOptions } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import { ComparisonColumn, ComparisonData } from '@/components/ComparisonColumn';
 
@@ -45,8 +47,12 @@ export default async function ComparePage({ searchParams }: Props) {
     );
   }
 
+  const session = await getServerSession(authOptions);
   const searches = await prisma.search.findMany({
-    where: { id: { in: ids } },
+    where: {
+      id: { in: ids },
+      OR: [{ userId: session?.user?.id ?? '__none__' }, { userId: null }],
+    },
     select: {
       id: true,
       entityName: true,

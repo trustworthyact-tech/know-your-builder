@@ -6,11 +6,12 @@ require('dotenv').config({ path: require('path').join(__dirname, '.env') });
 
 const express = require('express');
 const cors = require('cors');
+const rateLimit = require('express-rate-limit');
 const { searchABN, searchByName } = require('./scrapers/abn');
 const { searchAustLII } = require('./scrapers/austlii');
 const { searchPaymentTimes } = require('./scrapers/paymentTimes');
 const { searchModernSlavery } = require('./scrapers/modernSlavery');
-const { searchQBCC } = require('./scrapers/qbcc');
+const { searchQBCC, getDecisionSignedUrl } = require('./scrapers/qbcc');
 const { searchASIC } = require('./scrapers/asic');
 const { searchASICDisqualified } = require('./scrapers/asicDisqualified');
 const { searchAsicInsolvency } = require('./scrapers/asicInsolvency');
@@ -29,13 +30,50 @@ const { searchAsicExtract } = require('./scrapers/asicExtract');
 const { searchAfsaNpii } = require('./scrapers/afsaNpii');
 const { generateLinks } = require('./scrapers/links');
 
+// Fail fast on missing scraper credentials rather than surfacing "missing key"
+// errors deep inside individual scraper calls at request time.
+for (const key of ['CAPTCHA_API_KEY', 'SCRAPERAPI_KEY']) {
+  if (!process.env[key]) {
+    console.error(`Fatal: ${key} is not set. Check server/.env.`);
+    process.exit(1);
+  }
+}
+
 const app = express();
 const PORT = process.env.PORT ?? 3001;
 
-app.use(cors());
+app.use(cors({ origin: process.env.WEB_APP_ORIGIN }));
 app.use(express.json());
 
+// In-memory store — fine while this process runs as a single instance (per
+// CLAUDE.md's run instructions); switch to a Redis-backed store if this ever
+// scales horizontally, since counts would no longer be shared across processes.
+const searchLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
+
+// Redirects to a freshly-signed URL for a QBCC adjudication decision PDF.
+// The signed URL itself expires 120s after issue, so it can't be stored in a
+// saved report — this must be re-fetched at click time instead.
+app.get('/api/qbcc/decision-pdf', async (req, res) => {
+  const { fileName } = req.query;
+  if (typeof fileName !== 'string' || !/^[0-9_]+\.pdf$/.test(fileName)) {
+    return res.status(400).json({ error: 'Invalid fileName' });
+  }
+  try {
+    const signedUrl = await getDecisionSignedUrl(fileName);
+    if (!signedUrl) return res.status(404).json({ error: 'Decision document not found' });
+    res.redirect(302, signedUrl);
+  } catch (err) {
+    console.error(err);
+    res.status(502).json({ error: 'Failed to retrieve decision document' });
+  }
+});
 
 app.post('/api/search/disambiguate', async (req, res) => {
   const { companyName } = req.body;
@@ -44,12 +82,13 @@ app.post('/api/search/disambiguate', async (req, res) => {
     const matches = await searchByName(companyName);
     res.json({ matches });
   } catch (err) {
-    res.status(500).json({ error: err.message, matches: [] });
+    console.error(err);
+    res.status(500).json({ error: 'Search failed', matches: [] });
   }
 });
 
 // Streaming search endpoint — sends results as they arrive
-app.post('/api/search', async (req, res) => {
+app.post('/api/search', searchLimiter, async (req, res) => {
   const { abn, acn, companyName, tradingName, directors, isDeepCheck } = req.body;
 
   const hasDirectors = Array.isArray(directors) && directors.some(Boolean);
@@ -73,6 +112,14 @@ app.post('/api/search', async (req, res) => {
     if (abn) return abn;
     const abnResult = await abnPromise;
     return (abnResult.results ?? [])[0]?.metadata?.ABN?.replace(/\s/g, '') ?? '';
+  }
+
+  // Returns ABR-registered business/trading names for this ABN — a sole trader's
+  // licence or QBCC adjudication decision is often filed under a business name
+  // rather than their personal name.
+  async function resolveAlternateNames() {
+    const abnResult = await abnPromise;
+    return [...new Set([...(abnResult.businessNames ?? []), ...(abnResult.tradingNames ?? [])])];
   }
 
   // Returns the union of request-supplied directors and those discovered by ASIC.
@@ -166,7 +213,7 @@ app.post('/api/search', async (req, res) => {
     {
       key: 'qbcc',
       label: 'QBCC — Licence Register',
-      fn: async () => searchQBCC(companyName, abn, await resolveDirectors()),
+      fn: async () => searchQBCC(companyName, abn, await resolveDirectors(), await resolveAlternateNames()),
     },
     {
       key: 'fwo',
@@ -248,7 +295,8 @@ app.post('/api/search', async (req, res) => {
         const result = await fn();
         send({ key, label, status: 'done', ...result });
       } catch (err) {
-        send({ key, label, status: 'error', error: err.message, results: [] });
+        console.error(`[${key}]`, err);
+        send({ key, label, status: 'error', error: 'Search failed', results: [] });
       }
     })
   );
