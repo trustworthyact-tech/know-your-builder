@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth/next';
+import { z } from 'zod';
 import { authOptions } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import { getResend } from '@/lib/resend';
@@ -9,26 +10,63 @@ import { Persona, SearchResult } from '@/src/types';
 import { riskGrouper } from '@/lib/riskGrouper';
 import { enqueueSequence, type SequenceKey } from '@/lib/queues/emailSequence';
 
-interface SaveBody {
-  entityName: string;
-  entityAbn?: string;
-  persona: Persona;
-  projectType?: string;
-  projectStage?: string;
-  projectState?: string;
-  findings: Record<string, SearchResult>;
-  isDeepCheck: boolean;
-  email?: string;
-}
+// Matches web/src/types/index.ts's ResultItem/SearchResult shapes. `.passthrough()`
+// on the result item since scrapers attach category-specific metadata keys that
+// vary by source — only the fields actually read downstream need enforcing here.
+const resultItemSchema = z
+  .object({
+    title: z.string(),
+    url: z.string().optional(),
+    description: z.string().optional(),
+    date: z.string().optional(),
+    status: z.string().optional(),
+    metadata: z.record(z.string(), z.string()).optional(),
+    jurisdiction: z.string().optional(),
+    category: z.string().optional(),
+    matchedTerm: z.string().optional(),
+    isAdjudication: z.boolean().optional(),
+  })
+  .passthrough();
+
+const searchResultSchema = z
+  .object({
+    key: z.string(),
+    label: z.string(),
+    status: z.enum(['idle', 'searching', 'done', 'error']),
+    results: z.array(resultItemSchema).optional(),
+    licenceResults: z.array(resultItemSchema).optional(),
+    adjudicationResults: z.array(resultItemSchema).optional(),
+  })
+  .passthrough();
+
+const saveBodySchema = z.object({
+  entityName: z.string().trim().min(1, 'entityName is required'),
+  entityAbn: z.string().trim().optional(),
+  persona: z.enum(Persona).optional(),
+  projectType: z.enum(['new_build', 'renovation', 'commercial', 'subdivision', 'other']).optional(),
+  projectStage: z.enum(['not_signed', 'about_to_sign', 'contracted', 'underway']).optional(),
+  projectState: z.string().trim().optional(),
+  findings: z.record(z.string(), searchResultSchema),
+  isDeepCheck: z.boolean(),
+  email: z.string().email().optional(),
+});
 
 export async function POST(req: NextRequest) {
   const session = await getServerSession(authOptions);
 
-  let body: SaveBody;
+  let json: unknown;
   try {
-    body = await req.json();
+    json = await req.json();
   } catch {
     return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
+  }
+
+  const parsed = saveBodySchema.safeParse(json);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: parsed.error.issues[0]?.message ?? 'Invalid request body' },
+      { status: 400 }
+    );
   }
 
   const {
@@ -41,11 +79,7 @@ export async function POST(req: NextRequest) {
     findings,
     isDeepCheck,
     email,
-  } = body;
-
-  if (!entityName) {
-    return NextResponse.json({ error: 'entityName is required' }, { status: 400 });
-  }
+  } = parsed.data;
 
   // Re-check entitlement gate — authenticated users only
   if (session?.user?.id) {

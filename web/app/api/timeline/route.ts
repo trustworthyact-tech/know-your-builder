@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth/next';
+import { z } from 'zod';
 import { authOptions } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import { Prisma } from '@prisma/client';
@@ -7,21 +8,25 @@ import { enqueueSequence } from '@/lib/queues/emailSequence';
 
 export const dynamic = 'force-dynamic';
 
-interface PaymentScheduleEntry {
-  label: string;
-  date: string;
-  amountCents: number;
-}
+// paymentSchedule[].date and the three milestone dates are all sourced from
+// <input type="date"> on the client, i.e. plain "YYYY-MM-DD" strings — not full
+// ISO datetimes — and are fed straight into `new Date(...)` downstream, including
+// the PAYMENT_DUE initialDelay calculation below. z.iso.date() matches that shape.
+const paymentScheduleEntrySchema = z.object({
+  label: z.string(),
+  date: z.iso.date(),
+  amountCents: z.number().int().nonnegative(),
+});
 
-interface CreateBody {
-  searchId: string;
-  projectValue?: string;
-  contractSignedDate?: string | null;
-  startDate?: string | null;
-  completionDate?: string | null;
-  paymentSchedule?: PaymentScheduleEntry[];
-  financeArranged?: boolean | null;
-}
+const createTimelineSchema = z.object({
+  searchId: z.string().trim().min(1, 'searchId is required'),
+  projectValue: z.string().optional(),
+  contractSignedDate: z.iso.date().nullable().optional(),
+  startDate: z.iso.date().nullable().optional(),
+  completionDate: z.iso.date().nullable().optional(),
+  paymentSchedule: z.array(paymentScheduleEntrySchema).optional(),
+  financeArranged: z.boolean().nullable().optional(),
+});
 
 // POST — create a timeline for a search
 export async function POST(req: NextRequest) {
@@ -30,16 +35,21 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorised' }, { status: 401 });
   }
 
-  let body: CreateBody;
+  let json: unknown;
   try {
-    body = await req.json();
+    json = await req.json();
   } catch {
     return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
   }
 
-  if (!body.searchId) {
-    return NextResponse.json({ error: 'searchId is required' }, { status: 400 });
+  const parsed = createTimelineSchema.safeParse(json);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: parsed.error.issues[0]?.message ?? 'Invalid request body' },
+      { status: 400 },
+    );
   }
+  const body = parsed.data;
 
   // Verify the search belongs to the session user
   const search = await prisma.search.findUnique({

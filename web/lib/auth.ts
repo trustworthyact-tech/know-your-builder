@@ -4,6 +4,7 @@ import CredentialsProvider from 'next-auth/providers/credentials';
 import GoogleProvider from 'next-auth/providers/google';
 import bcrypt from 'bcryptjs';
 import { prisma } from '@/lib/db';
+import { checkRateLimit } from '@/lib/rateLimit';
 
 declare module 'next-auth' {
   interface Session {
@@ -42,6 +43,9 @@ export const authOptions: NextAuthOptions = {
       },
       async authorize(credentials) {
         if (!credentials?.email || !credentials?.password) return null;
+
+        const allowed = await checkRateLimit(`login:${credentials.email}`, 5, 60);
+        if (!allowed) return null;
 
         const user = await prisma.user.findUnique({
           where: { email: credentials.email },

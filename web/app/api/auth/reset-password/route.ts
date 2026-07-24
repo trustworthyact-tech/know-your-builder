@@ -1,27 +1,37 @@
 import { NextRequest, NextResponse } from 'next/server';
 import bcrypt from 'bcryptjs';
+import { z } from 'zod';
 import { prisma } from '@/lib/db';
+import { checkRateLimit, getClientIp } from '@/lib/rateLimit';
+
+const bodySchema = z.object({
+  email: z.string().email('A valid email is required'),
+  token: z.string().min(1, 'token is required'),
+  password: z.string().min(8, 'Password must be at least 8 characters'),
+});
 
 export async function POST(req: NextRequest) {
-  let body: { email?: string; token?: string; password?: string };
+  const allowed = await checkRateLimit(`reset-password:${getClientIp(req)}`, 5, 60);
+  if (!allowed) {
+    return NextResponse.json({ error: 'Too many requests. Please try again later.' }, { status: 429 });
+  }
+
+  let rawBody: unknown;
   try {
-    body = await req.json();
+    rawBody = await req.json();
   } catch {
     return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
   }
 
-  const { email, token, password } = body;
-
-  if (!email || !token || !password) {
-    return NextResponse.json({ error: 'email, token, and password are required' }, { status: 400 });
-  }
-
-  if (password.length < 8) {
+  const parsed = bodySchema.safeParse(rawBody);
+  if (!parsed.success) {
     return NextResponse.json(
-      { error: 'Password must be at least 8 characters' },
+      { error: parsed.error.issues[0]?.message ?? 'Invalid request body' },
       { status: 400 }
     );
   }
+
+  const { email, token, password } = parsed.data;
 
   // Look up the reset token
   const record = await prisma.verificationToken.findUnique({

@@ -1,21 +1,40 @@
 import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'crypto';
+import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { getResend } from '@/lib/resend';
 import { render } from '@react-email/components';
 import { PasswordReset } from '@/emails/PasswordReset';
+import { checkRateLimit, getClientIp } from '@/lib/rateLimit';
+
+const bodySchema = z.object({
+  email: z.string().email('A valid email is required'),
+});
 
 export async function POST(req: NextRequest) {
-  let body: { email?: string };
+  let rawBody: unknown;
   try {
-    body = await req.json();
+    rawBody = await req.json();
   } catch {
     return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
   }
 
-  const { email } = body;
-  if (!email) {
-    return NextResponse.json({ error: 'Email is required' }, { status: 400 });
+  const parsed = bodySchema.safeParse(rawBody);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: parsed.error.issues[0]?.message ?? 'Invalid request body' },
+      { status: 400 }
+    );
+  }
+
+  const { email } = parsed.data;
+
+  // Rate limit by email (the mail-bomb target) and by IP so a single caller
+  // can't cycle through many emails to route around the per-email limit.
+  const emailAllowed = await checkRateLimit(`forgot-password:${email}`, 3, 60);
+  const ipAllowed = await checkRateLimit(`forgot-password:${getClientIp(req)}`, 5, 60);
+  if (!emailAllowed || !ipAllowed) {
+    return NextResponse.json({ error: 'Too many requests. Please try again later.' }, { status: 429 });
   }
 
   // Always return 200 to avoid user enumeration — silently no-op if user not found

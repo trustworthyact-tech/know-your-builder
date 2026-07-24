@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth/next';
+import { z } from 'zod';
 import { authOptions } from '@/lib/auth';
 import { prisma } from '@/lib/db';
+
+const shareSchema = z.object({
+  searchId: z.string().trim().min(1, 'searchId is required'),
+});
 
 export async function POST(req: NextRequest) {
   const session = await getServerSession(authOptions);
@@ -9,17 +14,22 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorised' }, { status: 401 });
   }
 
-  let body: { searchId: string };
+  let json: unknown;
   try {
-    body = await req.json();
+    json = await req.json();
   } catch {
     return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
   }
 
-  const { searchId } = body;
-  if (!searchId) {
-    return NextResponse.json({ error: 'searchId is required' }, { status: 400 });
+  const parsed = shareSchema.safeParse(json);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: parsed.error.issues[0]?.message ?? 'Invalid request body' },
+      { status: 400 }
+    );
   }
+
+  const { searchId } = parsed.data;
 
   const search = await prisma.search.findFirst({
     where: { id: searchId, userId: session.user.id },

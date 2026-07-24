@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth/next';
+import { z } from 'zod';
 import { authOptions } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import { Prisma } from '@prisma/client';
@@ -10,20 +11,23 @@ interface Params {
   params: { searchId: string };
 }
 
-interface PaymentScheduleEntry {
-  label: string;
-  date: string;
-  amountCents: number;
-}
+// Dates are plain "YYYY-MM-DD" strings from <input type="date"> on the client and are
+// passed straight to `new Date(...)` below — z.iso.date() matches that shape (see the
+// sibling POST route in ../route.ts for the same reasoning re: PAYMENT_DUE scheduling).
+const paymentScheduleEntrySchema = z.object({
+  label: z.string(),
+  date: z.iso.date(),
+  amountCents: z.number().int().nonnegative(),
+});
 
-interface PatchBody {
-  projectValue?: string | null;
-  contractSignedDate?: string | null;
-  startDate?: string | null;
-  completionDate?: string | null;
-  paymentSchedule?: PaymentScheduleEntry[];
-  financeArranged?: boolean | null;
-}
+const patchTimelineSchema = z.object({
+  projectValue: z.string().nullable().optional(),
+  contractSignedDate: z.iso.date().nullable().optional(),
+  startDate: z.iso.date().nullable().optional(),
+  completionDate: z.iso.date().nullable().optional(),
+  paymentSchedule: z.array(paymentScheduleEntrySchema).optional(),
+  financeArranged: z.boolean().nullable().optional(),
+});
 
 // GET — retrieve timeline for a search
 export async function GET(_req: NextRequest, { params }: Params) {
@@ -54,12 +58,21 @@ export async function PATCH(req: NextRequest, { params }: Params) {
     return NextResponse.json({ error: 'Unauthorised' }, { status: 401 });
   }
 
-  let body: PatchBody;
+  let json: unknown;
   try {
-    body = await req.json();
+    json = await req.json();
   } catch {
     return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
   }
+
+  const parsed = patchTimelineSchema.safeParse(json);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: parsed.error.issues[0]?.message ?? 'Invalid request body' },
+      { status: 400 },
+    );
+  }
+  const body = parsed.data;
 
   const existing = await prisma.projectTimeline.findUnique({
     where: { searchId: params.searchId },

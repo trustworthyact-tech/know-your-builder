@@ -1,9 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth/next';
+import { z } from 'zod';
 import { authOptions } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
+
+const getQuerySchema = z.object({
+  read: z.enum(['true', 'false']).optional(),
+});
 
 // GET /api/alerts?read=true|false  (omit param to return all)
 export async function GET(req: NextRequest) {
@@ -13,7 +18,11 @@ export async function GET(req: NextRequest) {
   }
 
   const { searchParams } = new URL(req.url);
-  const readParam = searchParams.get('read');
+  const parsed = getQuerySchema.safeParse({ read: searchParams.get('read') ?? undefined });
+  if (!parsed.success) {
+    return NextResponse.json({ error: 'Invalid query parameters' }, { status: 400 });
+  }
+  const readParam = parsed.data.read;
 
   const where: { userId: string; read?: boolean } = { userId: session.user.id };
   if (readParam === 'true') where.read = true;

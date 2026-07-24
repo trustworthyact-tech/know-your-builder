@@ -55,6 +55,33 @@ const searchLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+// Lightweight manual shape validation — no schema-validation library is used
+// anywhere in server/, so this stays consistent with the rest of the codebase
+// rather than introducing zod for a single file. Only guards against wrong
+// *types* reaching the scrapers (e.g. `directors` as a string would break the
+// `.some(Boolean)` / `.map()` calls downstream) — format/checksum validation
+// (e.g. ABN checksum) is deliberately left to the scrapers.
+function validateSearchFields({ abn, acn, companyName, tradingName, directors }) {
+  if (companyName !== undefined && typeof companyName !== 'string') {
+    return 'companyName must be a string';
+  }
+  if (abn !== undefined && typeof abn !== 'string') {
+    return 'abn must be a string';
+  }
+  if (acn !== undefined && typeof acn !== 'string') {
+    return 'acn must be a string';
+  }
+  if (tradingName !== undefined && typeof tradingName !== 'string') {
+    return 'tradingName must be a string';
+  }
+  if (directors !== undefined) {
+    if (!Array.isArray(directors) || !directors.every((d) => typeof d === 'string')) {
+      return 'directors must be an array of strings';
+    }
+  }
+  return null;
+}
+
 app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
 
 // Redirects to a freshly-signed URL for a QBCC adjudication decision PDF.
@@ -78,6 +105,9 @@ app.get('/api/qbcc/decision-pdf', async (req, res) => {
 app.post('/api/search/disambiguate', async (req, res) => {
   const { companyName } = req.body;
   if (!companyName) return res.status(400).json({ error: 'companyName is required', matches: [] });
+  if (typeof companyName !== 'string') {
+    return res.status(400).json({ error: 'companyName must be a string', matches: [] });
+  }
   try {
     const matches = await searchByName(companyName);
     res.json({ matches });
@@ -90,6 +120,14 @@ app.post('/api/search/disambiguate', async (req, res) => {
 // Streaming search endpoint — sends results as they arrive
 app.post('/api/search', searchLimiter, async (req, res) => {
   const { abn, acn, companyName, tradingName, directors, isDeepCheck } = req.body;
+
+  const shapeError = validateSearchFields({ abn, acn, companyName, tradingName, directors });
+  if (shapeError) {
+    return res.status(400).json({ error: shapeError });
+  }
+  if (isDeepCheck !== undefined && typeof isDeepCheck !== 'boolean') {
+    return res.status(400).json({ error: 'isDeepCheck must be a boolean' });
+  }
 
   const hasDirectors = Array.isArray(directors) && directors.some(Boolean);
   if (!companyName && !abn && !hasDirectors) {

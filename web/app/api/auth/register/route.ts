@@ -1,37 +1,41 @@
 import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
+import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { getResend } from '@/lib/resend';
 import { render } from '@react-email/components';
 import { VerifyEmail } from '@/emails/VerifyEmail';
+import { checkRateLimit, getClientIp } from '@/lib/rateLimit';
 
-interface RegisterBody {
-  name?: string;
-  email: string;
-  password: string;
-}
+const bodySchema = z.object({
+  name: z.string().trim().min(1).optional(),
+  email: z.string().email('A valid email is required'),
+  password: z.string().min(8, 'Password must be at least 8 characters'),
+});
 
 export async function POST(req: NextRequest) {
-  let body: RegisterBody;
+  const allowed = await checkRateLimit(`register:${getClientIp(req)}`, 5, 60);
+  if (!allowed) {
+    return NextResponse.json({ error: 'Too many requests. Please try again later.' }, { status: 429 });
+  }
+
+  let rawBody: unknown;
   try {
-    body = await req.json();
+    rawBody = await req.json();
   } catch {
     return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
   }
 
-  const { name, email, password } = body;
-
-  if (!email || !password) {
-    return NextResponse.json({ error: 'Email and password are required' }, { status: 400 });
-  }
-
-  if (password.length < 8) {
+  const parsed = bodySchema.safeParse(rawBody);
+  if (!parsed.success) {
     return NextResponse.json(
-      { error: 'Password must be at least 8 characters' },
+      { error: parsed.error.issues[0]?.message ?? 'Invalid request body' },
       { status: 400 }
     );
   }
+
+  const { name, email, password } = parsed.data;
 
   const existing = await prisma.user.findUnique({ where: { email } });
   if (existing) {

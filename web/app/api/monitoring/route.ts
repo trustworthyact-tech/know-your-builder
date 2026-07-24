@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth/next';
+import { z } from 'zod';
 import { authOptions } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import { getStripe } from '@/lib/stripe';
@@ -24,10 +25,10 @@ export async function GET() {
 }
 
 // POST — create Stripe Subscription + MonitoringSubscription + enqueue initial jobs
-interface CreateMonitoringBody {
-  entityName: string;
-  entityAbn?: string;
-}
+const createMonitoringSchema = z.object({
+  entityName: z.string().trim().min(1, 'entityName is required'),
+  entityAbn: z.string().trim().optional(),
+});
 
 export async function POST(req: NextRequest) {
   const session = await getServerSession(authOptions);
@@ -35,19 +36,23 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorised' }, { status: 401 });
   }
 
-  let body: CreateMonitoringBody;
+  let json: unknown;
   try {
-    body = await req.json();
+    json = await req.json();
   } catch {
     return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
   }
 
-  const entityName = body.entityName?.trim();
-  const entityAbn = body.entityAbn?.trim() ?? '';
-
-  if (!entityName) {
-    return NextResponse.json({ error: 'entityName is required' }, { status: 400 });
+  const parsed = createMonitoringSchema.safeParse(json);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: parsed.error.issues[0]?.message ?? 'Invalid request body' },
+      { status: 400 }
+    );
   }
+
+  const entityName = parsed.data.entityName;
+  const entityAbn = parsed.data.entityAbn?.trim() ?? '';
 
   const priceId = process.env.STRIPE_PRICE_MONITORING_MONTHLY;
   if (!priceId) {
@@ -153,9 +158,9 @@ export async function POST(req: NextRequest) {
 }
 
 // DELETE — cancel a monitoring subscription by MonitoringSubscription.id
-interface CancelBody {
-  id: string;
-}
+const cancelMonitoringSchema = z.object({
+  id: z.string().trim().min(1, 'id is required'),
+});
 
 export async function DELETE(req: NextRequest) {
   const session = await getServerSession(authOptions);
@@ -163,19 +168,25 @@ export async function DELETE(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorised' }, { status: 401 });
   }
 
-  let body: CancelBody;
+  let json: unknown;
   try {
-    body = await req.json();
+    json = await req.json();
   } catch {
     return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
   }
 
-  if (!body.id) {
-    return NextResponse.json({ error: 'id is required' }, { status: 400 });
+  const parsed = cancelMonitoringSchema.safeParse(json);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: parsed.error.issues[0]?.message ?? 'Invalid request body' },
+      { status: 400 }
+    );
   }
 
+  const { id } = parsed.data;
+
   const sub = await prisma.monitoringSubscription.findFirst({
-    where: { id: body.id, userId: session.user.id },
+    where: { id, userId: session.user.id },
     select: { id: true, stripeSubId: true },
   });
   if (!sub) {
@@ -189,7 +200,7 @@ export async function DELETE(req: NextRequest) {
   }
 
   await prisma.monitoringSubscription.update({
-    where: { id: body.id },
+    where: { id },
     data: { active: false },
   });
 
