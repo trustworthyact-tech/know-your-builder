@@ -34,6 +34,7 @@ export interface SearchResult {
   results?: ResultItem[];
   licenceResults?: ResultItem[];
   adjudicationResults?: ResultItem[];
+  enforcementResults?: ResultItem[];
   searchUrl?: string;
   adjudicationSearchUrl?: string;
   summary?: string;
