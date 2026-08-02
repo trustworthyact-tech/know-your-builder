@@ -343,5 +343,3 @@ app.post('/api/search', searchLimiter, async (req, res) => {
 });
 
 app.listen(PORT, () => console.log(`Know Your Builder server running on http://localhost:${PORT}`));
-
-// CD verification test comment - safe to remove, no functional change
