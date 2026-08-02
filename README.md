@@ -74,3 +74,5 @@ The server streams results back as newline-delimited JSON (NDJSON). Each scraper
 ## Disclaimer
 
 This tool is for research purposes only and does not constitute legal or financial advice. Always verify information from primary sources before making decisions.
+
+<!-- CD verification test 2026-08-02T12:42:27Z - safe to close/delete, no functional change -->
