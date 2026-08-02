@@ -155,16 +155,6 @@ HomeScreen → SearchingScreen → ReportScreen
 
 **`nameMatchesEntity` / `isEntityMatch` guards all register scrapers** (modernSlavery, FWO, VIC BPC, WA B&E): every significant word of the company name must appear in the result text to prevent false positives.
 
-**Contract extraction lives in the Next.js app**, not the Express server (`web/lib/contractExtractor.ts`). The Express server has no `@anthropic-ai/sdk` or AWS SDK.
-
-**`DocumentBlockParam` cast via `any`** in `contractExtractor.ts` — the SDK types don't include it but the runtime supports it.
-
-**R2 object is always deleted after extraction** — unconditionally, on success and error paths.
-
-**DOCX extraction returns `confidence: 'low'` with empty fields** — prompt user to fill manually.
-
-**Use `XMLHttpRequest` for file uploads** when upload progress is needed — `fetch` does not expose `upload.onprogress`.
-
 **Share link upsert always updates `expiresAt`**: re-sharing extends the window to a full 30 days. Never use `update: {}` in the share route.
 
 **PDF cookie forwarding**: check `__Secure-next-auth.session-token` first (HTTPS), fall back to `next-auth.session-token` (HTTP/dev).

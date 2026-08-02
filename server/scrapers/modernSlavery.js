@@ -7,12 +7,15 @@ const HEADERS = {
   Accept: 'application/json, text/html',
 };
 
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 // Returns true if the entity name is a meaningful match for the search term.
 // The register's search also matches subsidiaries listed inside statements,
 // so we must confirm the *reporting entity itself* is the one we're looking for.
 function isEntityMatch(entityText, companyName, abn) {
   const haystack = entityText.toLowerCase();
-  const needle = companyName.toLowerCase();
 
   // ABN match is definitive
   if (abn) {
@@ -20,10 +23,16 @@ function isEntityMatch(entityText, companyName, abn) {
     if (haystack.includes(cleanAbn)) return true;
   }
 
-  // Name match: every word of the search term must appear in the entity text
-  const words = needle.split(/\s+/).filter((w) => w.length > 2);
+  // Name match: every distinctive word of the search term must appear in the entity
+  // text as a whole word. Plain substring matching both false-positives on short
+  // numeric tokens (e.g. "37" inside "237") and, without excluding "pty"/"ltd", treats
+  // them as distinctive even though virtually every company name contains them.
+  const words = companyName
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((w) => (w.length > 3 || /^\d+$/.test(w)) && !/^(pty|ltd|limited|the|and|of|a)$/.test(w));
   if (words.length === 0) return false;
-  return words.every((w) => haystack.includes(w));
+  return words.every((w) => new RegExp(`\\b${escapeRegExp(w)}\\b`).test(haystack));
 }
 
 async function searchModernSlavery(companyName, abn) {

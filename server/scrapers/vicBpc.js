@@ -9,6 +9,10 @@ const CURRENT_PROCEEDINGS_URL = `${BASE}/about/current-disciplinary-proceedings/
 const REGISTER_URL = PROSECUTION_REGISTER_URL;
 
 // Every significant word must appear in the record text to prevent false positives.
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 function nameMatchesEntity(text, companyName) {
   if (!companyName) return false;
   const words = companyName
@@ -17,7 +21,7 @@ function nameMatchesEntity(text, companyName) {
     .filter((w) => (w.length > 3 || /^\d+$/.test(w)) && !/^(pty|ltd|limited|the|and|of|a)$/.test(w));
   if (words.length === 0) return false;
   const lower = text.toLowerCase();
-  return words.every((w) => lower.includes(w));
+  return words.every((w) => new RegExp(`\\b${escapeRegExp(w)}\\b`).test(lower));
 }
 
 // The VBA prosecution register uses an accordion layout.

@@ -216,124 +216,156 @@ async function searchQBCCExcluded(directorNames) {
   });
 }
 
-async function searchQBCC(companyName, abn, directors) {
+// QBCC Adjudication decisions — myQBCC Salesforce Aura API. The old
+// /adjudication-decisions page was removed; decisions now live at
+// https://my.qbcc.qld.gov.au/myQBCC/s/adjudication-registry (Salesforce SPA).
+// The underlying Apex actions are publicly accessible without authentication.
+const ADJUDICATION_REGISTRY_URL = 'https://my.qbcc.qld.gov.au/myQBCC/s/adjudication-registry';
+const AURA_ENDPOINT = 'https://my.qbcc.qld.gov.au/myQBCC/s/sfsites/aura?r=0&aura.ApexAction.execute=1';
+
+async function callQBCCAura(method, params) {
+  const message = {
+    actions: [{
+      id: '1;a',
+      descriptor: 'aura://ApexActionController/ACTION$execute',
+      callingDescriptor: 'UNKNOWN',
+      params: {
+        namespace: '',
+        classname: 'QBCCAdjudicationSearchController',
+        method,
+        params,
+        cacheable: false,
+        isContinuation: false,
+      },
+    }],
+  };
+  const auraContext = {
+    mode: 'PROD',
+    fwuid: 'scraper',
+    app: 'siteforce:communityApp',
+    loaded: { 'APPLICATION@markup://siteforce:communityApp': 'scraper' },
+    dn: [],
+    globals: {},
+    uad: true,
+  };
+  const body = new URLSearchParams({
+    message: JSON.stringify(message),
+    'aura.context': JSON.stringify(auraContext),
+    'aura.token': 'null',
+  });
+  const { data } = await axios.post(AURA_ENDPOINT, body.toString(), {
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+      'User-Agent': HEADERS['User-Agent'],
+      Origin: 'https://my.qbcc.qld.gov.au',
+      Referer: ADJUDICATION_REGISTRY_URL,
+    },
+    timeout: 15000,
+  });
+  return data?.actions?.[0]?.returnValue?.returnValue;
+}
+
+async function callAdjudicationApi(searchBy, lastName) {
+  return (await callQBCCAura('getAdjudicationRegistryDecisionBy', { searchBy, firstName: '', lastName })) || [];
+}
+
+// Each decision PDF ("Decision Coversheet") is served from a private S3 bucket via a
+// presigned URL that expires 120s after issue — must be fetched fresh right before use,
+// never cached or stored. fileName is the `uploadFilename` field (see adjudicationResults
+// below) with ".pdf" appended, e.g. "00000003107711_1.pdf".
+async function getDecisionSignedUrl(fileName) {
+  return callQBCCAura('getSignedURL', { fileName });
+}
+
+async function searchQBCC(companyName, abn, directors, alternateNames = []) {
   const results = [];
 
+  // Search under the entity's primary name plus any ABR-registered business/trading
+  // names — a sole trader's QBCC licence or adjudication decision is often filed
+  // under a business name (e.g. "H.U.S.M") rather than their personal name.
+  const searchNames = [...new Set([companyName, ...alternateNames].filter(Boolean))];
+
   // QBCC public contractor search
-  try {
-    const searchUrl = `https://www.qbcc.qld.gov.au/api/licensee-search?name=${encodeURIComponent(companyName)}&licenceNumber=&suburb=&licenceType=&licenceStatus=Active`;
-    const { data } = await axios.get(searchUrl, { headers: HEADERS, timeout: 15000 });
-
-    const items = Array.isArray(data) ? data : data?.results || data?.data || [];
-    for (const item of items) {
-      const licencee = item.licenceeName || item.name || item.companyName || '';
-      const licenceNo = item.licenceNumber || item.licenceNo || '';
-      const licenceClass = item.licenceClass || item.licenceType || item.category || '';
-      const status = item.licenceStatus || item.status || '';
-      const expiry = item.expiryDate || item.licenceExpiry || '';
-      const financialCategory = item.financialCategory || item.financialLimit || '';
-
-      results.push({
-        title: licencee || companyName,
-        url: `https://my.qbcc.qld.gov.au/myQBCC/s/findlocalcontractor`,
-        status,
-        date: expiry,
-        metadata: {
-          'Licence Number': licenceNo,
-          'Licence Class': licenceClass,
-          Status: status,
-          'Expiry Date': expiry,
-          'Financial Category': financialCategory,
-        },
-      });
-    }
-  } catch {
-    // Try HTML scrape of the public-facing search
+  const seenLicence = new Set();
+  for (const searchName of searchNames) {
     try {
-      const encoded = encodeURIComponent(companyName);
-      const { data } = await axios.get(
-        `https://www.qbcc.qld.gov.au/find-a-local-contractor?name=${encoded}`,
-        { headers: { ...HEADERS, Accept: 'text/html' }, timeout: 20000 }
-      );
-      const $ = cheerio.load(data);
+      const searchUrl = `https://www.qbcc.qld.gov.au/api/licensee-search?name=${encodeURIComponent(searchName)}&licenceNumber=&suburb=&licenceType=&licenceStatus=Active`;
+      const { data } = await axios.get(searchUrl, { headers: HEADERS, timeout: 15000 });
 
-      $('table tbody tr, [class*="contractor"], [class*="licensee"]').each((_, row) => {
-        const cells = $('td', row);
-        if (cells.length < 2) return;
+      const items = Array.isArray(data) ? data : data?.results || data?.data || [];
+      for (const item of items) {
+        const licencee = item.licenceeName || item.name || item.companyName || '';
+        const licenceNo = item.licenceNumber || item.licenceNo || '';
+        const licenceClass = item.licenceClass || item.licenceType || item.category || '';
+        const status = item.licenceStatus || item.status || '';
+        const expiry = item.expiryDate || item.licenceExpiry || '';
+        const financialCategory = item.financialCategory || item.financialLimit || '';
+
+        const dedupeKey = licenceNo || `${licencee}|${licenceClass}`;
+        if (seenLicence.has(dedupeKey)) continue;
+        seenLicence.add(dedupeKey);
+
         results.push({
-          title: cells.eq(0).text().trim(),
+          title: licencee || searchName,
           url: `https://my.qbcc.qld.gov.au/myQBCC/s/findlocalcontractor`,
+          status,
+          date: expiry,
           metadata: {
-            'Licence Number': cells.eq(1).text().trim(),
-            'Licence Class': cells.eq(2)?.text().trim() || '',
-            Status: cells.eq(3)?.text().trim() || '',
+            'Licence Number': licenceNo,
+            'Licence Class': licenceClass,
+            Status: status,
+            'Expiry Date': expiry,
+            'Financial Category': financialCategory,
           },
         });
-      });
+      }
     } catch {
-      // ignore
+      // Try HTML scrape of the public-facing search
+      try {
+        const encoded = encodeURIComponent(searchName);
+        const { data } = await axios.get(
+          `https://www.qbcc.qld.gov.au/find-a-local-contractor?name=${encoded}`,
+          { headers: { ...HEADERS, Accept: 'text/html' }, timeout: 20000 }
+        );
+        const $ = cheerio.load(data);
+
+        $('table tbody tr, [class*="contractor"], [class*="licensee"]').each((_, row) => {
+          const cells = $('td', row);
+          if (cells.length < 2) return;
+          const title = cells.eq(0).text().trim();
+          const licenceNo = cells.eq(1).text().trim();
+          const dedupeKey = licenceNo || title;
+          if (seenLicence.has(dedupeKey)) return;
+          seenLicence.add(dedupeKey);
+          results.push({
+            title,
+            url: `https://my.qbcc.qld.gov.au/myQBCC/s/findlocalcontractor`,
+            metadata: {
+              'Licence Number': licenceNo,
+              'Licence Class': cells.eq(2)?.text().trim() || '',
+              Status: cells.eq(3)?.text().trim() || '',
+            },
+          });
+        });
+      } catch {
+        // ignore
+      }
     }
-  }
-
-  // QBCC Adjudication decisions search — myQBCC Salesforce Aura API
-  // The old /adjudication-decisions page was removed; decisions are now at
-  // https://my.qbcc.qld.gov.au/myQBCC/s/adjudication-registry (Salesforce SPA).
-  // The underlying Apex action is publicly accessible without authentication.
-  const ADJUDICATION_REGISTRY_URL = 'https://my.qbcc.qld.gov.au/myQBCC/s/adjudication-registry';
-  const AURA_ENDPOINT = 'https://my.qbcc.qld.gov.au/myQBCC/s/sfsites/aura?r=0&aura.ApexAction.execute=1';
-
-  async function callAdjudicationApi(searchBy, lastName) {
-    const message = {
-      actions: [{
-        id: '1;a',
-        descriptor: 'aura://ApexActionController/ACTION$execute',
-        callingDescriptor: 'UNKNOWN',
-        params: {
-          namespace: '',
-          classname: 'QBCCAdjudicationSearchController',
-          method: 'getAdjudicationRegistryDecisionBy',
-          params: { searchBy, firstName: '', lastName },
-          cacheable: false,
-          isContinuation: false,
-        },
-      }],
-    };
-    const auraContext = {
-      mode: 'PROD',
-      fwuid: 'scraper',
-      app: 'siteforce:communityApp',
-      loaded: { 'APPLICATION@markup://siteforce:communityApp': 'scraper' },
-      dn: [],
-      globals: {},
-      uad: true,
-    };
-    const body = new URLSearchParams({
-      message: JSON.stringify(message),
-      'aura.context': JSON.stringify(auraContext),
-      'aura.token': 'null',
-    });
-    const { data } = await axios.post(AURA_ENDPOINT, body.toString(), {
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-        'User-Agent': HEADERS['User-Agent'],
-        Origin: 'https://my.qbcc.qld.gov.au',
-        Referer: ADJUDICATION_REGISTRY_URL,
-      },
-      timeout: 15000,
-    });
-    return data?.actions?.[0]?.returnValue?.returnValue || [];
   }
 
   const adjudicationResults = [];
   try {
-    // Search both as respondent (builder being claimed against) and claimant.
-    const [asRespondent, asClaimant] = await Promise.all([
-      callAdjudicationApi('respondentName', companyName),
-      callAdjudicationApi('claimantName', companyName),
-    ]);
+    // Search both as respondent (builder being claimed against) and claimant,
+    // under every known name for this entity (see searchNames above).
+    const batches = await Promise.all(
+      searchNames.flatMap((searchName) => [
+        callAdjudicationApi('respondentName', searchName),
+        callAdjudicationApi('claimantName', searchName),
+      ])
+    );
 
     const seen = new Set();
-    for (const item of [...asRespondent, ...asClaimant]) {
+    for (const item of batches.flat()) {
       if (!item || seen.has(item.id)) continue;
       seen.add(item.id);
 
@@ -353,6 +385,9 @@ async function searchQBCC(companyName, abn, directors) {
           'Application Number': item.applicationNumber || '',
           'Site Suburb': item.siteSuburb || '',
           'Decision Date': date,
+          // Consumed by the /api/qbcc/decision-pdf proxy (see server/index.js) to fetch a
+          // fresh signed URL on click — the signed URL itself can't be stored (120s TTL).
+          'Decision Document': item.uploadFilename ? `${item.uploadFilename}.pdf` : '',
         },
       });
     }
@@ -387,4 +422,4 @@ async function searchQBCC(companyName, abn, directors) {
   };
 }
 
-module.exports = { searchQBCC };
+module.exports = { searchQBCC, getDecisionSignedUrl };

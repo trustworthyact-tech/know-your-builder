@@ -99,9 +99,15 @@ const COMMON_WORDS = new Set([
   'management', 'solutions', 'operations', 'projects', 'enterprise', 'enterprises',
 ]);
 
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 // Returns true when at least one distinctive word from `term` appears in `title`.
 // Prevents AustLII's word-OR search from returning cases that only share a
-// generic word (e.g. "Services") with the searched entity.
+// generic word (e.g. "Services") with the searched entity. Word-boundary match —
+// plain substring search would match a short numeric term like "37" inside an
+// unrelated case number or address (e.g. "237").
 function titleMatchesTerm(title, term) {
   const words = term
     .toLowerCase()
@@ -109,7 +115,7 @@ function titleMatchesTerm(title, term) {
     .filter((w) => (w.length > 3 || /^\d+$/.test(w)) && !COMMON_WORDS.has(w));
   if (words.length === 0) return true; // no distinctive words — can't filter
   const lower = title.toLowerCase();
-  return words.some((w) => lower.includes(w));
+  return words.some((w) => new RegExp(`\\b${escapeRegExp(w)}\\b`).test(lower));
 }
 
 // Pending-promise cache: term → Promise<ResultItem[]>

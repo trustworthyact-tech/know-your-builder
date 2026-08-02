@@ -10,6 +10,10 @@ const PORTAL_URL = 'https://www.data.act.gov.au/Business-and-Industry/List-of-Pr
 
 const BUILDING_OCCUPATIONS = new Set(['Builder', 'Building Surveyor', 'Building Assessor']);
 
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 function nameMatchesEntity(text, query) {
   if (!query) return false;
   const words = query
@@ -18,7 +22,7 @@ function nameMatchesEntity(text, query) {
     .filter((w) => (w.length > 3 || /^\d+$/.test(w)) && !/^(pty|ltd|limited|the|and|of|a)$/.test(w));
   if (words.length === 0) return false;
   const lower = text.toLowerCase();
-  return words.every((w) => lower.includes(w));
+  return words.every((w) => new RegExp(`\\b${escapeRegExp(w)}\\b`).test(lower));
 }
 
 // Escape single quotes for Socrata $where strings.

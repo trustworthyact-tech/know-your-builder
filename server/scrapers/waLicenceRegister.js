@@ -25,6 +25,10 @@ const LICENCE_TYPES = [
   { code: 'BP', display: 'Building Practitioner' },
 ];
 
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 function nameMatchesEntity(text, query) {
   if (!query) return false;
   const words = query
@@ -33,7 +37,7 @@ function nameMatchesEntity(text, query) {
     .filter((w) => (w.length > 3 || /^\d+$/.test(w)) && !/^(pty|ltd|limited|the|and|of|a)$/.test(w));
   if (words.length === 0) return false;
   const lower = text.toLowerCase();
-  return words.every((w) => lower.includes(w));
+  return words.every((w) => new RegExp(`\\b${escapeRegExp(w)}\\b`).test(lower));
 }
 
 function toResultItem(dto) {

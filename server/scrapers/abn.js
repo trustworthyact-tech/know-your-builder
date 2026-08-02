@@ -18,8 +18,30 @@ function normaliseName(s) {
     .trim();
 }
 
+// The ABR detail page renders each section (ABN details, Business name(s),
+// Trading name(s)) as its own <table><caption>Section title ...</caption>.
+// Extracts the first column of each two-<td> data row under the table whose
+// caption starts with captionPrefix — skips the intro/help row (1 <td>,
+// colspan) and the header row (<th> cells, not <td>).
+function extractNameTable($, captionPrefix) {
+  const names = [];
+  $('table').each((_, table) => {
+    const caption = $(table).find('caption').first().text().trim();
+    if (!caption.toLowerCase().startsWith(captionPrefix.toLowerCase())) return;
+    $(table).find('tr').each((_, row) => {
+      const cells = $(row).find('td');
+      if (cells.length !== 2) return;
+      const name = cells.eq(0).text().trim();
+      if (name) names.push(name);
+    });
+  });
+  return names;
+}
+
 async function searchABN(abn, companyName, acn) {
   const results = [];
+  let businessNames = [];
+  let tradingNames = [];
 
   if (abn) {
     const cleanAbn = abn.replace(/\s/g, '');
@@ -30,28 +52,34 @@ async function searchABN(abn, companyName, acn) {
       );
       const $ = cheerio.load(data);
 
+      // The "ABN details" table has no id/class, only a <caption> — pull th/td
+      // pairs from that table specifically so we don't also sweep up rows from
+      // the Business name(s) / Trading name(s) tables below.
       const fields = {};
-      $('table.abr-detail tr').each((_, row) => {
-        const label = $(row).find('th').text().trim();
-        const value = $(row).find('td').text().trim();
-        if (label && value) fields[label] = value;
-      });
-
-      // Also try definition list format
-      $('dl').each((_, dl) => {
-        $(dl).find('dt').each((i, dt) => {
-          const dd = $(dt).next('dd');
-          if (dd.length) fields[$(dt).text().trim()] = dd.text().trim();
+      $('table').each((_, table) => {
+        const caption = $(table).find('caption').first().text().trim();
+        if (!/^ABN details/i.test(caption)) return;
+        $(table).find('tr').each((_, row) => {
+          const label = $(row).find('th').text().trim().replace(/:$/, '');
+          const value = $(row).find('td').text().trim();
+          if (label && value) fields[label] = value;
         });
       });
 
-      // Try the main heading for entity name
+      businessNames = extractNameTable($, 'Business name');
+      tradingNames = extractNameTable($, 'Trading name');
+
+      // Entity name lives in a semantic itemprop, not a heading — the old
+      // h1 fallback picked up the page's "Current details for ABN ..." title
+      // instead of the actual legal name.
       const entityName =
+        $('span[itemprop="legalName"]').first().text().trim() ||
         $('h1.entity-name').text().trim() ||
-        $('span.entityName').text().trim() ||
-        $('h1').first().text().trim();
+        $('span.entityName').text().trim();
 
       if (entityName || Object.keys(fields).length > 0) {
+        if (businessNames.length > 0) fields['Business Name(s)'] = businessNames.join(', ');
+        if (tradingNames.length > 0) fields['Trading Name(s)'] = tradingNames.join(', ');
         results.push({
           title: entityName || `ABN ${cleanAbn}`,
           url: `https://abr.business.gov.au/ABN/View?id=${cleanAbn}`,
@@ -127,6 +155,8 @@ async function searchABN(abn, companyName, acn) {
     jurisdiction: 'Federal',
     category: 'identity',
     results,
+    businessNames,
+    tradingNames,
     searchUrl: abn
       ? `https://abr.business.gov.au/ABN/View?id=${abn.replace(/\s/g, '')}`
       : `https://abr.business.gov.au/Search/ResultsActive?SearchText=${encodeURIComponent(companyName || '')}`,
