@@ -36,4 +36,8 @@ nixPkgs = [
 
 [variables]
 PUPPETEER_SKIP_CHROMIUM_DOWNLOAD = "true"
-PUPPETEER_EXECUTABLE_PATH = "/run/current-system/sw/bin/chromium"
+# /run/current-system/sw/bin/chromium is a NixOS system-profile path that never existed
+# in this Docker-based nixpacks build — it was masked until now because ERR_REQUIRE_ESM
+# (see nixPkgs comment above) crashed before puppeteer.launch() ever ran. Confirmed via
+# `railway ssh` that nix-env -i installs to /root/.nix-profile/bin/ in this container.
+PUPPETEER_EXECUTABLE_PATH = "/root/.nix-profile/bin/chromium"
