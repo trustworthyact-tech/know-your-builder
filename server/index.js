@@ -29,6 +29,7 @@ const { searchTASLicenceRegister } = require('./scrapers/tasLicenceRegister');
 const { searchAsicExtract } = require('./scrapers/asicExtract');
 const { searchAfsaNpii } = require('./scrapers/afsaNpii');
 const { generateLinks } = require('./scrapers/links');
+const { startPaymentTimesRefresh } = require('./scrapers/paymentTimesRefresh');
 
 // Fail fast on missing scraper credentials rather than surfacing "missing key"
 // errors deep inside individual scraper calls at request time.
@@ -343,3 +344,5 @@ app.post('/api/search', searchLimiter, async (req, res) => {
 });
 
 app.listen(PORT, () => console.log(`Know Your Builder server running on http://localhost:${PORT}`));
+
+startPaymentTimesRefresh();

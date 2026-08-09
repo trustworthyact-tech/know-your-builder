@@ -10,8 +10,16 @@ const path  = require('path');
 
 const UPDATE_JS_URL = 'https://register.paymenttimes.gov.au/files/js/update.js';
 const DOWNLOAD_BASE = 'https://register.paymenttimes.gov.au/files/downloads/';
-const CACHE_PATH    = path.join(os.tmpdir(), 'ptrr_register.xlsx');
-const ETAG_PATH     = path.join(os.tmpdir(), 'ptrr_register.etag');
+
+// PTRR_CACHE_DIR points at a Railway persistent Volume when set, so a successful
+// download survives a redeploy instead of being wiped with the rest of os.tmpdir().
+// Falls back to os.tmpdir() for local dev, where no volume is mounted.
+const CACHE_DIR = (() => {
+  const dir = process.env.PTRR_CACHE_DIR;
+  return dir && fs.existsSync(dir) ? dir : os.tmpdir();
+})();
+const CACHE_PATH = path.join(CACHE_DIR, 'ptrr_register.xlsx');
+const ETAG_PATH  = path.join(CACHE_DIR, 'ptrr_register.etag');
 
 const HEADERS = {
   'User-Agent':
@@ -113,12 +121,30 @@ function excelDateToISO(serial) {
 
 // ── Cache management ─────────────────────────────────────────────────────────
 
+// Reads back whatever's on disk, regardless of age, for the stale-if-error fallback.
+// Returns null if there's no cached copy at all (nothing to fall back to).
+async function readCachedBuffer() {
+  try {
+    const [buffer, stat] = await Promise.all([
+      fs.promises.readFile(CACHE_PATH),
+      fs.promises.stat(CACHE_PATH),
+    ]);
+    return { buffer, stale: true, cachedAt: stat.mtime };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Download the register Excel file, using ETag to avoid re-downloading
  * if the file hasn't changed since the last call.
- * Returns the file contents as a Buffer.
+ *
+ * Returns { buffer, stale, cachedAt }. `stale` is true when the live fetch failed
+ * and a previously-cached copy was returned instead (`cachedAt` is that copy's
+ * mtime) — callers should surface this to the user rather than presenting it as
+ * fresh data. Throws only when the live fetch fails AND no cached copy exists.
  */
-async function fetchRegisterBuffer() {
+async function doFetchRegisterBuffer() {
   // Step 1: get current filename from update.js
   let fileName;
   try {
@@ -130,10 +156,8 @@ async function fetchRegisterBuffer() {
   }
 
   if (!fileName) {
-    // Try to use a cached copy regardless of freshness
-    if (fs.existsSync(CACHE_PATH)) {
-      return fs.readFileSync(CACHE_PATH);
-    }
+    const cached = await readCachedBuffer();
+    if (cached) return cached;
     throw new Error('PTRR: could not determine current register filename');
   }
 
@@ -142,7 +166,7 @@ async function fetchRegisterBuffer() {
   // Step 2: conditional GET using stored ETag
   const reqHeaders = { ...HEADERS, Accept: 'application/octet-stream' };
   if (fs.existsSync(ETAG_PATH) && fs.existsSync(CACHE_PATH)) {
-    const storedEtag = fs.readFileSync(ETAG_PATH, 'utf8').trim();
+    const storedEtag = (await fs.promises.readFile(ETAG_PATH, 'utf8')).trim();
     if (storedEtag) reqHeaders['If-None-Match'] = storedEtag;
   }
 
@@ -168,23 +192,46 @@ async function fetchRegisterBuffer() {
       await new Promise(r => setTimeout(r, 3000 * (attempt + 1)));
     }
   }
-  if (lastErr) throw lastErr;
+  if (lastErr) {
+    // All retries exhausted — fall back to whatever's cached rather than failing
+    // the whole search outright.
+    const cached = await readCachedBuffer();
+    if (cached) return cached;
+    throw lastErr;
+  }
 
   if (resp.status === 304 && fs.existsSync(CACHE_PATH)) {
-    // Not modified — use cached copy
-    return fs.readFileSync(CACHE_PATH);
+    // Not modified — cached copy is confirmed current, not stale.
+    const buffer = await fs.promises.readFile(CACHE_PATH);
+    return { buffer, stale: false, cachedAt: new Date() };
   }
 
   // New or updated file
   const buf = Buffer.from(resp.data);
   try {
-    fs.writeFileSync(CACHE_PATH, buf);
+    await fs.promises.writeFile(CACHE_PATH, buf);
     const etag = resp.headers['etag'] || resp.headers['ETag'] || '';
-    if (etag) fs.writeFileSync(ETAG_PATH, etag);
+    if (etag) await fs.promises.writeFile(ETAG_PATH, etag);
   } catch {
     // Cache write failure is non-fatal
   }
-  return buf;
+  return { buffer: buf, stale: false, cachedAt: new Date() };
+}
+
+// Concurrent /api/search requests hitting a cold cache would otherwise each fire an
+// independent download at the WAF simultaneously — exactly the kind of burst a
+// reputation-based blocker escalates against. Coalesce them into one in-flight
+// request, mirroring the pendingFetches dedup pattern in austlii.js.
+let inFlightFetch = null;
+
+async function fetchRegisterBuffer() {
+  if (inFlightFetch) return inFlightFetch;
+  inFlightFetch = doFetchRegisterBuffer();
+  try {
+    return await inFlightFetch;
+  } finally {
+    inFlightFetch = null;
+  }
 }
 
 // ── Search logic ─────────────────────────────────────────────────────────────
@@ -361,9 +408,9 @@ async function searchPaymentTimes(companyName, abn, acn) {
   const abnClean = abn ? abn.replace(/\s/g, '') : '';
   const searchUrl = `https://register.paymenttimes.gov.au/dashboard.html`;
 
-  let buf;
+  let buf, stale, cachedAt;
   try {
-    buf = await fetchRegisterBuffer();
+    ({ buffer: buf, stale, cachedAt } = await fetchRegisterBuffer());
   } catch (err) {
     return {
       source: 'Payment Times Reporting Register',
@@ -412,17 +459,21 @@ async function searchPaymentTimes(companyName, abn, acn) {
     };
   });
 
+  const baseSummary =
+    results.length > 0
+      ? `Found ${results.length} entity(s) with payment times data`
+      : 'No payment times data found — entity may not be a required reporter or not yet submitted';
+
   return {
     source: 'Payment Times Reporting Register',
     jurisdiction: 'Federal',
     category: 'payment',
     results,
     searchUrl,
-    summary:
-      results.length > 0
-        ? `Found ${results.length} entity(s) with payment times data`
-        : 'No payment times data found — entity may not be a required reporter or not yet submitted',
+    summary: stale
+      ? `Live register download failed — showing cached data from ${cachedAt.toDateString()}. ${baseSummary}`
+      : baseSummary,
   };
 }
 
-module.exports = { searchPaymentTimes };
+module.exports = { searchPaymentTimes, fetchRegisterBuffer };

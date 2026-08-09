@@ -37,7 +37,7 @@
 
 const path  = require('path');
 const axios = require('axios');
-const { searchPaymentTimes } = require(path.join(__dirname, '../scrapers/paymentTimes'));
+const { searchPaymentTimes, fetchRegisterBuffer } = require(path.join(__dirname, '../scrapers/paymentTimes'));
 const { pass, fail, step, warn, dump, header, summary } = require('./lib/helpers');
 
 const UPDATE_JS_URL = 'https://register.paymenttimes.gov.au/files/js/update.js';
@@ -216,6 +216,94 @@ function sigWords(name) {
   } else {
     pass('Step 4', `"${fixtureName}" confirmed in scraper results`);
     passed++;
+  }
+
+  // ── Step 5: Concurrent fetchRegisterBuffer() calls dedup into one execution ───
+  step('Step 5: Firing 3 concurrent fetchRegisterBuffer() calls, checking dedup...');
+
+  const concurrentResults = await Promise.all([
+    fetchRegisterBuffer(),
+    fetchRegisterBuffer(),
+    fetchRegisterBuffer(),
+  ]);
+  const sameBuffer =
+    concurrentResults[0].buffer === concurrentResults[1].buffer &&
+    concurrentResults[1].buffer === concurrentResults[2].buffer;
+
+  if (!sameBuffer) {
+    fail(
+      'Step 5',
+      'Concurrent fetchRegisterBuffer() calls returned different Buffer objects.\n' +
+      'This means each call triggered its own independent download instead of\n' +
+      'sharing one in-flight request — the dedup guard in paymentTimes.js may be\n' +
+      'broken (check the inFlightFetch variable and fetchRegisterBuffer wrapper).'
+    );
+    failed++;
+  } else {
+    pass('Step 5', 'All 3 concurrent calls resolved to the same in-flight fetch');
+    passed++;
+  }
+
+  // ── Step 6: Stale-if-error fallback when the live fetch fails ─────────────────
+  step('Step 6: Forcing a live-fetch failure, checking stale-cache fallback...');
+
+  const realAxiosGet = axios.get.bind(axios);
+  axios.get = async () => {
+    const err = new Error('simulated network failure');
+    err.response = { status: 406 };
+    throw err;
+  };
+
+  let staleResult;
+  try {
+    staleResult = await fetchRegisterBuffer();
+  } catch (e) {
+    // Only acceptable if there's genuinely no cache to fall back to.
+    warn(`fetchRegisterBuffer() threw with no cache available: ${e.message}`);
+  } finally {
+    axios.get = realAxiosGet;
+  }
+
+  if (!staleResult) {
+    fail(
+      'Step 6',
+      'fetchRegisterBuffer() threw instead of falling back to a cached copy.\n' +
+      'Expected: since Steps 1-3 already succeeded in populating the cache this run,\n' +
+      'a forced live-fetch failure should still resolve via readCachedBuffer().\n' +
+      'Check the retry-exhausted branch in doFetchRegisterBuffer (paymentTimes.js).'
+    );
+    failed++;
+  } else if (!staleResult.stale || !staleResult.cachedAt) {
+    fail(
+      'Step 6',
+      `fetchRegisterBuffer() returned a buffer but stale=${staleResult.stale}, ` +
+      `cachedAt=${staleResult.cachedAt}. Expected stale:true and a valid cachedAt Date\n` +
+      'when falling back to a cached copy after a forced failure.'
+    );
+    failed++;
+  } else {
+    pass('Step 6', `Stale fallback returned buffer from ${staleResult.cachedAt.toISOString()}, stale=true`);
+    passed++;
+
+    // Confirm the caveat sentence actually reaches searchPaymentTimes()'s summary.
+    axios.get = async () => { throw Object.assign(new Error('simulated'), { response: { status: 406 } }); };
+    let staleSearch;
+    try {
+      staleSearch = await searchPaymentTimes(fixtureName, '', '');
+    } finally {
+      axios.get = realAxiosGet;
+    }
+    if (!/showing cached data from/i.test(staleSearch.summary)) {
+      fail(
+        'Step 6',
+        `searchPaymentTimes()'s summary did not include the stale-data caveat.\n` +
+        `Got: "${staleSearch.summary}"`
+      );
+      failed++;
+    } else {
+      pass('Step 6', `searchPaymentTimes() summary correctly surfaces the caveat: "${staleSearch.summary}"`);
+      passed++;
+    }
   }
 
   summary(passed, failed);
