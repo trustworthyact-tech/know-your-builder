@@ -9,6 +9,34 @@ let launchPromise = null;
 let idleTimer = null;
 const IDLE_TIMEOUT_MS = 120_000;
 
+// Every scraper that needs a browser (11 of them as of 2026-08) shares this one
+// Chromium instance. Several do CAPTCHA solves or sit in a WAF-challenge wait loop
+// with a hard ~15s timeout — when `server/index.js` fires all scrapers concurrently
+// via Promise.all, too many of those loops running at once starve each other of
+// CPU and the WAF challenge doesn't clear in time, so unrelated registers (e.g. SA
+// licence + ASIC insolvency + ATO debt) fail together even though each works fine
+// in isolation. Gate concurrent pages here — the one place all scrapers pass
+// through — instead of touching every call site.
+const MAX_CONCURRENT_PAGES = Number(process.env.PUPPETEER_MAX_CONCURRENT_PAGES) || 3;
+let activePageCount = 0;
+const pageWaitQueue = [];
+
+function acquirePageSlot() {
+  if (activePageCount < MAX_CONCURRENT_PAGES) {
+    activePageCount++;
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => pageWaitQueue.push(resolve));
+}
+
+// Hands the freed slot straight to the next waiter rather than decrementing —
+// keeps activePageCount accurate without a separate wake-up + re-acquire step.
+function releasePageSlot() {
+  const next = pageWaitQueue.shift();
+  if (next) next();
+  else activePageCount--;
+}
+
 function scheduleClose() {
   clearTimeout(idleTimer);
   idleTimer = setTimeout(async () => {
@@ -17,6 +45,27 @@ function scheduleClose() {
       browserInstance = null;
     }
   }, IDLE_TIMEOUT_MS);
+}
+
+// Wraps browser.newPage() so every existing call site (`browser.newPage()`) is
+// automatically concurrency-gated with no changes required elsewhere. The slot
+// releases when the page closes — scrapers already close their page in a
+// `finally` block, so this piggybacks on that without any new cleanup burden.
+function attachPageGate(b) {
+  const originalNewPage = b.newPage.bind(b);
+  b.newPage = async (...args) => {
+    await acquirePageSlot();
+    let page;
+    try {
+      page = await originalNewPage(...args);
+    } catch (err) {
+      releasePageSlot();
+      throw err;
+    }
+    page.once('close', releasePageSlot);
+    return page;
+  };
+  return b;
 }
 
 async function getBrowser() {
@@ -42,6 +91,7 @@ async function getBrowser() {
     executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
     args: launchArgs,
   }).then((b) => {
+    attachPageGate(b);
     browserInstance = b;
     launchPromise = null;
     b.on('disconnected', () => {
