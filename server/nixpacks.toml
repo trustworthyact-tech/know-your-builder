@@ -3,9 +3,11 @@
 # Node >=22.12.0 — the version require() gained the ability to load ESM synchronously.
 # The nixpkgs revision this nixpacks builder pins resolves nodejs_22 to 22.11.0, one
 # patch short, so require('puppeteer') silently fails at the ESM boundary and every
-# Puppeteer-based scraper crashes with ERR_REQUIRE_ESM. nodejs_24 clears the bar.
+# Puppeteer-based scraper crashes with ERR_REQUIRE_ESM. This pinned nixpkgs snapshot
+# tops out at nodejs_23 (23.2.0 — confirmed via its all-packages.nix) — no nodejs_24
+# exists at this revision, so that's the newest available and clears the bar.
 nixPkgs = [
-  "nodejs_24",
+  "nodejs_23",
   "chromium",
   "nss",
   "freetype",
