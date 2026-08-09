@@ -177,6 +177,33 @@ if (apiKey && acn) return searchViaDataApi(acn, apiKey);
 ```
 `searchViaDataApi` calls `GET https://data.asic.gov.au/api/v1/companies/{acn}/officers?includeFormer=true` and `GET .../charges` and maps to the standard `ResultItem` shape. The rest of the pipeline requires no changes.
 
+### Production Vercel env vars — Stripe/Google are placeholders (2026-08-03)
+
+`web` project's **Production** environment has real values for everything except `STRIPE_SECRET_KEY`,
+`STRIPE_WEBHOOK_SECRET`, `GOOGLE_CLIENT_ID`, and `GOOGLE_CLIENT_SECRET` — those four were empty
+placeholder strings from initial project setup, which went undetected for 75 days because the site was
+stuck on a stale pre-`instrumentation.ts`-validation build (see git log around `300ed16`/`7333718`). Once
+redeployed on current `main`, boot-time Zod validation (`.min(1)`) correctly started rejecting the empty
+values, 500-ing every request. Temporarily replaced with clearly-labeled non-empty placeholders
+(`placeholder-not-a-real-secret-*`) on 2026-08-03 to unblock the outage — these satisfy the Zod check but
+are not real credentials.
+
+Current behavior with placeholders in place:
+- **Google sign-in is visibly broken**: clicking "Continue with Google" redirects to Google's own
+  `invalid_client` error page. Fails loudly on Google's side before any app logic runs — no security risk,
+  but a broken button. Email/password registration and login still work normally.
+- **Stripe payments fail silently for the app**: `STRIPE_SECRET_KEY` being fake means any real payment
+  attempt will likely fail client-side at Stripe Elements/Checkout. If `STRIPE_WEBHOOK_SECRET` is ever
+  swapped to something real while `STRIPE_SECRET_KEY` stays fake (or vice versa), webhook signature
+  verification will fail silently and `PackBalance` will never be credited even though Stripe shows the
+  charge as successful — the two must be updated together, from the same Stripe mode (test vs live).
+
+To complete: get real values from Stripe Dashboard → Developers → API keys / Webhooks (create an endpoint
+at `https://check.trustworthypayments.com/api/payments/webhook` if one doesn't exist yet — prefer a
+Stripe **restricted key** scoped to PaymentIntents/Subscriptions over the full secret key) and Google Cloud
+Console → OAuth client, then in Vercel: `web` project → Settings → Environments → Production → update the
+four variables → redeploy (env var changes require a fresh deploy to take effect, per `vercel redeploy`).
+
 ---
 
 ---
