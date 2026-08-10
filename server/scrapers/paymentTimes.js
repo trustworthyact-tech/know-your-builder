@@ -5,6 +5,7 @@ const zlib  = require('zlib');
 const fs    = require('fs');
 const os    = require('os');
 const path  = require('path');
+const { getBrowser } = require('./browser');
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -19,7 +20,6 @@ const CACHE_DIR = (() => {
   return dir && fs.existsSync(dir) ? dir : os.tmpdir();
 })();
 const CACHE_PATH = path.join(CACHE_DIR, 'ptrr_register.xlsx');
-const ETAG_PATH  = path.join(CACHE_DIR, 'ptrr_register.etag');
 
 const HEADERS = {
   'User-Agent':
@@ -135,9 +135,47 @@ async function readCachedBuffer() {
   }
 }
 
+// The Azure Front Door WAF in front of this host blocks Node's own HTTP client
+// (axios) with a 406 on essentially every request — confirmed via direct side-by-side
+// testing to be TLS/client fingerprinting, not IP reputation or a transient issue, so
+// no amount of retrying or backoff via axios will ever get through. A real headless
+// Chromium instance (already used elsewhere in this codebase) is not fingerprinted the
+// same way and gets a clean 200 every time it's been tried. Chrome treats this file as
+// a download rather than a page load, which discards the in-memory response body
+// before Puppeteer can read it — so this lets Chrome actually save the file to a temp
+// directory via CDP's Page.setDownloadBehavior, then reads it back off disk.
+async function downloadViaPuppeteer(url) {
+  const browser = await getBrowser();
+  const page = await browser.newPage();
+  let dlDir;
+  try {
+    dlDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ptrr-dl-'));
+    const client = await page.createCDPSession();
+    await client.send('Page.setDownloadBehavior', { behavior: 'allow', downloadPath: dlDir });
+
+    // net::ERR_ABORTED is the expected outcome here — Chrome hands the response to
+    // its download manager instead of completing a normal navigation.
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60_000 }).catch(() => {});
+
+    const deadline = Date.now() + 60_000;
+    let downloadedFile = null;
+    while (Date.now() < deadline) {
+      const files = await fs.promises.readdir(dlDir);
+      const done = files.find((f) => !f.endsWith('.crdownload'));
+      if (done) { downloadedFile = path.join(dlDir, done); break; }
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    if (!downloadedFile) throw new Error('PTRR: Puppeteer download did not complete in time');
+
+    return await fs.promises.readFile(downloadedFile);
+  } finally {
+    await page.close().catch(() => {});
+    if (dlDir) await fs.promises.rm(dlDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 /**
- * Download the register Excel file, using ETag to avoid re-downloading
- * if the file hasn't changed since the last call.
+ * Download the register Excel file via Puppeteer (see downloadViaPuppeteer for why).
  *
  * Returns { buffer, stale, cachedAt }. `stale` is true when the live fetch failed
  * and a previously-cached copy was returned instead (`cachedAt` is that copy's
@@ -145,7 +183,8 @@ async function readCachedBuffer() {
  * fresh data. Throws only when the live fetch fails AND no cached copy exists.
  */
 async function doFetchRegisterBuffer() {
-  // Step 1: get current filename from update.js
+  // Step 1: get current filename from update.js — this endpoint isn't blocked,
+  // only the file download itself is, so plain axios is fine here.
   let fileName;
   try {
     const { data } = await axios.get(UPDATE_JS_URL, { headers: HEADERS, timeout: 10000 });
@@ -163,70 +202,28 @@ async function doFetchRegisterBuffer() {
 
   const url = DOWNLOAD_BASE + fileName;
 
-  // Step 2: conditional GET using stored ETag
-  const reqHeaders = { ...HEADERS, Accept: 'application/octet-stream' };
-  if (fs.existsSync(ETAG_PATH) && fs.existsSync(CACHE_PATH)) {
-    const storedEtag = (await fs.promises.readFile(ETAG_PATH, 'utf8')).trim();
-    if (storedEtag) reqHeaders['If-None-Match'] = storedEtag;
-  }
-
-  // The Azure Front Door WAF in front of this host intermittently 406s a well-formed
-  // request for no discernible reason (observed ~1 in 4 requests, no header combination
-  // avoids it reliably) — a same-request retry consistently succeeds. Retry a couple of
-  // times before giving up.
-  let resp;
-  let lastErr;
-  for (let attempt = 0; attempt < 5; attempt++) {
-    try {
-      resp = await axios.get(url, {
-        headers: reqHeaders,
-        responseType: 'arraybuffer',
-        timeout: 120000,
-        validateStatus: s => s === 200 || s === 304,
-      });
-      lastErr = null;
-      break;
-    } catch (e) {
-      lastErr = e;
-      // Only the 406 is the known-transient WAF pattern worth retrying — a
-      // different failure (timeout, DNS, 5xx) is unlikely to clear on a same-request
-      // retry, so stop immediately rather than burning the full backoff on it. Either
-      // way, fall through to the cache-fallback check below instead of rethrowing
-      // here directly — every failure type deserves a chance at the stale cache.
-      if (e.response?.status !== 406) break;
-      await new Promise(r => setTimeout(r, 3000 * (attempt + 1)));
-    }
-  }
-  if (lastErr) {
-    // All retries exhausted (or a non-retryable error hit) — fall back to whatever's
-    // cached rather than failing the whole search outright.
+  let buf;
+  try {
+    buf = await downloadViaPuppeteer(url);
+  } catch (err) {
     const cached = await readCachedBuffer();
     if (cached) return cached;
-    throw lastErr;
+    throw err;
   }
 
-  if (resp.status === 304 && fs.existsSync(CACHE_PATH)) {
-    // Not modified — cached copy is confirmed current, not stale.
-    const buffer = await fs.promises.readFile(CACHE_PATH);
-    return { buffer, stale: false, cachedAt: new Date() };
-  }
-
-  // New or updated file
-  const buf = Buffer.from(resp.data);
   try {
     await fs.promises.writeFile(CACHE_PATH, buf);
-    const etag = resp.headers['etag'] || resp.headers['ETag'] || '';
-    if (etag) await fs.promises.writeFile(ETAG_PATH, etag);
   } catch {
     // Cache write failure is non-fatal
   }
   return { buffer: buf, stale: false, cachedAt: new Date() };
 }
 
-// Concurrent /api/search requests hitting a cold cache would otherwise each fire an
-// independent download at the WAF simultaneously — exactly the kind of burst a
-// reputation-based blocker escalates against. Coalesce them into one in-flight
-// request, mirroring the pendingFetches dedup pattern in austlii.js.
+// Concurrent /api/search requests hitting a cold cache would otherwise each spin up
+// their own Puppeteer page/download for the same 24MB file — wasteful, and each page
+// already queues behind the shared concurrency gate in browser.js regardless. Coalesce
+// them into one in-flight request, mirroring the pendingFetches dedup pattern in
+// austlii.js.
 let inFlightFetch = null;
 
 async function fetchRegisterBuffer() {
