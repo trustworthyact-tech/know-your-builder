@@ -188,13 +188,18 @@ async function doFetchRegisterBuffer() {
       break;
     } catch (e) {
       lastErr = e;
-      if (e.response?.status !== 406) throw e;
+      // Only the 406 is the known-transient WAF pattern worth retrying — a
+      // different failure (timeout, DNS, 5xx) is unlikely to clear on a same-request
+      // retry, so stop immediately rather than burning the full backoff on it. Either
+      // way, fall through to the cache-fallback check below instead of rethrowing
+      // here directly — every failure type deserves a chance at the stale cache.
+      if (e.response?.status !== 406) break;
       await new Promise(r => setTimeout(r, 3000 * (attempt + 1)));
     }
   }
   if (lastErr) {
-    // All retries exhausted — fall back to whatever's cached rather than failing
-    // the whole search outright.
+    // All retries exhausted (or a non-retryable error hit) — fall back to whatever's
+    // cached rather than failing the whole search outright.
     const cached = await readCachedBuffer();
     if (cached) return cached;
     throw lastErr;
