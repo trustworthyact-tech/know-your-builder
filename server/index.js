@@ -172,6 +172,16 @@ app.post('/api/search', searchLimiter, async (req, res) => {
     return [...new Set([...(directors ?? []), ...asicDirectors])];
   }
 
+  // Directors + ABR trading/business names, combined — for scrapers that treat their
+  // "extra terms" parameter generically as more names to search under (AustLII, FWO),
+  // not just directors. resolveDirectors/resolveAlternateNames depend on different
+  // upstream promises (asicPromise vs abnPromise), so run them concurrently rather than
+  // awaiting serially.
+  async function resolveExtraSearchTerms() {
+    const [directorNames, alternateNames] = await Promise.all([resolveDirectors(), resolveAlternateNames()]);
+    return [...new Set([...directorNames, ...alternateNames])];
+  }
+
   const searches = [
     { key: 'abn', label: 'ABR — Business Register', fn: () => abnPromise },
     {
@@ -197,47 +207,47 @@ app.post('/api/search', searchLimiter, async (req, res) => {
     {
       key: 'austlii_federal',
       label: 'Federal Courts (AustLII)',
-      fn: async () => searchAustLII(companyName, await resolveDirectors(), 'federal'),
+      fn: async () => searchAustLII(companyName, await resolveExtraSearchTerms(), 'federal'),
     },
     {
       key: 'austlii_qld',
       label: 'QLD Courts & Tribunals (AustLII)',
-      fn: async () => searchAustLII(companyName, await resolveDirectors(), 'qld'),
+      fn: async () => searchAustLII(companyName, await resolveExtraSearchTerms(), 'qld'),
     },
     {
       key: 'austlii_nsw',
       label: 'NSW Courts & Tribunals (AustLII)',
-      fn: async () => searchAustLII(companyName, await resolveDirectors(), 'nsw'),
+      fn: async () => searchAustLII(companyName, await resolveExtraSearchTerms(), 'nsw'),
     },
     {
       key: 'austlii_vic',
       label: 'VIC Courts & Tribunals (AustLII)',
-      fn: async () => searchAustLII(companyName, await resolveDirectors(), 'vic'),
+      fn: async () => searchAustLII(companyName, await resolveExtraSearchTerms(), 'vic'),
     },
     {
       key: 'austlii_wa',
       label: 'WA Courts & Tribunals (AustLII)',
-      fn: async () => searchAustLII(companyName, await resolveDirectors(), 'wa'),
+      fn: async () => searchAustLII(companyName, await resolveExtraSearchTerms(), 'wa'),
     },
     {
       key: 'austlii_sa',
       label: 'SA Courts & Tribunals (AustLII)',
-      fn: async () => searchAustLII(companyName, await resolveDirectors(), 'sa'),
+      fn: async () => searchAustLII(companyName, await resolveExtraSearchTerms(), 'sa'),
     },
     {
       key: 'austlii_nt',
       label: 'NT Courts & Tribunals (AustLII)',
-      fn: async () => searchAustLII(companyName, await resolveDirectors(), 'nt'),
+      fn: async () => searchAustLII(companyName, await resolveExtraSearchTerms(), 'nt'),
     },
     {
       key: 'austlii_act',
       label: 'ACT Courts & Tribunals (AustLII)',
-      fn: async () => searchAustLII(companyName, await resolveDirectors(), 'act'),
+      fn: async () => searchAustLII(companyName, await resolveExtraSearchTerms(), 'act'),
     },
     {
       key: 'austlii_tas',
       label: 'TAS Courts & Tribunals (AustLII)',
-      fn: async () => searchAustLII(companyName, await resolveDirectors(), 'tas'),
+      fn: async () => searchAustLII(companyName, await resolveExtraSearchTerms(), 'tas'),
     },
     {
       key: 'paymentTimes',
@@ -257,7 +267,7 @@ app.post('/api/search', searchLimiter, async (req, res) => {
     {
       key: 'fwo',
       label: 'Fair Work Ombudsman — Enforcement Outcomes',
-      fn: async () => searchFWO(companyName, abn, await resolveDirectors()),
+      fn: async () => searchFWO(companyName, abn, await resolveExtraSearchTerms()),
     },
     {
       key: 'vicBpc',

@@ -177,6 +177,26 @@ if (apiKey && acn) return searchViaDataApi(acn, apiKey);
 ```
 `searchViaDataApi` calls `GET https://data.asic.gov.au/api/v1/companies/{acn}/officers?includeFormer=true` and `GET .../charges` and maps to the standard `ResultItem` shape. The rest of the pipeline requires no changes.
 
+### AustLII/FWO don't search asicExtract's associated companies (2026-08-11)
+
+Section 8.1 surfaces phoenix-detected companies via `asicExtract.js` (other companies the
+target entity's directors are/were involved with) alongside ABR business/trading names. AustLII
+and FWO now search the latter (via `resolveExtraSearchTerms()` in `server/index.js`, combining
+`resolveDirectors()` + `resolveAlternateNames()`) but not the former — litigation or enforcement
+history filed under a related/associated company name is still invisible to those two sections.
+
+Not done because `asicExtract` is a slow, CAPTCHA-gated ASIC lookup that AustLII/FWO don't
+currently depend on finishing — `resolveExtraSearchTerms()`'s two inputs both run in parallel
+with everything else already, so adding them cost no extra latency. Waiting on `asicExtract`
+instead would add a real sequential dependency and slow those 10 searches down.
+
+To complete: give `asicExtract`'s promise the same treatment as `asicPromise` — hoist it above
+the `searches` array (it's currently only invoked inside its own entry, `index.js:~310`), add a
+`resolveAssociatedCompanies()` helper that awaits it and extracts `title`/`metadata.ACN` from its
+results, and fold that into `resolveExtraSearchTerms()`. Also route those names through
+`stripCompanySuffix()` in `austlii.js` — associated companies will carry "Pty Ltd" suffixes just
+like the primary entity does.
+
 ### Production Vercel env vars — Stripe/Google are placeholders (2026-08-03)
 
 `web` project's **Production** environment has real values for everything except `STRIPE_SECRET_KEY`,

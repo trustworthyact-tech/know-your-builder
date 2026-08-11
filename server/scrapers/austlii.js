@@ -103,6 +103,21 @@ function escapeRegExp(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+// AustLII's method=auto search scores matches across every word in the query. Generic
+// company-type suffixes ("Pty Ltd" etc.) are extremely common across its historical case
+// corpus — old bulk documents (e.g. 1940s-70s wage-award gazettes listing hundreds of
+// "X Pty Ltd" employers) score artificially high on those words alone, crowding out the
+// entity's actual distinctive matches. Stripping the suffix before searching avoids diluting
+// relevance with words that don't actually identify the entity. Applied only for AustLII —
+// FWO's search behaves like a fuzzy relevance engine rather than exhibiting this same
+// AND-style dilution, so it's left untouched.
+const COMPANY_SUFFIX_RE = /\s+(pty\.?\s*ltd\.?|proprietary\s+limited|limited|ltd\.?|pty\.?)\s*$/i;
+function stripCompanySuffix(name) {
+  if (!name) return name;
+  const stripped = name.replace(COMPANY_SUFFIX_RE, '').trim();
+  return stripped || name; // don't return an empty string if stripping consumed everything
+}
+
 // Returns true when at least one distinctive word from `term` appears in `title`.
 // Prevents AustLII's word-OR search from returning cases that only share a
 // generic word (e.g. "Services") with the searched entity. Word-boundary match —
@@ -184,7 +199,12 @@ async function searchAustLII(companyName, directors = [], jurisdiction = 'federa
   const pathPrefix = JURISDICTION_PATH[jurisdiction] || '';
   const jLabel = JURISDICTION_LABELS[jurisdiction] || jurisdiction.toUpperCase();
 
-  const terms = [companyName, ...(directors || []).filter(Boolean)];
+  // Strip company suffixes from every term — directors' personal names pass through
+  // unaffected (the suffix regex won't match), while companyName and any trading/business
+  // names in `directors` (the caller may pass a combined list of extra search terms, not
+  // just directors) get de-diluted the same way.
+  const strippedCompanyName = stripCompanySuffix(companyName);
+  const terms = [strippedCompanyName, ...(directors || []).filter(Boolean).map(stripCompanySuffix)];
   const allResults = [];
 
   for (const term of terms) {
@@ -208,7 +228,7 @@ async function searchAustLII(companyName, directors = [], jurisdiction = 'federa
     return true;
   });
 
-  const primarySearchUrl = `https://www.austlii.edu.au/cgi-bin/sinosrch.cgi?method=auto&query=${encodeURIComponent(companyName)}&results=20`;
+  const primarySearchUrl = `https://www.austlii.edu.au/cgi-bin/sinosrch.cgi?method=auto&query=${encodeURIComponent(strippedCompanyName)}&results=20`;
 
   return {
     source: `${jLabel} Courts & Tribunals`,
