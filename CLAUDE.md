@@ -197,6 +197,74 @@ results, and fold that into `resolveExtraSearchTerms()`. Also route those names 
 `stripCompanySuffix()` in `austlii.js` — associated companies will carry "Pty Ltd" suffixes just
 like the primary entity does.
 
+### AustLII scraper is currently non-functional — Cloudflare block, not a bug (2026-08-12)
+
+All 9 `austlii.js` jurisdiction searches (`austlii_federal`/`austlii_qld`/etc.) currently return
+empty results in production. This is **not a regression from the 2026-08-11 trading-names/suffix-
+stripping change** (that change is correct and deployed) — AustLII is returning a hard Cloudflare
+block page ("Sorry, you have been blocked... You are unable to access austlii.edu.au") to every
+request from this server, confirmed both via ScraperAPI's standard proxy pool and directly via
+Puppeteer (the same technique that fixed the unrelated Payment Times WAF block — here it makes no
+difference, since this is a network-level block, not a Node/axios client-fingerprint issue).
+
+**This is very likely deliberate policy enforcement, not incidental bot protection.** AustLII's
+usage policy (`https://www.austlii.edu.au/austlii/copyright.html`) explicitly prohibits
+"spidering, scraping, crawling, mirroring, page framing, API access, bulk querying, automated
+agents, or other programmatic means" and states "where such activity is apparent or reasonably
+inferred, it will be blocked." **No permission is granted or implied except by a written
+agreement signed by AustLII** — contact `feedback@austlii.edu.au`. The policy also separately
+prohibits use of AustLII materials to train/operate AI or ML systems, which doesn't currently
+apply to how this app uses results (displayed directly to the user, not fed into any AI/ML
+pipeline) but would if that ever changed.
+
+**Alternatives investigated and ruled out:**
+- **ScraperAPI premium/ultra-premium proxy pools** — could plausibly get through (that's their
+  purpose), but the current ScraperAPI plan is Free tier and doesn't include access (confirmed via
+  a `403` explicitly stating "current plan does not allow... premium proxies" — Hobby, $49/mo,
+  would be required). Decided against pursuing this regardless of cost, since it would mean
+  deliberately engineering around a block AustLII put up specifically to enforce a stated
+  no-automation policy, not generic anti-bot measures.
+- **Open Australian Legal Corpus** (`huggingface.co/datasets/isaacus/open-australian-legal-corpus`)
+  — a legitimately-licensed (CC BY 4.0), explicitly-permissioned static dataset that doesn't touch
+  AustLII at all. Ruled out as a live replacement: the underlying corpus-building tool's most
+  recent release is v3.1.2 (May 2024, per its GitHub releases) — over two years stale as of this
+  writing — and its case-law coverage is concentrated in Federal Court/High Court/NSW Caselaw,
+  narrower than AustLII's current 9-jurisdiction sweep. Could be worth revisiting as a
+  *supplementary* historical-background layer, not as the primary live-detection mechanism, since
+  self-hosting it would also require a large (~1.47B token) dataset download and a new local
+  search index — a much bigger lift than anything else in this list.
+- **Scraping each of the 9 courts/tribunals directly instead of via AustLII** — spot-checked 4 of
+  9 jurisdictions, not a clean fix: NSW Caselaw has its own robots-exclusion restriction on
+  automated indexing; Federal Court's scraping permission is also a negotiated, case-by-case
+  arrangement (same restrictive posture as AustLII); Victoria's own Supreme Court site points
+  users to **AustLII** for full judgment text (no solid direct alternative for that jurisdiction).
+  Would also mean building up to 9 separate scrapers instead of one parameterized one. Not
+  pursued further, but only 4 of 9 jurisdictions were actually checked — QLD, WA, SA, NT, ACT, TAS
+  remain unresearched if this gets revisited.
+
+**Two live paths forward, neither implemented yet:**
+1. **Request written permission** — a draft inquiry email to `feedback@austlii.edu.au` exists
+   (not sent as of this writing), framing the actual use case (targeted, low-volume,
+   entity-specific lookups triggered by an end user's own search, not bulk scraping/mirroring/AI
+   training) against what their policy is clearly guarding against. If granted, AustLII would
+   likely specify a particular technical access method (API key, IP allowlist, etc.) rather than
+   just blessing the current proxy-based scraping — expect a new integration, not just an unblock.
+2. **Replace the AustLII scraper with a manual "search AustLII yourself" link**, following the
+   existing `links.js` pattern (`server/scrapers/links.js` — "not a scraper... no HTTP calls").
+   Fully compliant (a human clicking through and searching themselves is exactly what AustLII's
+   policy permits) and free, but narrows automated coverage. Requires a matching change to how
+   section 8.5's risk badge is computed (`ReportContent.tsx:376-383`, `s85Risk` /
+   `deriveRiskLevel`) — currently `isAllErrored([...austliiResults.map(status), fwo.status,
+   qbcc.status])` falls back to `'clear'` unless *every* input errors, so a `links.js`-style
+   AustLII entry (synthetic `status: 'done'`, zero results) would silently read as "checked all 9
+   jurisdictions, found nothing" rather than "not checked." To fix: drop AustLII from that
+   `isAllErrored` array and from `courtHits`/`courtItems` entirely (base the badge and count on
+   FWO + QBCC adjudication only, which still work), and surface the AustLII link via the
+   `supplementalLinks` prop instead, so it's clearly separate from the automated result set.
+
+In the meantime, FWO and QBCC adjudication results are unaffected and continue to feed section
+8.5 normally — only AustLII's slice of court/tribunal coverage is currently missing.
+
 ### Production Vercel env vars — Stripe/Google are placeholders (2026-08-03)
 
 `web` project's **Production** environment has real values for everything except `STRIPE_SECRET_KEY`,
