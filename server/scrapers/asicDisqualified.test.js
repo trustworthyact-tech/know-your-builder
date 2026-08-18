@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { searchASICDisqualified, parseDisqualifiedResults } = require('./asicDisqualified');
+const { searchASICDisqualified, parseDisqualifiedResults, checkDirector } = require('./asicDisqualified');
 const { row, table } = require('../tests/fixtures/adfDpnRow');
 
 // -------------------------------------------------------------------
@@ -121,4 +121,92 @@ test('searchASICDisqualified — no captcha key with empty string also degrades 
   const result = await searchASICDisqualified(['John Smith'], '');
   assert.equal(result.results.length, 0);
   assert.match(result.summary, /automated check unavailable/);
+});
+
+// -------------------------------------------------------------------
+// checkDirector — retry behaviour (network fully mocked via _fetchAdfDpnSearch)
+// -------------------------------------------------------------------
+
+test('checkDirector — succeeds on first attempt, no retry needed', async () => {
+  let calls = 0;
+  const fake = async () => {
+    calls++;
+    return table(row('DPN001', 'John Smith', 'Disqualified Person Notice', '01 Jan 2023', '01 Jan 2026', 'Melbourne VIC'));
+  };
+  const { matches, failed } = await checkDirector('John Smith', 'key', fake);
+  assert.equal(calls, 1);
+  assert.equal(failed, false);
+  assert.equal(matches.length, 1);
+});
+
+test('checkDirector — fails once, succeeds on retry', async () => {
+  let calls = 0;
+  const fake = async () => {
+    calls++;
+    if (calls === 1) throw new Error('2captcha timeout');
+    return table(row('DPN002', 'John Smith', 'Disqualified Person Notice', '01 Jan 2023', '01 Jan 2026', 'Melbourne VIC'));
+  };
+  const { matches, failed } = await checkDirector('John Smith', 'key', fake);
+  assert.equal(calls, 2);
+  assert.equal(failed, false);
+  assert.equal(matches.length, 1);
+});
+
+test('checkDirector — fails on every attempt reports failed:true, not a false clean', async () => {
+  let calls = 0;
+  const fake = async () => {
+    calls++;
+    throw new Error('ASIC page timeout');
+  };
+  const { matches, failed } = await checkDirector('John Smith', 'key', fake);
+  assert.equal(calls, 2, 'should retry exactly once before giving up');
+  assert.equal(failed, true);
+  assert.equal(matches.length, 0);
+});
+
+test('checkDirector — single-word name is a clean skip, not a failure, and never calls the fetcher', async () => {
+  let calls = 0;
+  const fake = async () => { calls++; return ''; };
+  const { matches, failed } = await checkDirector('Smith', 'key', fake);
+  assert.equal(calls, 0);
+  assert.equal(failed, false);
+  assert.equal(matches.length, 0);
+});
+
+// -------------------------------------------------------------------
+// searchASICDisqualified — failure vs genuine-negative aggregation
+// (checkDirector fully mocked via _checkDirector)
+// -------------------------------------------------------------------
+
+test('searchASICDisqualified — genuine clean (checked, no failures) reads as "no records found"', async () => {
+  const fakeCheck = async () => ({ matches: [], failed: false });
+  const result = await searchASICDisqualified(['John Smith'], 'key', fakeCheck);
+  assert.equal(result.results.length, 0);
+  assert.match(result.summary, /checked — no disqualification records found/);
+  assert.doesNotMatch(result.summary, /check failed/);
+});
+
+test('searchASICDisqualified — check failure reads as "check failed", not a false clean', async () => {
+  const fakeCheck = async () => ({ matches: [], failed: true });
+  const result = await searchASICDisqualified(['Veronica Roberts'], 'key', fakeCheck);
+  assert.equal(result.results.length, 0);
+  assert.match(result.summary, /check failed after retry/);
+  assert.match(result.summary, /verify manually/);
+  assert.doesNotMatch(result.summary, /no disqualification records found/);
+});
+
+test('searchASICDisqualified — matches found even when a different director\'s check failed', async () => {
+  const fakeCheck = async (name) => {
+    if (name === 'Veronica Roberts') {
+      return {
+        matches: [{ title: 'VERONICA ROBERTS — disqualified from managing corporations', metadata: { 'Director Name': 'VERONICA ROBERTS' } }],
+        failed: false,
+      };
+    }
+    return { matches: [], failed: true };
+  };
+  const result = await searchASICDisqualified(['Veronica Roberts', 'Some Other Person'], 'key', fakeCheck);
+  assert.equal(result.results.length, 1);
+  assert.match(result.summary, /1 director\(s\) found/);
+  assert.match(result.summary, /could not be checked/);
 });

@@ -159,6 +159,20 @@ HomeScreen → SearchingScreen → ReportScreen
 
 **PDF cookie forwarding**: check `__Secure-next-auth.session-token` first (HTTPS), fall back to `next-auth.session-token` (HTTP/dev).
 
+**Captcha-gated per-item checks must distinguish a failed attempt from a genuine negative** —
+established in `asicDisqualified.js`'s `checkDirector()` (fixed 2026-08-18) after a real report
+showed "no disqualification records found" for a director who was confirmed disqualified. The
+captcha-solve → page-fetch → parse sequence is slow enough under normal conditions (33s–120s+
+observed for the identical query back to back) that a transient failure is a realistic outcome,
+not an edge case. Swallowing that failure into an empty result is indistinguishable from a real
+"checked, found nothing" — a silent false negative. Pattern: retry once (`MAX_ATTEMPTS = 2`),
+return `{ matches, failed }` rather than a bare array, and surface `failed` in the summary text
+("check failed after retry, verify manually" vs. "checked — no ... found"). Both `checkDirector`
+and `searchASICDisqualified` take an injectable last param (`_fetchAdfDpnSearch`, `_checkDirector`)
+so this is unit-testable without hitting the network — same pattern as `captcha.js`'s `_http`.
+Worth applying to other captcha-gated per-item scrapers (`asicExtract.js`, SA/TAS licence
+registers) if the same silent-failure shape turns up there.
+
 ---
 
 ## Incomplete work
@@ -264,6 +278,70 @@ pipeline) but would if that ever changed.
 
 In the meantime, FWO and QBCC adjudication results are unaffected and continue to feed section
 8.5 normally — only AustLII's slice of court/tribunal coverage is currently missing.
+
+### `resolveDirectors()` is currently starved — ASIC director discovery is broken platform-wide (2026-08-13)
+
+**Confirmed via a real production report**: a search for CONSTRUCTION VICTORIA PROPRIETARY
+LIMITED (ACN 616327863) came back entirely clean, despite director Veronica Roberts being on
+the ASIC Disqualified Persons Register (order 03/09/2025, expires 02/09/2030 — live-verified,
+see below). The report showed clean not because any check failed loudly, but because **no
+director name ever reached the checks that would have caught it.**
+
+`resolveDirectors()` (`server/index.js:166`) is `[...new Set([...(directors ?? []), ...asicDirectors])]`
+— the union of whatever the searcher typed into the form and whatever `asic.js` discovers. At
+least 10 scrapers depend on its output: `asicDisqualified`, `asicExtract`, `qbcc`, `vicBpc`,
+`vicVbaLicence`, `waBuildingEnergy`, `nswFairTrading`, `ntBuildingPractitioners`, `actLicences`,
+`waLicenceRegister`, `saLicenceRegister`, `tasLicenceRegister`, and `afsaNpii`. If nobody types
+the director's name in manually (the typical case — a homeowner searching a builder rarely knows
+director names upfront), every one of those depends entirely on `asic.js` finding them.
+
+**Confirmed live against production Railway env (`CAPTCHA_API_KEY` and `SCRAPERAPI_KEY` are both
+set — this is not a missing-key problem):**
+
+- `searchASICDisqualified(['Veronica Roberts'], <key>)` — **works correctly.** Found all 5
+  DPN register entries in ~33s when given her name directly. The disqualified-persons parser
+  and matching logic are fine; see also the [ASIC_DISQUALIFIED_TEST_FIX_PLAN.md](../ASIC_DISQUALIFIED_TEST_FIX_PLAN.md)
+  fix earlier in the week — unrelated to this bug, that was stale test fixtures only.
+- `searchASIC('CONSTRUCTION VICTORIA PROPRIETARY LIMITED', '60616327863', '616327863', <key>)`
+  (i.e. searched by ACN, as the original report almost certainly was) — found the company record
+  but returned **zero directors** and every metadata field blank (`Status: ""`, `Type: ""`, etc.).
+  Root cause is in the code itself, not a live-site fluke: the ACN-search branch
+  (`server/scrapers/asic.js:232-263`, the "inline detail page" fallback used when ASIC Connect
+  renders the detail page directly on the search results rather than a list) **never calls
+  `parseDirectors()` at all**. A comment already at `asic.js:236-239` explains why: *"ASIC Connect
+  no longer exposes a free-access officer/director listing — director info requires a paid
+  'Roles and relationship extract' ($23 on ASIC). Directors are retrieved from
+  `ASIC_DATA_API_KEY` fallback below if set."* That fallback (`fetchFromDataApi`, `asic.js:270-279`)
+  only runs `if (results.length === 0)` — and since the company item itself was already pushed,
+  `results.length` is 1, so the fallback doesn't even fire in this branch. `ASIC_DATA_API_KEY` is
+  also **not set** in Railway (confirmed via `railway variables --kv`), so it wouldn't help yet
+  regardless.
+- `searchASIC('CONSTRUCTION VICTORIA PROPRIETARY LIMITED', '', '', <key>)` (name-only, no ACN) —
+  returned **zero results entirely**, not even the company record. This is a second, distinct
+  failure from the ACN-branch one above (different code path — `parseSearchResults` found no
+  `matches` at all) and is **not yet root-caused**. Worth checking whether ASIC Connect's
+  `OrgAndBusNm` search behaviour changed (exact-match requirement? wildcard handling?) — same
+  category of live-site drift as the AustLII Cloudflare block and the Payment Times column-shift,
+  but not yet confirmed which.
+
+**Net effect:** right now, ASIC-based director discovery contributes nothing to any search,
+regardless of whether it's entered by ACN or by name. Every director-dependent scraper listed
+above is silently degraded to "only checks whatever the user manually typed" — which for most
+users is nothing. This long predates today and is very likely affecting reports beyond this one
+case; it was simply never noticed because degradation is silent (see also: `riskGrouper.ts` only
+checks `results.length`, never `summary`/`status`, so a starved check and a confirmed-clean check
+render identically — a related but separate gap worth fixing alongside this one).
+
+**Not yet done:**
+- Root-cause the name-only search returning zero matches.
+- Decide the director-discovery strategy going forward: revive `parseDirectors()` against
+  whatever markup the ACN detail-page path currently renders (if the data is present but just
+  unparsed — not yet checked), fully commit to `ASIC_DATA_API_KEY` as the real fix (requires
+  provisioning the key, same as the Phase 7c gap above, which already documents the branch to add
+  it under), or some combination.
+- Once directors are flowing again, separately fix `riskGrouper.ts`/`ReportContent.tsx` to
+  surface "check unavailable" as its own visible state distinct from "checked, found nothing" —
+  raised earlier this session, not yet implemented.
 
 ### Production Vercel env vars — Stripe/Google are placeholders (2026-08-03)
 

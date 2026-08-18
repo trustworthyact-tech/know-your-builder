@@ -98,20 +98,37 @@ function parseDisqualifiedResults(html, directorName, searchUrl) {
   return matches;
 }
 
-async function checkDirector(directorName, captchaApiKey) {
+// Returns { matches, failed }. `failed: true` means the attempt(s) errored out
+// (captcha timeout, ASIC page hiccup, etc.) — distinct from a genuine zero-match
+// result, so callers can tell "confirmed clean" apart from "couldn't check."
+// A name that can't be split into surname + given name is not a failure — it's
+// a name ASIC's DPN form can't search on at all, so it's reported as clean.
+const MAX_ATTEMPTS = 2;
+
+// _fetchAdfDpnSearch is injectable so tests can simulate transient failures
+// and retries without touching the network or 2captcha.
+async function checkDirector(directorName, captchaApiKey, _fetchAdfDpnSearch = fetchAdfDpnSearch) {
   const searchUrl = buildSearchUrl(directorName);
-  try {
-    const { surname, given } = splitName(directorName);
-    if (!surname || !given) return [];
-    const html = await fetchAdfDpnSearch(surname, given, captchaApiKey);
-    return parseDisqualifiedResults(html, directorName, searchUrl);
-  } catch (err) {
-    console.warn(`[asicDisqualified] checkDirector failed for "${directorName}":`, err.message);
-    return [];
+  const { surname, given } = splitName(directorName);
+  if (!surname || !given) return { matches: [], failed: false };
+
+  let lastErr;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const html = await _fetchAdfDpnSearch(surname, given, captchaApiKey);
+      return { matches: parseDisqualifiedResults(html, directorName, searchUrl), failed: false };
+    } catch (err) {
+      lastErr = err;
+      console.warn(`[asicDisqualified] checkDirector attempt ${attempt}/${MAX_ATTEMPTS} failed for "${directorName}":`, err.message);
+    }
   }
+  console.warn(`[asicDisqualified] checkDirector giving up for "${directorName}" after ${MAX_ATTEMPTS} attempts:`, lastErr?.message);
+  return { matches: [], failed: true };
 }
 
-async function searchASICDisqualified(directors, captchaApiKey) {
+// _checkDirector is injectable so searchASICDisqualified's aggregation/summary
+// logic can be tested independently of checkDirector's own retry behaviour.
+async function searchASICDisqualified(directors, captchaApiKey, _checkDirector = checkDirector) {
   if (!directors || directors.length === 0) {
     return {
       source: 'ASIC — Disqualified Persons Register',
@@ -138,8 +155,22 @@ async function searchASICDisqualified(directors, captchaApiKey) {
   const checked = directors.filter(Boolean).slice(0, 6);
   const firstUrl = checked[0] ? buildSearchUrl(checked[0]) : DPN_FALLBACK_URL;
 
-  const perDirector = await Promise.all(checked.map((d) => checkDirector(d, captchaApiKey)));
-  for (const matches of perDirector) allMatches.push(...matches);
+  const perDirector = await Promise.all(checked.map((d) => _checkDirector(d, captchaApiKey)));
+  let anyFailed = false;
+  for (const { matches, failed } of perDirector) {
+    allMatches.push(...matches);
+    if (failed) anyFailed = true;
+  }
+
+  let summary;
+  if (allMatches.length > 0) {
+    summary = `${allMatches.length} director(s) found on the ASIC disqualified persons register`;
+    if (anyFailed) summary += ' — one or more other directors could not be checked, verify manually via ASIC Connect';
+  } else if (anyFailed) {
+    summary = `${checked.length} director(s) — check failed after retry, verify manually via ASIC Connect`;
+  } else {
+    summary = `${checked.length} director(s) checked — no disqualification records found`;
+  }
 
   return {
     source: 'ASIC — Disqualified Persons Register',
@@ -147,11 +178,8 @@ async function searchASICDisqualified(directors, captchaApiKey) {
     category: 'identity',
     results: allMatches,
     searchUrl: firstUrl,
-    summary:
-      allMatches.length > 0
-        ? `${allMatches.length} director(s) found on the ASIC disqualified persons register`
-        : `${checked.length} director(s) checked — no disqualification records found`,
+    summary,
   };
 }
 
-module.exports = { searchASICDisqualified, parseDisqualifiedResults };
+module.exports = { searchASICDisqualified, parseDisqualifiedResults, checkDirector };
