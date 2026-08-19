@@ -343,6 +343,70 @@ render identically — a related but separate gap worth fixing alongside this on
   surface "check unavailable" as its own visible state distinct from "checked, found nothing" —
   raised earlier this session, not yet implemented.
 
+### asicDisqualified's DPN check still silently misses hits under real concurrent search load (2026-08-19)
+
+Follow-up to the two fixes below (`d860975`, `ed576a4`), both already deployed and confirmed
+correct in isolation — this entry is about a third, still-open failure mode that only reproduces
+under real search load, plus a false start that was tried and reverted the same session.
+
+**Trigger**: after landing `d860975` (`checkDirector` retry + honest failure reporting) and
+`ed576a4` (`fetchAdfDpnSearch` throws if the DPN search POST never actually fired), a real user
+report for CONSTRUCTION VICTORIA PROPRIETARY LIMITED / Veronica Roberts *still* showed "1
+director(s) checked — no disqualification records found" — the exact false negative both fixes
+targeted. Confirmed via a direct `curl -N` to the production `/api/search` endpoint (not an
+isolated function call — this matters, see below): `asicDisqualified` completed normally with
+`results: []` and no failure signal, meaning `fetchAdfDpnSearch` didn't throw either. So the
+search POST likely *did* fire this time — something after that point (page not fully rendered
+when `page.content()` was captured) is the remaining gap.
+
+**False start, tried and reverted — do not retry this approach without new evidence**: the
+next hypothesis was that `waitForNetworkIdle({ timeout: 20_000 }).catch(() => {})` was silently
+swallowing a stalled/incomplete render the same way the POST-injection check used to swallow an
+unfired POST, so `b2eff20` made that timeout throw instead (raised to 30s). Live-verified
+*wrong*, immediately: an isolated call that had twice succeeded before this change (found all 5
+DPN entries, ~70–150s) then failed both retry attempts with `Timed out after waiting 30000ms` —
+with zero other scrapers running, no concurrency involved at all. This ADF page apparently never
+reaches true `networkidle` (most likely a background poll/heartbeat keeping a connection open
+indefinitely), so gating on it turned a working-if-fragile check into an always-failing one.
+Reverted in `5b4e3a8`, live-confirmed restored (found all 5 entries again, one attempt hit a
+genuine transient `Protocol error: Target closed` and the retry correctly recovered it — the
+`d860975` retry logic working exactly as intended).
+
+**Net state as of this commit**: `d860975` and `ed576a4` are deployed and each independently
+verified correct. The specific false negative reported in the screenshot is *not yet
+root-caused* — reverting the network-idle change only restores known-good isolated behaviour, it
+doesn't explain why the full concurrent `/api/search` run still produced a false "clean" with
+`ed576a4` alone in place. The working theory (not yet verified) is that under real load the page
+*is* fully rendered by the time `page.content()` is captured, just not with what the parser
+expects — worth capturing an actual HTML snapshot from a failing run to check.
+
+**Separate, likely-related finding from the same full-search test**: in that same `/api/search`
+run, four other scrapers — `qbcc`, `vicBpc`, `waLicenceRegister`, `asicExtract` — never emitted a
+`done` or `error` line at all; they're stuck at `"status":"searching"` forever in the NDJSON
+output, yet the HTTP response still closed cleanly (`curl` exit 0). Every entry in the `searches`
+array in `index.js:340-351` is wrapped in try/catch and always calls `send(...)`, so a promise
+that neither resolves nor rejects shouldn't be possible from that code alone — either an
+infrastructure-level timeout (Railway edge/proxy) is truncating the streamed response mid-flight
+before all ~30 scrapers finish, or `getBrowser()`'s shared Chromium instance is genuinely hanging
+some pages indefinitely under this much concurrent load (recall `browser.js`'s own comment:
+`MAX_CONCURRENT_PAGES` was added specifically because "unrelated registers fail together" under
+concurrent `Promise.all` load — this may be the same class of problem, more severe). **Not
+investigated yet** — this could easily be the real explanation for the `asicDisqualified` false
+negative too (a hung/starved page returning stale `page.content()`), rather than a fourth
+distinct bug.
+
+**Not yet done:**
+- Capture a real HTML snapshot from a failing (not isolated) run to see what `page.content()`
+  actually contains when this happens — currently guessing blind.
+- Root-cause the four scrapers that never finish under full concurrent load: infra timeout vs.
+  genuinely hung Puppeteer pages. If it's the browser hanging, `MAX_CONCURRENT_PAGES` (currently
+  3) and/or the various per-scraper Puppeteer timeouts in `browser.js` likely need retuning for
+  the actual number of browser-dependent scrapers this app now runs concurrently (11+ as of the
+  comment at `browser.js:11`).
+- If it does turn out to be "rendered, but with the wrong content," build a positive completion
+  check for `fetchAdfDpnSearch` (wait for the actual results table or an explicit ADF no-results
+  marker to appear) instead of relying on network-idle timing at all.
+
 ### Production Vercel env vars — Stripe/Google are placeholders (2026-08-03)
 
 `web` project's **Production** environment has real values for everything except `STRIPE_SECRET_KEY`,
