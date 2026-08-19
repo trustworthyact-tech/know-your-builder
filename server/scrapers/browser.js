@@ -265,9 +265,6 @@ async function fetchAdfDpnSearch(surname, givenName, captchaApiKey) {
     let clickErr = null;
     await page.click(DPN_GO_BTN).catch((err) => { clickErr = err; });
 
-    await page.waitForNetworkIdle({ timeout: 20_000 }).catch(() => {});
-    await new Promise((r) => setTimeout(r, 2_000));
-
     // Under concurrent load the Go button can be not-yet-ready when clicked, or the
     // click can land but ADF's POST never fires in time — either way `injected` stays
     // false and page.content() is just the untouched search form. That parses as a
@@ -279,6 +276,16 @@ async function fetchAdfDpnSearch(surname, givenName, captchaApiKey) {
           (clickErr ? ` (Go button click failed: ${clickErr.message})` : ' (Go button clicked but no POST intercepted)')
       );
     }
+
+    // Previously this timeout was swallowed via .catch(() => {}) — under the same
+    // concurrent-search resource contention, the page can still be mid-render (real
+    // results or a real "no results" state not yet painted) when that timeout fires.
+    // page.content() then returns a partial DOM that also parses as "zero matches",
+    // a second false negative that never throws. A stalled render is exactly as
+    // untrustworthy as an unsubmitted POST, so it gets the same treatment: throw
+    // instead of trusting whatever's on the page yet.
+    await page.waitForNetworkIdle({ timeout: 30_000 });
+    await new Promise((r) => setTimeout(r, 2_000));
 
     return await page.content();
   } finally {
