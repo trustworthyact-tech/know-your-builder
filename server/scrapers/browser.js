@@ -277,14 +277,14 @@ async function fetchAdfDpnSearch(surname, givenName, captchaApiKey) {
       );
     }
 
-    // Previously this timeout was swallowed via .catch(() => {}) — under the same
-    // concurrent-search resource contention, the page can still be mid-render (real
-    // results or a real "no results" state not yet painted) when that timeout fires.
-    // page.content() then returns a partial DOM that also parses as "zero matches",
-    // a second false negative that never throws. A stalled render is exactly as
-    // untrustworthy as an unsubmitted POST, so it gets the same treatment: throw
-    // instead of trusting whatever's on the page yet.
-    await page.waitForNetworkIdle({ timeout: 30_000 });
+    // This page appears to never reach true network idle (likely a background
+    // poll/heartbeat) — making this timeout a hard failure (tried in a since-reverted
+    // change) turned a working check into an always-failing one, confirmed live:
+    // two isolated runs succeeded when this timeout was swallowed, then both retry
+    // attempts timed out at 30s once it wasn't. Left swallowed; the real fix for
+    // "page not actually done rendering yet" needs a positive content check
+    // (results table or an explicit ADF no-results marker), not a network-idle gate.
+    await page.waitForNetworkIdle({ timeout: 20_000 }).catch(() => {});
     await new Promise((r) => setTimeout(r, 2_000));
 
     return await page.content();
