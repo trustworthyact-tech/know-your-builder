@@ -428,17 +428,55 @@ investigated yet** — this could easily be the real explanation for the `asicDi
 negative too (a hung/starved page returning stale `page.content()`), rather than a fourth
 distinct bug.
 
-**Not yet done:**
-- Capture a real HTML snapshot from a failing (not isolated) run to see what `page.content()`
-  actually contains when this happens — currently guessing blind.
+**Not yet done (as of retirement — items 1 and 3 are now moot, specific to code that no longer
+exists; item 2, the concurrency issue, is real, separate, and promoted to its own entry below —
+see "Puppeteer-dependent scrapers systemically starved" further down):**
+- ~~Capture a real HTML snapshot from a failing (not isolated) run to see what `page.content()`
+  actually contains when this happens — currently guessing blind.~~ Moot — `fetchAdfDpnSearch` no
+  longer exists.
 - Root-cause the four scrapers that never finish under full concurrent load: infra timeout vs.
   genuinely hung Puppeteer pages. If it's the browser hanging, `MAX_CONCURRENT_PAGES` (currently
   3) and/or the various per-scraper Puppeteer timeouts in `browser.js` likely need retuning for
   the actual number of browser-dependent scrapers this app now runs concurrently (11+ as of the
   comment at `browser.js:11`).
-- If it does turn out to be "rendered, but with the wrong content," build a positive completion
-  check for `fetchAdfDpnSearch` (wait for the actual results table or an explicit ADF no-results
-  marker to appear) instead of relying on network-idle timing at all.
+- ~~If it does turn out to be "rendered, but with the wrong content," build a positive completion
+  check for `fetchAdfDpnSearch`~~ Moot — `fetchAdfDpnSearch` no longer exists.
+
+### Puppeteer-dependent scrapers systemically starved under real concurrent search load — now confirmed to affect non-Puppeteer scrapers too (2026-08-19)
+
+Follow-up to the "four scrapers never finish" finding in the superseded entry above, now with
+much more severe evidence from a full-search test run **after** the ASIC DPN migration landed
+(`c38220f`) — i.e. this is not caused by that migration; if anything the migration should have
+*reduced* load on the shared browser by one scraper, since the new `asicDisqualified` no longer
+touches Puppeteer at all.
+
+**Trigger**: a real production `/api/search` request (same company/director used throughout this
+investigation) completed (`curl` exit 0, clean-looking end of stream) with only **5 of 29**
+scrapers reaching `done` — all five (`links`, `modernSlavery`, `abn`, `atoDebt`, `paymentTimes`)
+are the non-Puppeteer ones. **All 24 that never finished were Puppeteer-dependent — including the
+new `asicDisqualified`, which no longer calls `getBrowser()` at all** (confirmed by reading
+`asicDpnDataset.js` — its only I/O is a plain `axios` call and `fs.readFile`/`fs.stat` against an
+already-warm local cache). That a scraper with zero Puppeteer dependency still failed to flush a
+result is the important new data point: this looks less like "Puppeteer pages hanging
+individually" and more like the whole Node process becoming too starved (CPU and/or memory, likely
+from ~15 concurrent Chromium instances) to get *any* pending callback scheduled in time —
+including a trivial `fs.readFile` — before an infrastructure-level timeout (Railway edge/proxy)
+cuts the connection. Severity looks worse than the "4 scrapers hung" state observed the previous
+session — either load has increased, or the earlier characterization was incomplete (that test
+predates this one, wasn't specifically checking for this pattern).
+
+**Not yet done** (supersedes/expands the equivalent item in the entry above):
+- Root-cause via Railway's own metrics (CPU/memory graphs for the `know-your-builder-server`
+  service) during a load spike, not just NDJSON output — need to know if this is CPU starvation,
+  memory pressure, or genuinely an infra-side proxy timeout independent of server load.
+- If it's resource starvation: `MAX_CONCURRENT_PAGES` (`browser.js`, currently 3) and/or the
+  Railway service's resource allocation (currently `hobby` plan, confirmed via `railway status
+  --json`) likely both need attention — reducing concurrent Puppeteer pages further and/or
+  upgrading the plan are the two levers, not mutually exclusive.
+- Consider whether Railway's proxy has a fixed request timeout shorter than a worst-case full
+  search currently takes, independent of server-side performance — would explain why the same
+  symptom (partial NDJSON, clean-looking stream end) recurs even as the specific scrapers
+  affected varies between runs.
 
 ### Production Vercel env vars — Stripe/Google are placeholders (2026-08-03)
 

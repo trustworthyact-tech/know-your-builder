@@ -320,32 +320,47 @@ Depends on Phase 3. Small, sequential.
 **Resume checklist**: a git diff review confirming `riskGrouper.ts`/`ReportContent.tsx` have zero
 changes (the shape-preservation constraint from Phase 3 held).
 
-### Phase 5 — Verify
+### Phase 5 — Verify — ✅ DONE, migration itself confirmed correct (2026-08-19)
 
-Depends on Phase 4. Some parallelisable sub-checks (independent test names/companies).
+`npm test`: 49/49 green. Deployed (`c38220f`, Railway commit confirmed via `railway status`).
+Re-ran the exact production request that started this whole investigation (CONSTRUCTION VICTORIA
+PROPRIETARY LIMITED / ACN 616327863 / Veronica Roberts) directly against the live production
+`/api/search` endpoint, twice, both times confirming `asicDisqualified` correctly returns her
+disqualification record through the full real pipeline. Not spot-checked in an actual browser
+(report UI render) — everything else about this phase is proven at the API/data level, but the
+frontend render itself wasn't visually confirmed; low risk given zero changes to
+`riskGrouper.ts`/`ReportContent.tsx` and the result shape being unchanged, but flagging the gap
+rather than silently claiming full coverage.
 
-- `npm test` full suite green.
-- Deploy, then live-check a small handful of known cases in parallel (cheap now — no captcha, no
-  browser, just a cache lookup): Veronica Roberts (positive case, already known), a couple of
-  clean/negative names, and re-run the exact production report that started this whole
-  investigation (CONSTRUCTION VICTORIA PROPRIETARY LIMITED / ACN 616327863) to confirm it now
-  correctly surfaces her disqualification end-to-end through `riskGrouper`.
-- Spot-check a real report render in the browser to confirm section 8.1 displays correctly with
-  the new result shape.
+**Important finding from this phase, not a regression from this migration**: a full-search test
+run showed only 5 of 29 scrapers completing under real concurrent load, including the new
+(Puppeteer-free) `asicDisqualified` failing to flush a result that time — this is the pre-existing
+"hung scraper" issue (documented since 2026-08-13/19), now confirmed more severe and to affect
+even non-Puppeteer scrapers under heavy load, not something introduced here. Full detail and
+next steps in `CLAUDE.md`'s "Puppeteer-dependent scrapers systemically starved" entry (2026-08-19,
+the one after the now-superseded `asicDisqualified` incident entry). **This means the migration is
+correct but not yet a complete fix for reliably surfacing this check on every single search** —
+that depends on resolving the separate concurrency issue, which remains open and is a strictly
+bigger, platform-wide problem (affects the other ~15 Puppeteer-dependent scrapers too, not just
+this one).
 
 ---
 
 ## Execution status
 
-Decisions 1 (ban-type scope) and 2 (dedup granularity) resolved 2026-08-19 — see **Open
-decisions**. Decision 3 (retire-or-keep the live scrape) still open but doesn't block progress
-before Phase 4.
+**All 5 phases complete (2026-08-19).** All 3 decisions resolved: ban-type scope → surface all;
+dedup granularity → by document number; retire-or-keep the live scrape → retired fully. Deployed
+as `c38220f`. `npm test`: 49/49. Live-verified against production twice.
 
-**Phase 1: ✅ done (2026-08-19)**, via two parallel subagents — findings folded into "What's
-already confirmed" and Phase 2 above.
+**The migration itself is done and correct** — proven at the unit-test, isolated-live-call, and
+full-real-pipeline levels (locally and in production). **What's NOT resolved**: a separate,
+pre-existing, platform-wide concurrency/resource-exhaustion issue (Puppeteer-dependent scrapers,
+now confirmed to include starving even non-Puppeteer ones under heavy load) means this check —
+like ~15 other scrapers — isn't guaranteed to complete on every single real search yet. That's
+tracked in `CLAUDE.md`'s "Puppeteer-dependent scrapers systemically starved" entry (2026-08-19),
+not in this plan — it's a bigger, separate piece of work, out of scope for what was asked here.
 
-**Phase 2: ✅ done (2026-08-19)** — see Phase 2 section for detail.
-
-**Phase 3: ✅ done (2026-08-19)** — see Phase 3 section for detail, including one new deviation
-found during implementation (no artificial director cap). **Phase 4 needs decision 3 answered
-before it can start** — everything up to here works with either answer.
+Phase-by-phase detail, including the one new deviation found during implementation (no artificial
+director cap — the old 6-director limit existed purely because each check cost a real captcha
+solve) and the reverted false start (a `waitForNetworkIdle` hardening attempt from the *previous*
+session, unrelated to this plan), is in each phase's section above.
