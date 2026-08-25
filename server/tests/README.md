@@ -38,8 +38,6 @@ Azure Front Door WAF false-positive on the register download — retried automat
 
 | File | Register | Browser needed | API key needed | Typical run time |
 |------|----------|----------------|----------------|------------------|
-| `test-asic-disqualified-parser.js` | ASIC DPN | No | No | < 5s |
-| `test-asic-disqualified-live.js` | ASIC DPN | Yes (Puppeteer) | CAPTCHA_API_KEY | ~60–90s |
 | `test-qbcc-excluded.js` | QBCC Excluded | Yes (Puppeteer) | No | ~3–5 min |
 | `test-vicbpc.js` | VBA Disciplinary | Yes (Puppeteer) | No | ~30–60s |
 | `test-wa-building.js` | WA B&E Enforcement | No | No | ~20–30s |
@@ -85,24 +83,25 @@ manual-lookup only in the app.
 ## Quick start
 
 ```bash
-# From repo root — runs all tests except the CAPTCHA-dependent live ASIC test:
+# From repo root:
 bash server/tests/run-all.sh
 
 # With verbose output for all tests (including passing ones):
 VERBOSE=1 bash server/tests/run-all.sh
 
 # Run an individual test:
-node server/tests/test-asic-disqualified-parser.js
 node server/tests/test-wa-building.js
-
-# Run ASIC live test (needs 2captcha key from server/.env):
-CAPTCHA_API_KEY=xxx node server/tests/test-asic-disqualified-live.js
 
 # Supply a known fixture name to skip auto-discovery:
 node server/tests/test-vicbpc.js --name "Richard Jones"
 node server/tests/test-wa-building.js --name "John Smith"
-CAPTCHA_API_KEY=xxx node server/tests/test-asic-disqualified-live.js --name "John Smith"
 ```
+
+The ASIC Disqualified Persons check (previously `test-asic-disqualified-parser.js` /
+`test-asic-disqualified-live.js`, a live ASIC Connect scrape) was retired 2026-08-19 in favour of
+ASIC's bulk dataset on data.gov.au. It's now covered by `npm test` in `server/`
+(`scrapers/asicDpnDataset.test.js`, `scrapers/asicDpnMatch.test.js`), not a standalone live-site
+script — see `ASIC_DPN_BULK_DATASET_MIGRATION_PLAN.md` at the repo root.
 
 All scripts must be run from **repo root** (or from `server/` — paths are resolved
 relative to `__dirname`).
@@ -347,25 +346,14 @@ After running, report:
 
 ---
 
-### Sub-agent prompt: ASIC DPN parser (no env vars needed)
+### ASIC Disqualified Persons check — retired live-scrape sub-agent prompts removed (2026-08-19)
 
-```
-Working directory: /Users/jameskwan/know-your-builder
-
-Run this test (from repo root):
-  node server/tests/test-asic-disqualified-parser.js
-
-This tests the HTML parser in server/scrapers/asicDisqualified.js with
-synthetic ASIC Connect DPN table HTML. No network or CAPTCHA required.
-
-After running, report:
-1. Full console output (verbatim)
-2. Overall PASS / FAIL
-3. If FAIL: read server/scrapers/asicDisqualified.js (specifically
-   parseDisqualifiedResults and isNameMatch) and identify the exact line(s)
-   causing the failure. Propose a targeted code fix. Re-run to confirm.
-4. Do NOT modify other files or scrapers.
-```
+The two sub-agent prompts previously here ("ASIC DPN parser" and "ASIC DPN live test", below)
+debugged `searchASICDisqualified`/`parseDisqualifiedResults`/`fetchAdfDpnSearch`, all retired in
+favour of ASIC's bulk dataset on data.gov.au. That check is now covered by `npm test`
+(`scrapers/asicDpnDataset.test.js`, `scrapers/asicDpnMatch.test.js`) — for debugging, read those
+test files and `ASIC_DPN_BULK_DATASET_MIGRATION_PLAN.md` rather than using a sub-agent prompt
+pattern designed for live-site scraping issues that no longer apply here.
 
 ---
 
@@ -454,37 +442,6 @@ After running, report:
 ```
 
 ---
-
-### Sub-agent prompt: ASIC DPN live test (needs CAPTCHA_API_KEY)
-
-```
-Working directory: /Users/jameskwan/know-your-builder
-
-First, read CAPTCHA_API_KEY from server/.env and export it:
-  export CAPTCHA_API_KEY=$(grep CAPTCHA_API_KEY server/.env | cut -d= -f2)
-
-Run this test:
-  node server/tests/test-asic-disqualified-live.js
-
-This test:
-  Step 1 — fetches ASIC media releases to discover a recently disqualified director
-  Step 2 — calls searchASICDisqualified([directorName], captchaKey) via Puppeteer
-  Step 3 — verifies the director appears in results
-
-Allow 60–90 seconds for CAPTCHA solving and ADF form submission.
-
-After running, report:
-1. Full console output (verbatim)
-2. Overall PASS / FAIL
-3. If any step fails, read server/scrapers/asicDisqualified.js and
-   server/scrapers/browser.js (fetchAdfDpnSearch) and identify the cause:
-   - Step 1 fail: ASIC news page structure changed (fixture discovery regex)
-   - Step 2 fail and "0 results": CAPTCHA solve failed, ADF POST not intercepted,
-     or HTML parsing broke (also run test-asic-disqualified-parser.js to isolate)
-   - Step 3 fail: name mismatch (isNameMatch / hidden span ordering)
-   Propose a targeted fix. Re-run to confirm.
-4. Do NOT modify test files.
-```
 
 ---
 

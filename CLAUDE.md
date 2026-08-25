@@ -165,13 +165,35 @@ showed "no disqualification records found" for a director who was confirmed disq
 captcha-solve → page-fetch → parse sequence is slow enough under normal conditions (33s–120s+
 observed for the identical query back to back) that a transient failure is a realistic outcome,
 not an edge case. Swallowing that failure into an empty result is indistinguishable from a real
-"checked, found nothing" — a silent false negative. Pattern: retry once (`MAX_ATTEMPTS = 2`),
-return `{ matches, failed }` rather than a bare array, and surface `failed` in the summary text
-("check failed after retry, verify manually" vs. "checked — no ... found"). Both `checkDirector`
-and `searchASICDisqualified` take an injectable last param (`_fetchAdfDpnSearch`, `_checkDirector`)
-so this is unit-testable without hitting the network — same pattern as `captcha.js`'s `_http`.
-Worth applying to other captcha-gated per-item scrapers (`asicExtract.js`, SA/TAS licence
-registers) if the same silent-failure shape turns up there.
+"checked, found nothing" — a silent false negative. Pattern: retry once, return `{ matches,
+failed }` rather than a bare array, and surface `failed` in the summary text ("check failed after
+retry, verify manually" vs. "checked — no ... found"), with an injectable last param on both the
+per-item check and the orchestrating function so this is unit-testable without hitting the
+network — same pattern as `captcha.js`'s `_http`. **The original example (`checkDirector` /
+`asicDisqualified.js`) was retired 2026-08-19** — that check moved to a bulk dataset entirely,
+see the convention below — but the pattern itself is still the right one for any *remaining*
+captcha-gated per-item scraper (`asicExtract.js`, SA/TAS licence registers) if the same
+silent-failure shape turns up there.
+
+**Prefer a bulk government open-data file over live-scraping a register, when one exists** —
+established migrating the ASIC Disqualified Persons check off ASIC Connect (2026-08-19; full
+record in `ASIC_DPN_BULK_DATASET_MIGRATION_PLAN.md`) after a captcha/browser-based live scrape
+proved to have at least three distinct silent-failure modes under real concurrent search load
+(see the superseded incident entry below). ASIC publishes several registers as bulk CSV/XLSX on
+data.gov.au, explicitly licensed for reuse (Creative Commons Attribution 3.0 Australia) — check
+there before building or maintaining a live scraper against an ASIC register. Pattern, mirrored
+from `paymentTimes.js`/`paymentTimesRefresh.js` (the original precedent for this shape) in
+`asicDpnDataset.js`/`asicDpnDatasetRefresh.js`: resolve the current file via a stable API/id (for
+data.gov.au, that's the CKAN Action API — still alive despite the site's Drupal migration, just
+moved to a `/data/api/3/action/...` prefix, e.g. `resource_show?id=<resource_id>`; don't predict
+a filename, dataset filenames can be dated and change independently of content refreshes) →
+download via plain `axios` (no browser needed for a plain file download, even when the live
+*search UI* for the same data is captcha-gated) → cache to disk (`*_CACHE_DIR` env var pointing
+at a Railway volume, falling back to `os.tmpdir()`) → background-refresh on an interval matching
+the dataset's own update cadence, with stale-cache fallback and honest `stale`/`cachedAt`
+surfaced in the result summary, never silently presented as fresh. In-flight request coalescing
+(a module-level singleton promise) avoids concurrent search requests each triggering their own
+redundant download.
 
 ---
 
@@ -343,7 +365,18 @@ render identically — a related but separate gap worth fixing alongside this on
   surface "check unavailable" as its own visible state distinct from "checked, found nothing" —
   raised earlier this session, not yet implemented.
 
-### asicDisqualified's DPN check still silently misses hits under real concurrent search load (2026-08-19)
+### asicDisqualified's DPN check still silently misses hits under real concurrent search load (2026-08-19) — SUPERSEDED (2026-08-19)
+
+**Superseded the same day**: rather than continue chasing reliability bugs in the live ASIC
+Connect scrape, it was retired entirely and replaced with ASIC's own bulk dataset on data.gov.au.
+`searchASICDisqualified`/`checkDirector`/`parseDisqualifiedResults` (`asicDisqualified.js`) and
+`fetchAdfDpnSearch` (`browser.js`) are gone — see `server/scrapers/asicDpnDataset.js` and
+`server/scrapers/asicDpnMatch.js` for the current implementation, and
+`ASIC_DPN_BULK_DATASET_MIGRATION_PLAN.md` (repo root) for the full migration record, including
+where the new approach deliberately deviates from the old one's filtering/dedup behaviour. Kept
+below as the historical record of *why* — the resource-exhaustion, unsubmitted-POST, and
+never-reaches-network-idle failure modes documented here are exactly what made a bulk dataset the
+better answer, not further patching.
 
 Follow-up to the two fixes below (`d860975`, `ed576a4`), both already deployed and confirmed
 correct in isolation — this entry is about a third, still-open failure mode that only reproduces

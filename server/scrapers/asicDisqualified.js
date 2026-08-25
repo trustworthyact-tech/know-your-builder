@@ -1,25 +1,18 @@
-const cheerio = require('cheerio');
-const { fetchAdfDpnSearch } = require('./browser');
+// Name-matching helpers for the ASIC Banned and Disqualified Persons check.
+//
+// The live ASIC Connect scrape that used to live in this file (searchASICDisqualified,
+// checkDirector, parseDisqualifiedResults, fetchAdfDpnSearch) was retired 2026-08-19 in
+// favour of ASIC's own bulk dataset on data.gov.au — see asicDpnDataset.js and
+// asicDpnMatch.js for the current implementation, and
+// ASIC_DPN_BULK_DATASET_MIGRATION_PLAN.md / CLAUDE.md's "Incomplete work" section
+// (2026-08-18/19 entries) for why. These helpers are still shared, unchanged, by
+// asicDpnMatch.js.
 
 const BASE = 'https://connectonline.asic.gov.au';
 const DPN_FALLBACK_URL = `${BASE}/RegistrySearch/faces/landing/panelSearch.jspx?searchType=DPNm`;
 
 function buildSearchUrl(name) {
   return `${DPN_FALLBACK_URL}&searchText=${encodeURIComponent(name)}`;
-}
-
-function splitName(fullName) {
-  const parts = fullName.trim().split(/\s+/);
-  // ASIC Connect officer tables use SURNAME-first format (e.g. "ROBERTS Digby").
-  // Detect: first word is 2+ uppercase letters only.
-  const firstWord = parts[0] || '';
-  if (parts.length > 1 && /^[A-Z]{2,}$/.test(firstWord)) {
-    return { surname: firstWord, given: parts.slice(1).join(' ') };
-  }
-  // Standard given-name-first: surname is the last word.
-  const surname = parts.pop() || '';
-  const given = parts.join(' ');
-  return { surname, given };
 }
 
 function normalise(s) {
@@ -34,152 +27,4 @@ function isNameMatch(resultName, queryName) {
   return qWords.length > 0 && qWords.every((w) => rWords.has(w));
 }
 
-// Exported so tests can call it directly against sample HTML.
-//
-// ADF renders the DPN results in a table with 7 columns:
-//   0: Select (checkbox)
-//   1: Family Name data cell — contains a hidden span with the DPN number,
-//      then a hidden span with the full name, plus visible sort links
-//   2: Given Name(s)
-//   3: Type (e.g. "Disqualified Person")
-//   4: Commenced date
-//   5: Ceased date
-//   6: Address
-function parseDisqualifiedResults(html, directorName, searchUrl) {
-  const $ = cheerio.load(html);
-  const matches = [];
-  const seen = new Set();
-
-  $('table tr').each((_, row) => {
-    const $cells = $(row).find('td');
-    if ($cells.length < 6) return;
-
-    // Type is at index 3; skip if it doesn't mention disqualification.
-    const typeText = $cells.eq(3).text().trim();
-    if (!/disqualif/i.test(typeText)) return;
-
-    // Full name is the text of the 2nd display:none span inside cell 1.
-    // ADF injects two hidden spans: [DPN number, full name].
-    const $nameCell = $cells.eq(1);
-    const hiddenSpans = $nameCell.find('span').filter(
-      (_, s) => /display\s*:\s*none/.test($(s).attr('style') || '')
-    );
-    const dpnNumber = hiddenSpans.eq(0).text().trim();
-    const fullName = hiddenSpans.eq(1).text().trim();
-    if (!fullName || !isNameMatch(fullName, directorName)) return;
-
-    // ADF's nested table structure causes $('table tr') to visit the same row
-    // once per ancestor <table>. Deduplicate by DPN number (first hidden span)
-    // or by a fullName+date composite key when the DPN number is absent.
-    const orderDate = $cells.eq(4).text().trim();
-    const expiryDate = $cells.eq(5).text().trim();
-    const dedupKey = dpnNumber || `${fullName}::${orderDate}::${expiryDate}`;
-    if (seen.has(dedupKey)) return;
-    seen.add(dedupKey);
-
-    const address = $cells.eq(6)?.text().trim() || '';
-
-    matches.push({
-      title: `${fullName} — disqualified from managing corporations`,
-      url: searchUrl,
-      date: expiryDate ? `Order expires: ${expiryDate}` : orderDate,
-      status: 'Disqualified',
-      description: address ? `Address: ${address}` : 'Listed on the ASIC Disqualified Persons Register',
-      metadata: {
-        'Director Name': fullName,
-        'Order Date': orderDate,
-        'Expiry Date': expiryDate,
-        Type: typeText,
-        Address: address,
-      },
-    });
-  });
-
-  return matches;
-}
-
-// Returns { matches, failed }. `failed: true` means the attempt(s) errored out
-// (captcha timeout, ASIC page hiccup, etc.) — distinct from a genuine zero-match
-// result, so callers can tell "confirmed clean" apart from "couldn't check."
-// A name that can't be split into surname + given name is not a failure — it's
-// a name ASIC's DPN form can't search on at all, so it's reported as clean.
-const MAX_ATTEMPTS = 2;
-
-// _fetchAdfDpnSearch is injectable so tests can simulate transient failures
-// and retries without touching the network or 2captcha.
-async function checkDirector(directorName, captchaApiKey, _fetchAdfDpnSearch = fetchAdfDpnSearch) {
-  const searchUrl = buildSearchUrl(directorName);
-  const { surname, given } = splitName(directorName);
-  if (!surname || !given) return { matches: [], failed: false };
-
-  let lastErr;
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    try {
-      const html = await _fetchAdfDpnSearch(surname, given, captchaApiKey);
-      return { matches: parseDisqualifiedResults(html, directorName, searchUrl), failed: false };
-    } catch (err) {
-      lastErr = err;
-      console.warn(`[asicDisqualified] checkDirector attempt ${attempt}/${MAX_ATTEMPTS} failed for "${directorName}":`, err.message);
-    }
-  }
-  console.warn(`[asicDisqualified] checkDirector giving up for "${directorName}" after ${MAX_ATTEMPTS} attempts:`, lastErr?.message);
-  return { matches: [], failed: true };
-}
-
-// _checkDirector is injectable so searchASICDisqualified's aggregation/summary
-// logic can be tested independently of checkDirector's own retry behaviour.
-async function searchASICDisqualified(directors, captchaApiKey, _checkDirector = checkDirector) {
-  if (!directors || directors.length === 0) {
-    return {
-      source: 'ASIC — Disqualified Persons Register',
-      jurisdiction: 'Federal',
-      category: 'identity',
-      results: [],
-      searchUrl: DPN_FALLBACK_URL,
-      summary: 'No directors identified for disqualification check',
-    };
-  }
-
-  if (!captchaApiKey) {
-    return {
-      source: 'ASIC — Disqualified Persons Register',
-      jurisdiction: 'Federal',
-      category: 'identity',
-      results: [],
-      searchUrl: DPN_FALLBACK_URL,
-      summary: `${directors.length} director(s) — automated check unavailable, verify manually via ASIC Connect`,
-    };
-  }
-
-  const allMatches = [];
-  const checked = directors.filter(Boolean).slice(0, 6);
-  const firstUrl = checked[0] ? buildSearchUrl(checked[0]) : DPN_FALLBACK_URL;
-
-  const perDirector = await Promise.all(checked.map((d) => _checkDirector(d, captchaApiKey)));
-  let anyFailed = false;
-  for (const { matches, failed } of perDirector) {
-    allMatches.push(...matches);
-    if (failed) anyFailed = true;
-  }
-
-  let summary;
-  if (allMatches.length > 0) {
-    summary = `${allMatches.length} director(s) found on the ASIC disqualified persons register`;
-    if (anyFailed) summary += ' — one or more other directors could not be checked, verify manually via ASIC Connect';
-  } else if (anyFailed) {
-    summary = `${checked.length} director(s) — check failed after retry, verify manually via ASIC Connect`;
-  } else {
-    summary = `${checked.length} director(s) checked — no disqualification records found`;
-  }
-
-  return {
-    source: 'ASIC — Disqualified Persons Register',
-    jurisdiction: 'Federal',
-    category: 'identity',
-    results: allMatches,
-    searchUrl: firstUrl,
-    summary,
-  };
-}
-
-module.exports = { searchASICDisqualified, parseDisqualifiedResults, checkDirector };
+module.exports = { isNameMatch, normalise, buildSearchUrl };

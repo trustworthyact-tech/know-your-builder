@@ -13,7 +13,7 @@ const { searchPaymentTimes } = require('./scrapers/paymentTimes');
 const { searchModernSlavery } = require('./scrapers/modernSlavery');
 const { searchQBCC, getDecisionSignedUrl } = require('./scrapers/qbcc');
 const { searchASIC } = require('./scrapers/asic');
-const { searchASICDisqualified } = require('./scrapers/asicDisqualified');
+const { searchASICDisqualifiedFromDataset } = require('./scrapers/asicDpnMatch');
 const { searchAsicInsolvency } = require('./scrapers/asicInsolvency');
 const { searchAtoDebt } = require('./scrapers/atoDebt');
 const { searchFWO } = require('./scrapers/fwo');
@@ -30,6 +30,7 @@ const { searchAsicExtract } = require('./scrapers/asicExtract');
 const { searchAfsaNpii } = require('./scrapers/afsaNpii');
 const { generateLinks } = require('./scrapers/links');
 const { startPaymentTimesRefresh } = require('./scrapers/paymentTimesRefresh');
+const { startAsicDpnDatasetRefresh } = require('./scrapers/asicDpnDatasetRefresh');
 
 // Fail fast on missing scraper credentials rather than surfacing "missing key"
 // errors deep inside individual scraper calls at request time.
@@ -192,7 +193,7 @@ app.post('/api/search', searchLimiter, async (req, res) => {
     {
       key: 'asicDisqualified',
       label: 'ASIC — Disqualified Persons Register',
-      fn: async () => searchASICDisqualified(await resolveDirectors(), process.env.CAPTCHA_API_KEY),
+      fn: async () => searchASICDisqualifiedFromDataset(await resolveDirectors()),
     },
     {
       key: 'asicInsolvency',
@@ -356,3 +357,4 @@ app.post('/api/search', searchLimiter, async (req, res) => {
 app.listen(PORT, () => console.log(`Know Your Builder server running on http://localhost:${PORT}`));
 
 startPaymentTimesRefresh();
+startAsicDpnDatasetRefresh();

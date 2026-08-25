@@ -40,7 +40,9 @@ run_test() {
 }
 
 # Launch all tests concurrently
-run_test "asic-parser"          "server/tests/test-asic-disqualified-parser.js" &
+# asic-parser (live ASIC Connect DPN scrape) removed 2026-08-19 — that check is now
+# the bulk-dataset lookup covered by `npm test` (scrapers/asicDpnDataset.test.js,
+# scrapers/asicDpnMatch.test.js), not a live-site integration test.
 run_test "vicbpc"               "server/tests/test-vicbpc.js" &
 run_test "wa-building"          "server/tests/test-wa-building.js" &
 run_test "qbcc-excluded"        "server/tests/test-qbcc-excluded.js" &
