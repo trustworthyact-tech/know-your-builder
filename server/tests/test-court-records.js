@@ -153,6 +153,39 @@ const FALLBACK_JURISDICTIONS = ['qld', 'vic', 'wa', 'sa', 'tas'];
     }
   }
 
+  // ── Step 1b: regression guard for the BHP false-negative (2026-08-26) ──────────────
+  // Production returned "no cases found" for Federal Court on a real BHP search despite
+  // BHP having a huge Federal Court history. Root cause was two compounding bugs: (1)
+  // titleMatchesTerm's >3-char distinctive-word threshold filtered out "BHP" itself
+  // (3 chars) while "Group" was already a COMMON_WORDS entry, leaving zero distinctive
+  // words and falling through to "let everything through" — unfiltered noise, not zero
+  // results, but (2) separately, Federal Court's search returns 1,514 total hits for
+  // "BHP" sorted by genuine relevance, and none of the top 20 (the default page size)
+  // have "BHP" in the title — real matches only surface once num_ranks=100 widens the
+  // window. Fixed by lowering the threshold to >2 chars and adding num_ranks=100 to the
+  // Federal Court search URL. This step guards against either fix silently regressing.
+  step('\nStep 1b: BHP Group Limited on Federal Court (regression guard)...');
+  try {
+    const bhp = await searchCourtRecords('BHP Group Limited', [], 'federal');
+    const titleMatches = bhp.results.filter((r) => /\bbhp\b/i.test(r.title));
+    if (titleMatches.length < 1) {
+      fail('Step 1b',
+        `0 of ${bhp.results.length} Federal Court result(s) for "BHP Group Limited" ` +
+        'actually contain "BHP" in the title.\n' +
+        'Check: (a) titleMatchesTerm\'s word-length threshold in courtRecords.js is ' +
+        'still >2, not reverted to >3; (b) num_ranks=100 is still present in ' +
+        'fetchFederalTermResults\'s searchUrl — without it the default page size (20) ' +
+        `is nowhere near enough for a high-volume entity like BHP.\nsearchUrl: ${bhp.searchUrl}`);
+      failed++;
+    } else {
+      pass('Step 1b', `${titleMatches.length} genuine BHP title-match(es) found (e.g. "${titleMatches[0].title}")`);
+      passed++;
+    }
+  } catch (e) {
+    fail('Step 1b', `searchCourtRecords threw for the BHP regression check: ${e.message}`, e.stack);
+    failed++;
+  }
+
   // ── Step 2: fallback jurisdictions return the honest "no automated source" shape ──
   step(`\nStep 2: Checking fallback shape for [${FALLBACK_JURISDICTIONS.join(', ')}]...`);
 

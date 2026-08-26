@@ -162,3 +162,48 @@ thin wrapper calling the shared `runJurisdictionSearch` — and replace one
 implementation. No other wiring changes needed (the `courts_<jurisdiction>` key, frontend
 labels, and `supplementalLinks` fallback all already exist and just stop being used once
 a jurisdiction goes live).
+
+### NSW Caselaw has the same page-1-only limitation as Federal Court did (2026-08-26)
+
+Found while fixing the BHP false-negative below: NSW Caselaw also only returns page 1 of
+20 results per term, with no larger-page-size override found (unlike Federal's
+`num_ranks` param) — its pagination is a `pagenumber` param, meaning genuinely separate
+requests to get more coverage, not a one-line fix. Confirmed live: "BHP" returns 1,897
+total NSW Caselaw hits, capped at 20 per request. Not yet fixed — a heavily-litigated
+entity's real NSW cases can be pushed off the first page the same way BHP's Federal
+Court cases were. If this needs fixing, it means paginating `fetchNswTermResults`
+(multiple sequential requests per term, each cheap — plain axios, no Cloudflare gate —
+but still N× the HTTP calls) rather than a single param change.
+
+### BHP false negative on Federal Court — root cause and fix (2026-08-26)
+
+A production search for "BHP GROUP LIMITED" returned "no cases found" for Federal Court
+despite BHP having a large Federal Court history. Two compounding bugs, both in
+`courtRecords.js`:
+
+1. **`titleMatchesTerm`'s word-length threshold was too strict.** "BHP Group Limited"
+   strips to "BHP Group" (`stripCompanySuffix`); "Group" is itself a `COMMON_WORDS`
+   entry, and "BHP" (3 chars) failed the old `length > 3` threshold — leaving zero
+   distinctive words, which falls through to "can't filter, let everything through."
+   That's a *different* bug (unfiltered noise) than the reported one, but it's the same
+   root cause: short/generic company names had no working entity filter at all. Fixed by
+   lowering the threshold to `length > 2`.
+2. **Federal Court's default page size (20) isn't remotely enough for a high-volume
+   entity.** Confirmed live: "BHP" returns 1,514 total Federal Court hits, genuinely
+   sorted by relevance (not a sort-order bug — verified the `sort` dropdown defaults to
+   "Relevance" when omitted), but *none* of the top 20 have "BHP" in the case title —
+   real matches (e.g. *Impiombato v BHP Group Limited (No 6)* [2025] FCA 1594) only
+   surface once the window widens. Fixed by adding `num_ranks=100` to
+   `fetchFederalTermResults`'s search URL (Funnelback's page-size param). 100 is a
+   pragmatic ceiling, not a proven-sufficient one for every entity — BHP likely still has
+   real cases beyond position 100 — but multi-page pagination would mean multiple
+   Puppeteer round-trips per search term, adding real cost to the concurrency problem
+   already documented above. A regression test (`test-court-records.js` Step 1b) guards
+   against either fix silently reverting.
+
+Also silently masking failures until this fix: `runJurisdictionSearch`'s per-term error
+handling caught every fetch failure and returned an empty array with no signal — a
+Cloudflare-challenge timeout or Puppeteer page-slot contention failure was
+indistinguishable from an honest "no cases found." Now retries once per term, and if
+every term still fails, returns `status: 'error'` (same shape as `buildManualFallback`)
+instead of a fabricated clean result.

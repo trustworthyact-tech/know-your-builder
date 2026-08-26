@@ -110,11 +110,19 @@ function stripCompanySuffix(name) {
 // generic word (e.g. "Services") with the searched entity. Word-boundary match —
 // plain substring search would match a short numeric term like "37" inside an
 // unrelated case number or address (e.g. "237").
+//
+// Threshold is length > 2 (not > 3): plenty of real, highly-distinctive company names
+// reduce to a 3-letter ticker/acronym once suffixes are stripped — e.g. "BHP Group
+// Limited" strips to "BHP Group", and "Group" is itself a COMMON_WORDS entry, so a > 3
+// threshold left zero distinctive words for "BHP" itself. With zero distinctive words
+// this function falls through to "can't filter, let everything through" (below), which
+// silently turned every Federal Court query for a short-name entity like BHP into an
+// unfiltered dump of irrelevant cases rather than an entity-matched result set.
 function titleMatchesTerm(title, term) {
   const words = term
     .toLowerCase()
     .split(/\W+/)
-    .filter((w) => (w.length > 3 || /^\d+$/.test(w)) && !COMMON_WORDS.has(w));
+    .filter((w) => (w.length > 2 || /^\d+$/.test(w)) && !COMMON_WORDS.has(w));
   if (words.length === 0) return true; // no distinctive words — can't filter
   const lower = title.toLowerCase();
   return words.some((w) => new RegExp(`\\b${escapeRegExp(w)}\\b`).test(lower));
@@ -223,8 +231,21 @@ const fetchActTermResults = makeTermCache(async (term) => {
 // Cloudflare session's cookies do NOT work for a subsequent plain-HTTP request (the gate
 // is fingerprint-based, not cookie-based) — there is no cheaper path than a real browser
 // round-trip per request here.
+//
+// num_ranks=100 (Funnelback's page-size param) is not optional — the default page size
+// is 20, and for a heavily-litigated entity that's nowhere near enough. Confirmed live:
+// "BHP" returns 1,514 total hits sorted by genuine relevance (not a sort bug), but zero
+// of the top 20 have "BHP" in the case title — real BHP litigation (e.g. "Impiombato v
+// BHP Group Limited (No 6) [2025] FCA 1594") only appears once the window is widened.
+// 100 is a pragmatic ceiling, not a proven-sufficient one — BHP still has cases beyond
+// the top 100 that this won't surface — but multi-page pagination would mean multiple
+// Puppeteer round-trips per term, adding real cost to the concurrency problem already
+// documented for this scraper. NSW Caselaw has the identical page-1-only limitation
+// (1,897 total hits for "BHP", capped at 20) but no equivalent page-size override param
+// was found — its pagination is a `pagenumber` param, i.e. genuinely separate requests —
+// left unfixed here as a known follow-up, not folded into this fix.
 const fetchFederalTermResults = makeTermCache(async (term) => {
-  const searchUrl = `https://search.judgments.fedcourt.gov.au/s/search.html?collection=fca~sp-judgments-internet&profile=judgments-internet&query=${encodeURIComponent(term)}`;
+  const searchUrl = `https://search.judgments.fedcourt.gov.au/s/search.html?collection=fca~sp-judgments-internet&profile=judgments-internet&num_ranks=100&query=${encodeURIComponent(term)}`;
   const html = await fetchWithBrowser(searchUrl, { challengeTimeoutMs: 25_000 });
   const $ = cheerio.load(html);
   const results = [];
@@ -289,12 +310,23 @@ async function runJurisdictionSearch(companyName, directors, { fetchFn, jurisdic
   const strippedCompanyName = stripCompanySuffix(companyName);
   const terms = [strippedCompanyName, ...(directors || []).filter(Boolean).map(stripCompanySuffix)].filter(Boolean);
 
+  // Retry once on failure (mirroring the retry pattern already established for the
+  // retired asicDisqualified.js CAPTCHA/browser flow) before giving up on a term.
+  // Distinguishes "this term genuinely returned 0 results" from "the fetch failed" —
+  // without this, a Cloudflare-challenge timeout or a Puppeteer page-slot contention
+  // failure (both real, expected-to-happen-sometimes conditions for the Federal/NT
+  // fetchers) silently produced `results: []` with no error signal, indistinguishable
+  // from an honest "no cases found." Confirmed in production: a BHP search returned
+  // "no cases found" for Federal Court despite BHP having a substantial Federal Court
+  // history — this is exactly that failure mode.
   const fetchOne = async (term) => {
-    try {
-      const results = await fetchFn(term);
-      return results.filter((r) => titleMatchesTerm(r.title, term));
-    } catch {
-      return []; // skip this term on error — other terms may still succeed
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const results = await fetchFn(term);
+        return { results: results.filter((r) => titleMatchesTerm(r.title, term)), failed: false };
+      } catch (err) {
+        if (attempt === 1) return { results: [], failed: true, error: err };
+      }
     }
   };
 
@@ -306,11 +338,14 @@ async function runJurisdictionSearch(companyName, directors, { fetchFn, jurisdic
     for (const term of terms) gathered.push(await fetchOne(term));
   }
 
+  const anyFailed = gathered.some((g) => g.failed);
+  const allFailed = terms.length > 0 && gathered.every((g) => g.failed);
+
   // De-duplicate by URL, tagging each item with its jurisdiction so ReportSection's
   // showJurisdiction badge (already wired through to ResultCard) has something to render.
   const seen = new Set();
   const unique = gathered
-    .flat()
+    .flatMap((g) => g.results)
     .filter(({ url }) => {
       if (seen.has(url)) return false;
       seen.add(url);
@@ -318,17 +353,40 @@ async function runJurisdictionSearch(companyName, directors, { fetchFn, jurisdic
     })
     .map((r) => ({ ...r, jurisdiction }));
 
+  const manualSearchUrl = searchUrlFor(strippedCompanyName);
+
+  // Every term failed (both attempts each) — an honest "search failed", not a fabricated
+  // "checked, clean". Mirrors buildManualFallback's shape so this reads the same way in
+  // the UI as a jurisdiction with no automated source at all.
+  if (allFailed) {
+    return {
+      source,
+      jurisdiction,
+      category: 'legal',
+      status: 'error',
+      results: [],
+      searchUrl: manualSearchUrl,
+      sources: JURISDICTION_SOURCES[sourcesKey],
+      error: 'Search failed',
+      summary: `Could not complete the ${jurisdiction} courts search after retrying — try again or search manually`,
+    };
+  }
+
+  const incompleteNote = anyFailed
+    ? ' (search incomplete — one or more name variants could not be checked after retrying)'
+    : '';
+
   return {
     source,
     jurisdiction,
     category: 'legal',
     results: unique,
-    searchUrl: searchUrlFor(strippedCompanyName),
+    searchUrl: manualSearchUrl,
     sources: JURISDICTION_SOURCES[sourcesKey],
     summary:
-      unique.length > 0
+      (unique.length > 0
         ? `Found ${unique.length} case(s) in ${jurisdiction} courts and tribunals`
-        : `No cases found in ${jurisdiction} courts and tribunals`,
+        : `No cases found in ${jurisdiction} courts and tribunals`) + incompleteNote,
   };
 }
 
