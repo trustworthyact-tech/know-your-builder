@@ -46,14 +46,21 @@ Azure Front Door WAF false-positive on the register download — retried automat
 
 | File | Register | Browser needed | API key needed | Typical run time |
 |------|----------|----------------|----------------|------------------|
-| `test-austlii.js` | AustLII — Courts & Tribunals (9 jurisdictions) | No (via ScraperAPI) | SCRAPERAPI_KEY | ~20–40s |
+| `test-court-records.js` | NSW/ACT/Federal/NT (live) + manual fallback for QLD/VIC/WA/SA/TAS | Yes, for Federal/NT only | No | ~1-2min |
 | `test-fwo.js` | Fair Work Ombudsman — Enforcement Outcomes | No | No | ~15s |
 | `test-qbcc-adjudication.js` | QBCC — Adjudication Decisions (Salesforce Aura API) | No | No | ~15–30s |
 
-Last verified 2026-07-16: all three PASS. See "Section 8.5 sub-agent prompts" below for
-per-test debugging prompts, and "Common failure patterns" for two issues found and fixed
-during that verification (AustLII's standalone `SCRAPERAPI_KEY` loading, and `test-fwo.js`'s
-narrow fixture-discovery regex).
+`test-austlii.js` and `server/scrapers/austlii.js` were retired 2026-08-26 — AustLII
+enforces a hard Cloudflare IP block against this server (deliberate policy enforcement,
+not incidental bot protection; see CLAUDE.md). Replaced with
+`server/scrapers/courtRecords.js`: real live searches against NSW Caselaw and ACT's own
+judgment search (plain HTTP, no Puppeteer) plus Federal Court and NT Supreme Court
+(both behind a Cloudflare managed challenge — via the existing `fetchWithBrowser`
+Puppeteer helper, no `SCRAPERAPI_KEY` needed), plus an honest `status: 'error'` +
+manual-link fallback for the remaining 5 (QLD/VIC/WA/SA/TAS).
+
+Last verified 2026-07-16 (AustLII-era; superseded): all three PASS. See "Section 8.5
+sub-agent prompts" below for per-test debugging prompts.
 
 ### Licence register probe tests (link-only — no scraper yet)
 
@@ -501,46 +508,56 @@ After running, report:
 ## Section 8.5 sub-agent prompts
 
 Courts, Enforcement & Disciplinary (`id="s85"` in `ReportContent.tsx`) is fed by exactly
-three sources: AustLII (9 jurisdictions), FWO, and the QBCC adjudication branch (shared file
-with the QBCC licence/excluded-individual scrapers, which are out of scope here). All three
-were rewritten in `d86cf54` and `dfe56e6` — verified passing again as of 2026-07-16.
+three sources: `courtRecords.js` (NSW/ACT/Federal/NT live + manual fallback for
+QLD/VIC/WA/SA/TAS, replacing AustLII as of 2026-08-26 and extended to 4 live
+jurisdictions the same day), FWO, and the QBCC adjudication branch (shared file with the
+QBCC licence/excluded-individual scrapers, which are out of scope here). FWO and QBCC
+adjudication were rewritten in `d86cf54` and `dfe56e6` — verified passing again as of
+2026-07-16; `courtRecords.js` is new as of 2026-08-26 and not yet independently
+re-verified by a sub-agent pass.
 
-### Sub-agent prompt: AustLII courts & tribunals (no API key beyond SCRAPERAPI_KEY)
+### Sub-agent prompt: court records — 4 live jurisdictions + manual fallback (no API key needed)
 
 ```
 Working directory: /Users/jameskwan/know-your-builder
 
 Run this test (from repo root):
-  node server/tests/test-austlii.js
+  node server/tests/test-court-records.js
 
-This test calls searchAustLII directly for the federal, qld, and nsw jurisdictions (no
-Puppeteer — AustLII is reached via ScraperAPI to bypass a Cloudflare Managed Challenge).
-SCRAPERAPI_KEY must be set in server/.env; the scraper itself calls dotenv.config() to pick
-it up even when the test is run standalone (see server/scrapers/austlii.js top of file), so
-you should not need to export anything manually.
+This test calls searchCourtRecords() for 4 jurisdictions with a real live search —
+'nsw' and 'act' (plain axios + cheerio, no Puppeteer, no Cloudflare/WAF gate on either
+site) and 'federal' and 'nt' (both behind a Cloudflare managed challenge, so these two
+go through Puppeteer via fetchWithBrowser — expect this test to take 1-2 minutes, not
+seconds, because of these two) — and for the remaining 5 jurisdictions (qld, vic, wa,
+sa, tas), which have no free unauthenticated full-text search yet and should return an
+honest status: 'error' fallback with a manual searchUrl rather than a fabricated
+"done, 0 results".
 
 Steps:
-  Step 1 — fetches the AustLII search page directly via ScraperAPI to discover a live
-           fixture case name
-  Step 2 — calls searchAustLII(fixtureName, [], 'federal'); asserts >= 1 result with the
-           correct jurisdiction label
-  Step 3 — spot-checks 'qld' and 'nsw' concurrently via Promise.all, confirming the
-           pending-promise dedup cache and URL-substring jurisdiction post-filter both work
-           under concurrent calls, and that result URLs have the correct /au/cases/<jur> prefix
+  Step 1 — for each of nsw/act/federal/nt, calls searchCourtRecords(fixtureName, [],
+           jurisdiction) with a fixture name known to title-match a real case in that
+           jurisdiction (see the LIVE_FIXTURES comment at the top of the test file);
+           asserts >= 1 result, correct jurisdiction label on both the SearchResult and
+           every individual ResultItem
+  Step 2 — calls searchCourtRecords('Multiplex', [], jur) for all 5 fallback
+           jurisdictions; asserts status: 'error', results: [], and a non-empty
+           searchUrl for each
 
 After running, report:
 1. Full console output (verbatim)
 2. Overall PASS / FAIL
-3. If Step 1 fails with a 403: check SCRAPERAPI_KEY is present and valid in server/.env
-   (`grep SCRAPERAPI_KEY server/.env`) — this is far more likely than AustLII itself being down.
-4. If any step fails otherwise, read server/scrapers/austlii.js and identify the cause:
-   - Cloudflare/ScraperAPI response no longer contains real search HTML (site or ScraperAPI
-     account issue)
-   - The dedup cache in fetchTermResults is serving a stale/failed promise to all 9 callers
-   - The URL-substring post-filter mis-buckets a jurisdiction (check the /au/cases/<jur>
-     prefix mapping)
-   Propose a targeted fix. Re-run to confirm.
-5. Do NOT modify test files.
+3. If Step 1 fails with 0 results for a jurisdiction: open the searchUrl printed in the
+   failure message in a browser and check whether that jurisdiction's result markup
+   (selectors documented above each fetch*TermResults function in
+   server/scrapers/courtRecords.js) still matches — or whether the LIVE_FIXTURES entry
+   for that jurisdiction is simply stale (the case is no longer a top hit); re-discover a
+   fresh fixture by browsing a broad query on that jurisdiction's search and picking any
+   "X v Y" title.
+4. If Step 1 fails with a missing per-item jurisdiction field: runJurisdictionSearch()
+   should tag every ResultItem with the correct jurisdiction — check it wasn't bypassed.
+5. If Step 2 fails for any jurisdiction: buildManualFallback() in courtRecords.js may have
+   been changed to no longer set status: 'error', or a MANUAL_SEARCH_URLS entry was removed.
+6. Do NOT modify test files.
 ```
 
 ### Sub-agent prompt: Fair Work Ombudsman enforcement outcomes (no env vars needed)
@@ -674,8 +691,8 @@ abbreviations (e.g. "SKB Tiling") will be filtered if those words don't appear
 in the article body. Consider relaxing the threshold or using substring matching
 in `nameMatchesEntity` in `waBuildingEnergy.js`.
 
-### AustLII — `SCRAPERAPI_KEY` not loaded when run standalone
-`server/scrapers/austlii.js` reads `process.env.SCRAPERAPI_KEY` but the production server
+### AustLII — `SCRAPERAPI_KEY` not loaded when run standalone (historical — module retired 2026-08-26)
+`server/scrapers/austlii.js` (now removed; see `courtRecords.js`) read `process.env.SCRAPERAPI_KEY`, but the production server
 only gets it via `node --env-file=.env` in the npm start/dev scripts. Running the module
 directly (e.g. `node server/tests/test-austlii.js`) previously left the key unset, causing
 a 403 from ScraperAPI. Fixed 2026-07-16 by adding `require('dotenv').config(...)` at the top

@@ -103,7 +103,7 @@ Uses Node.js built-in `node:test` runner — no extra dependencies required.
 | `asicExtract.js` | deep-check | reCAPTCHA blocked; falls back to ASIC_DATA_API_KEY if set |
 | `asicDisqualified.js` | 8.1 | reCAPTCHA blocked; uses 2captcha (CAPTCHA_API_KEY) |
 | `asicInsolvency.js` | 8.5 | ASIC Published Notices — no reCAPTCHA |
-| `austlii.js` | 8.5 | Called 9× (one per jurisdiction); capped at 20 results per query — see known limitation below |
+| `courtRecords.js` | 8.5 | Called 9× (one per jurisdiction); `nsw`/`act`/`federal`/`nt` have real live searches, the other 5 (`qld`/`vic`/`wa`/`sa`/`tas`) return an honest manual-link fallback, see known limitation below |
 | `fwo.js` | 8.5 | FWO newsroom only — enforcement outcomes, not FWC tribunal decisions |
 | `links.js` | — | Not a scraper — returns pre-populated deep-link URLs |
 
@@ -114,25 +114,51 @@ Uses Node.js built-in `node:test` runner — no extra dependencies required.
 
 ## Known limitations and future upgrades
 
-### Section 8.5 — Fair Work Commission decisions missing for large entities
+### Section 8.5 — 4 of 9 court-records jurisdictions are live (2026-08-26)
 
-**Limitation (identified 2026-07-09):** The Fair Work Commission (FWC) is not separately
-scraped. FWC tribunal decisions (FWCFB, FWC) reach section 8.5 only via `austlii.js`,
-which is capped at `results=20` per query against `austlii.edu.au/cgi-bin/sinosrch.cgi`.
+`austlii.js` was retired 2026-08-26 (AustLII enforces a hard Cloudflare IP block against
+this server — deliberate policy enforcement, see CLAUDE.md). Its replacement,
+`courtRecords.js`, now has a real full-text search for four jurisdictions:
 
-For large entities like BHP, Lendlease, or Multiplex that have hundreds of federal court
-and tribunal appearances, the specific FWC case is very unlikely to appear in the top 20
-AustLII search results. A known example: `[2025] FWCFB 188` (BHP, 2025) is not returned
-for a "BHP Group" search.
+- **NSW** (NSW Caselaw) and **ACT** (courts.act.gov.au's own judgment search,
+  `?query=<term>`) — plain `axios`/`cheerio`, neither is behind a Cloudflare gate.
+- **Federal** (a dedicated Funnelback search at
+  `search.judgments.fedcourt.gov.au/s/search.html`, distinct from the site's general
+  search) and **NT** (`supremecourt.nt.gov.au`'s sitewide search, which does index
+  judgment documents) — both behind a Cloudflare **managed challenge** covering their
+  whole domain, so both go through `fetchWithBrowser` (`browser.js`). Confirmed by direct
+  test: a Cloudflare-cleared session's cookies do **not** work for a subsequent plain
+  HTTP request (the gate is fingerprint-based, not cookie-based) — there is no cheaper
+  path than a real Puppeteer round-trip per request for these two. Accepted as a known
+  cost rather than mitigated (e.g. via deep-check gating or ScraperAPI's render mode) —
+  this adds to the existing "Puppeteer-dependent scrapers systemically starved under
+  load" issue in CLAUDE.md, a separate, already-tracked problem this doesn't try to fix.
 
-Additionally, `fwo.js` only covers the **FWO newsroom** (enforcement actions by the Fair
-Work Ombudsman) — it does not search FWC decisions at all.
+The remaining 5 (`qld`, `vic`, `wa`, `sa`, `tas`) return an honest `status: 'error'`
+result with a manual search link — surfaced in `ReportContent.tsx` via `ReportSection`'s
+`supplementalLinks` prop — rather than a fabricated "checked, clean".
 
-**Upgrade path:** Add a dedicated FWC search scraper using the FWC decisions search at
-`https://www.fwc.gov.au/decisions-and-orders/search-decisions`. The FWC search supports
-full-text search by party name and can filter by date. This would give direct access to
-FWCFB and FWC decisions without the 20-result cap. Results should be merged into
-`courtItems` in `ReportContent.tsx` alongside the existing AustLII results.
+Federal Court coverage also closes the Commonwealth Corporations Act gap directly — its
+judgments search returns Corporations Act / insolvency matters (deeds of company
+arrangement, winding-up applications, etc.) alongside general litigation, confirmed via
+a live test result: *Bunter v Hardy, in the matter of FT Sydney Pty Ltd (subject to a
+deed of company arrangement)* [2026] FCA 742/701.
 
-A dedicated FWC scraper would sit alongside `austlii.js` in section 8.5; both sets of
-results feed the combined `courtItems` array already used by the courts `<ReportSection>`.
+**Upgrade path for the remaining 5** (see CLAUDE.md for the per-jurisdiction
+reachability notes from the investigation that produced `courtRecords.js`):
+1. **WA, VIC** — WA's real archive is on eCourts Portal (looks like a JS app, needs live
+   investigation); VIC's coverage is fragmented across separate Supreme Court/County
+   Court/VCAT sites rather than one database.
+2. **SA, QLD, TAS** — confirmed no viable free full-text search exists (SA's judgments
+   page has no search, just a JS-rendered "recent" widget; QLD's real platforms are
+   either ToS-restricted — Queensland Judgments explicitly bans automated access — or
+   unreliable; TAS's own Supreme Court doesn't publish judgments on its website at all).
+   These likely stay manual-link-only unless a paid source (e.g. vLex) is pursued.
+
+Each new jurisdiction should follow the same shape as the existing live searches in
+`courtRecords.js` — a `fetch<Jurisdiction>TermResults` built with `makeTermCache`, plus a
+thin wrapper calling the shared `runJurisdictionSearch` — and replace one
+`buildManualFallback(jurisdiction)` call in `searchCourtRecords`'s dispatch with the real
+implementation. No other wiring changes needed (the `courts_<jurisdiction>` key, frontend
+labels, and `supplementalLinks` fallback all already exist and just stop being used once
+a jurisdiction goes live).

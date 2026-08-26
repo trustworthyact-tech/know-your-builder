@@ -3,7 +3,7 @@ import { HomeSearch } from '@/components/HomeSearch';
 const CHECKLIST = [
   ['🏛', 'ABR, ASIC & company notices'],
   ['💳', 'Payment Times Reporting Register'],
-  ['⚖️', 'Federal & all state/territory courts'],
+  ['⚖️', 'NSW courts & tribunals, plus links to check other states'],
   ['🏗', 'QBCC, NSW Fair Trading & state licence registers'],
   ['🔍', 'Modern Slavery & WGEA registers'],
   ['📋', '40+ court, tribunal & regulatory databases'],

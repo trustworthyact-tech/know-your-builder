@@ -149,9 +149,9 @@ export function riskGrouper(findings: Record<string, SearchResult>): RiskGroupRe
       });
     }
 
-    // Security of Payment keywords across all AustLII jurisdictions
-    const austliiKeys = Object.keys(findings).filter((k) => k.startsWith('austlii_'));
-    const sopResults = austliiKeys.flatMap((k) =>
+    // Security of Payment keywords across all court-records jurisdictions
+    const courtKeys = Object.keys(findings).filter((k) => k.startsWith('courts_'));
+    const sopResults = courtKeys.flatMap((k) =>
       (findings[k]?.results ?? []).filter(
         (r) =>
           r.title?.toLowerCase().includes('security of payment') ||
@@ -164,7 +164,7 @@ export function riskGrouper(findings: Record<string, SearchResult>): RiskGroupRe
     );
     if (sopResults.length > 0) {
       triggers.push({
-        scraperKey: 'austlii',
+        scraperKey: 'courts',
         finding: `${sopResults.length} Security of Payment enforcement decision(s) found in court records`,
         anchor: '#s85',
       });
@@ -263,30 +263,30 @@ export function riskGrouper(findings: Record<string, SearchResult>): RiskGroupRe
     const triggers: RiskGroupTrigger[] = [];
     let severity: 'significant' | 'findings' = 'findings';
 
-    const austliiKeys = Object.keys(findings).filter((k) => k.startsWith('austlii_'));
-    const allCourtResults = austliiKeys.flatMap((k) => findings[k]?.results ?? []);
+    const courtKeys = Object.keys(findings).filter((k) => k.startsWith('courts_'));
+    const allCourtResults = courtKeys.flatMap((k) => findings[k]?.results ?? []);
     const totalCourtHits = allCourtResults.length;
 
     if (totalCourtHits >= 6) {
       severity = 'significant';
       triggers.push({
-        scraperKey: 'austlii',
+        scraperKey: 'courts',
         finding: `${totalCourtHits} court and tribunal decisions found across all jurisdictions`,
         anchor: '#s85',
       });
     } else if (totalCourtHits >= 3) {
       triggers.push({
-        scraperKey: 'austlii',
+        scraperKey: 'courts',
         finding: `${totalCourtHits} court and tribunal decisions found across all jurisdictions`,
         anchor: '#s85',
       });
     }
 
-    const federalResults = findings['austlii_federal']?.results ?? [];
+    const federalResults = findings['courts_federal']?.results ?? [];
     if (federalResults.length > 0) {
       severity = 'significant';
       triggers.push({
-        scraperKey: 'austlii_federal',
+        scraperKey: 'courts_federal',
         finding: `${federalResults.length} Federal Court or Federal Circuit Court decision(s) found`,
         anchor: '#s85',
       });
@@ -297,13 +297,13 @@ export function riskGrouper(findings: Record<string, SearchResult>): RiskGroupRe
       const recentResults = allCourtResults.filter((r) => resultIsWithinYears(r, 2));
       if (recentResults.length > 0) {
         triggers.push({
-          scraperKey: 'austlii',
+          scraperKey: 'courts',
           finding: `${recentResults.length} decision(s) found within the past 2 years`,
           anchor: '#s85',
         });
       } else {
         triggers.push({
-          scraperKey: 'austlii',
+          scraperKey: 'courts',
           finding: `${totalCourtHits} court or tribunal decision(s) found`,
           anchor: '#s85',
         });

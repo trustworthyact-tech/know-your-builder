@@ -8,6 +8,7 @@ import { RiskBadge, RiskLevel } from '@/components/RiskBadge';
 import { RiskSummaryPanel } from '@/components/RiskSummaryPanel';
 import { ProjectTimeline } from '@/components/ProjectTimeline';
 import { riskGrouper } from '@/lib/riskGrouper';
+import { SERVER_URL } from '@/lib/api';
 
 interface Props {
   searchId: string;
@@ -210,7 +211,7 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
   const qbcc = byKey('qbcc');
   const paymentTimes = byKey('paymentTimes');
   const modernSlavery = byKey('modernSlavery');
-  const austliiResults = results.filter((r) => r.key.startsWith('austlii_'));
+  const courtResults = results.filter((r) => r.key.startsWith('courts_'));
   const fwo = byKey('fwo');
   const vicBpc = byKey('vicBpc');
   const waBuildingEnergy = byKey('waBuildingEnergy');
@@ -222,13 +223,6 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
   const tasLicenceRegister = byKey('tasLicenceRegister');
   const asicExtract = byKey('asicExtract');
   const afsaNpii = byKey('afsaNpii');
-  const links = byKey('links');
-  const allLinkItems: ResultItem[] = links?.results ?? [];
-  const licenceLinks = allLinkItems.filter((r) => r.category === 'license');
-  const fwcLinks = allLinkItems.filter((r) => r.category === 'fwc');
-  const enforcementLinks = allLinkItems.filter(
-    (r) => r.category !== 'license' && r.category !== 'fwc'
-  );
 
   // Entity card data
   const entityName =
@@ -273,7 +267,7 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
   const totalHits = results
     .filter((r) => r.key !== 'links')
     .reduce((n, r) => n + (r.results?.length ?? 0), 0);
-  const courtHits = austliiResults.reduce((n, r) => n + (r.results?.length ?? 0), 0);
+  const courtHits = courtResults.reduce((n, r) => n + (r.results?.length ?? 0), 0);
 
   // Per-section result sets
   const asicCompanyItems: ResultItem[] = (asic?.results ?? []).filter(
@@ -291,7 +285,15 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
     ...disqualifiedItems,
     ...asicExtractItems,
   ];
-  const adjItems: ResultItem[] = qbcc?.adjudicationResults ?? [];
+  // The scraper's default url points at the general adjudication registry search page —
+  // swap in a link straight to this decision's PDF where we have the filename. The proxy
+  // re-fetches a fresh signed URL at click time since QBCC's signed URLs expire in 120s.
+  const adjItems: ResultItem[] = (qbcc?.adjudicationResults ?? []).map((item) => {
+    const fileName = item.metadata?.['Decision Document'];
+    return fileName
+      ? { ...item, url: `${SERVER_URL}/api/qbcc/decision-pdf?fileName=${encodeURIComponent(fileName)}` }
+      : item;
+  });
   const insolvencyItems: ResultItem[] = asicInsolvency?.results ?? [];
   const atoDebtItems: ResultItem[] = atoDebt?.results ?? [];
   const afsaNpiiItems: ResultItem[] = afsaNpii?.results ?? [];
@@ -325,10 +327,21 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
     ...tasLicenceRegisterItems,
   ];
   const courtItems: ResultItem[] = [
-    ...austliiResults.flatMap((r) => r.results ?? []),
+    ...courtResults.flatMap((r) => r.results ?? []),
     ...fwoItems,
     ...adjItems,
   ];
+  // Jurisdictions with no automated full-text search yet (see server/scrapers/courtRecords.js)
+  // return status: 'error' and a manual searchUrl rather than a fabricated "checked, clean" —
+  // surfaced here as supplemental "check manually" links instead of silently disappearing.
+  const courtManualLinks: ResultItem[] = courtResults
+    .filter((r) => r.status === 'error' && r.searchUrl)
+    .map((r) => ({
+      title: `Search ${r.jurisdiction ?? r.key} courts manually`,
+      url: r.searchUrl as string,
+      description: r.summary,
+      jurisdiction: r.jurisdiction,
+    }));
 
   // Section risk levels — derived from risk groups, falling back to scraper-status baseline
   const s81Risk = deriveRiskLevel(
@@ -375,7 +388,7 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
     riskGroups,
     ['#s84', '#s85'],
     isAllErrored([
-      ...austliiResults.map((r) => r.status),
+      ...courtResults.map((r) => r.status),
       fwo?.status ?? 'done',
       qbcc?.status ?? 'done',
     ])
@@ -413,15 +426,15 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
         : 'No QBCC adjudication decisions found',
   };
 
-  const courtJurisdictionsFound = austliiResults.filter(
+  const courtJurisdictionsFound = courtResults.filter(
     (r) => (r.results?.length ?? 0) > 0
   ).length;
   const courtSearch: SearchResult = {
-    key: 'austlii',
-    label: 'Australian Courts & Tribunals (AustLII)',
-    status: austliiResults.some((r) => r.status === 'done') ? 'done' : 'error',
-    source: 'AustLII — Australasian Legal Information Institute',
-    searchUrl: `https://www.austlii.edu.au`,
+    key: 'courts',
+    label: 'Australian Courts & Tribunals',
+    status: courtResults.some((r) => r.status === 'done') ? 'done' : 'error',
+    source: 'NSW Caselaw and other official court sources',
+    searchUrl: results.find((r) => r.key === 'courts_nsw')?.searchUrl,
     summary:
       courtHits > 0
         ? `${courtHits} decision(s) found across ${courtJurisdictionsFound} jurisdiction(s)`
@@ -717,7 +730,6 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
           ]}
           riskLevel={s82Risk}
           resultsOverride={licenceItems}
-          supplementalLinks={licenceLinks}
           linksRequireResults
         />
 
@@ -729,7 +741,6 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
           searchResults={[asicInsolvency, atoDebt, afsaNpiiSearch, paymentTimes, modernSlavery].filter(Boolean) as SearchResult[]}
           riskLevel={s83Risk}
           resultsOverride={financialItems}
-          supplementalLinks={fwcLinks}
           criticalBanner={
             insolvencyItems.length > 0
               ? (() => {
@@ -751,8 +762,8 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
           searchResults={[courtSearch, fwoSearch, ...(qbcc ? [adjSearch] : [])]}
           riskLevel={s85Risk}
           resultsOverride={courtItems}
+          supplementalLinks={courtManualLinks}
           showJurisdiction
-          supplementalLinks={enforcementLinks}
         />
 
         {/* Disclaimer */}
@@ -766,8 +777,8 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
             before making any commercial decision.
           </p>
           <p className="text-xs text-text-muted leading-relaxed">
-            Sources: ABR, ASIC Connect, AustLII, Payment Times Reporting Register, Modern Slavery
-            Register, QBCC, and linked government databases. Generated {now}.
+            Sources: ABR, ASIC Connect, NSW Caselaw, Payment Times Reporting Register, Modern
+            Slavery Register, QBCC, and linked government databases. Generated {now}.
           </p>
         </div>
 

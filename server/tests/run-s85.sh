@@ -6,14 +6,16 @@
 #   VERBOSE=1 bash server/tests/run-s85.sh
 #
 # To supply a fixed fixture name to a specific test (skips auto-discovery):
-#   S85_AUSTLII_NAME="Ballard"    bash server/tests/run-s85.sh
-#   S85_FWO_NAME="Yooralla"       bash server/tests/run-s85.sh
-#   S85_QBCC_NAME="Nash"          bash server/tests/run-s85.sh
+#   S85_COURT_RECORDS_NAME="Multiplex"  bash server/tests/run-s85.sh
+#   S85_FWO_NAME="Yooralla"             bash server/tests/run-s85.sh
+#   S85_QBCC_NAME="Nash"                bash server/tests/run-s85.sh
 #
 # Sub-agent prompt for any individual test:
 #   See server/tests/README.md — "Section 8.5 sub-agent prompts"
 #
-# Typical run time: ~20–40s
+# Typical run time: ~1-2min (court-records now includes two Puppeteer-backed
+# jurisdictions — Federal and NT — each of which can take up to a minute on its own;
+# fwo/qbcc-adjudication finish in ~15-30s and don't change the overall wait)
 
 set -euo pipefail
 
@@ -58,8 +60,8 @@ name_arg() {
 
 # Launch all 3 tests concurrently — no shared state, safe to parallelise.
 
-run_test "austlii" "server/tests/test-austlii.js" \
-  $(name_arg "${S85_AUSTLII_NAME:-}") &
+run_test "court-records" "server/tests/test-court-records.js" \
+  $(name_arg "${S85_COURT_RECORDS_NAME:-}") &
 
 run_test "fwo" "server/tests/test-fwo.js" \
   $(name_arg "${S85_FWO_NAME:-}") &
@@ -70,7 +72,7 @@ run_test "qbcc-adjudication" "server/tests/test-qbcc-adjudication.js" \
 wait
 echo ""
 
-LABELS="austlii fwo qbcc-adjudication"
+LABELS="court-records fwo qbcc-adjudication"
 OVERALL=0
 
 for label in $LABELS; do

@@ -120,7 +120,7 @@ const SEARCHED = [
   'Payment Times Reporting Register',
   'Modern Slavery Statements Register',
   'QBCC Licence & Adjudication Register',
-  'Federal & all state/territory courts (AustLII)',
+  'NSW Caselaw and other official court sources',
   '35+ additional government databases (links provided)',
 ];
 

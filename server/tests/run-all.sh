@@ -8,7 +8,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$REPO_ROOT"
 
-# Export server/.env so child processes inherit API keys (e.g. SCRAPERAPI_KEY for AustLII).
+# Export server/.env so child processes inherit API keys used by other scrapers.
 if [ -f server/.env ]; then
   while IFS= read -r _line; do
     [[ -z "$_line" || "$_line" == \#* ]] && continue
@@ -67,7 +67,7 @@ run_test "modern-slavery"       "server/tests/test-modern-slavery.js" &
 # Section 8.4 — Payment & Subcontractor Disputes
 run_test "qbcc-adjudication"   "server/tests/test-qbcc-adjudication.js" &
 # Section 8.5 — Courts, Enforcement & Disciplinary
-run_test "austlii"              "server/tests/test-austlii.js" &
+run_test "court-records"        "server/tests/test-court-records.js" &
 run_test "fwo"                  "server/tests/test-fwo.js" &
 
 wait
@@ -75,7 +75,7 @@ echo ""
 
 # Print output for any failed tests
 OVERALL=0
-for label in asic-parser vicbpc wa-building qbcc-excluded nsw-fairtrading vic-vba-licence wa-be-licence sa-cbs-licence nt-building-licence act-licence tas-cbos-licence act-licences nsw-fairtrading-scraper nt-building-practitioners wa-licence-register vic-vba-licence asic-insolvency ato-debt payment-times modern-slavery qbcc-adjudication austlii fwo; do
+for label in asic-parser vicbpc wa-building qbcc-excluded nsw-fairtrading vic-vba-licence wa-be-licence sa-cbs-licence nt-building-licence act-licence tas-cbos-licence act-licences nsw-fairtrading-scraper nt-building-practitioners wa-licence-register vic-vba-licence asic-insolvency ato-debt payment-times modern-slavery qbcc-adjudication court-records fwo; do
   exit_code=$(cat "$LOG_DIR/${label}.exit" 2>/dev/null || echo 1)
   if [ "$exit_code" != "0" ]; then
     OVERALL=1
@@ -89,7 +89,7 @@ done
 
 # Always print full output for all tests (verbose mode)
 if [ "${VERBOSE:-}" = "1" ]; then
-  for label in asic-parser vicbpc wa-building qbcc-excluded nsw-fairtrading vic-vba-licence wa-be-licence sa-cbs-licence nt-building-licence act-licence tas-cbos-licence act-licences nsw-fairtrading-scraper nt-building-practitioners wa-licence-register vic-vba-licence asic-insolvency ato-debt payment-times modern-slavery qbcc-adjudication austlii fwo; do
+  for label in asic-parser vicbpc wa-building qbcc-excluded nsw-fairtrading vic-vba-licence wa-be-licence sa-cbs-licence nt-building-licence act-licence tas-cbos-licence act-licences nsw-fairtrading-scraper nt-building-practitioners wa-licence-register vic-vba-licence asic-insolvency ato-debt payment-times modern-slavery qbcc-adjudication court-records fwo; do
     echo "──────────────────────────────────────────────────────────"
     echo "  Output: $label"
     echo "──────────────────────────────────────────────────────────"

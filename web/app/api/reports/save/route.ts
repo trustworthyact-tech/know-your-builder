@@ -138,7 +138,7 @@ export async function POST(req: NextRequest) {
       const nonLinkResults = results.filter((r) => r.key !== 'links');
       const totalHits = nonLinkResults.reduce((n, r) => n + (r.results?.length ?? 0), 0);
       const courtHits = results
-        .filter((r) => r.key.startsWith('austlii_'))
+        .filter((r) => r.key.startsWith('courts_'))
         .reduce((n, r) => n + (r.results?.length ?? 0), 0);
       const hasFindings = totalHits > 0;
 

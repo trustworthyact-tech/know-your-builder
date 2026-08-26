@@ -83,9 +83,9 @@ async function runSearch(entityName: string, entityAbn: string): Promise<Record<
 
 // ─── Diff engine ──────────────────────────────────────────────────────────────
 
-const AUSTLII_KEYS = [
-  'austlii_federal', 'austlii_qld', 'austlii_nsw', 'austlii_vic',
-  'austlii_wa', 'austlii_sa', 'austlii_nt', 'austlii_act', 'austlii_tas',
+const COURT_KEYS = [
+  'courts_federal', 'courts_qld', 'courts_nsw', 'courts_vic',
+  'courts_wa', 'courts_sa', 'courts_nt', 'courts_act', 'courts_tas',
 ];
 
 function detectChanges(
@@ -143,11 +143,11 @@ function detectChanges(
     });
   }
 
-  // Court/tribunal decisions across all AustLII jurisdictions
+  // Court/tribunal decisions across all court-records jurisdictions
   const sumResults = (f: Record<string, SearchResult>, keys: string[]) =>
     keys.reduce((n, k) => n + (f[k]?.results?.length ?? 0), 0);
-  const newCourt = sumResults(newF, AUSTLII_KEYS);
-  const oldCourt = sumResults(oldF, AUSTLII_KEYS);
+  const newCourt = sumResults(newF, COURT_KEYS);
+  const oldCourt = sumResults(oldF, COURT_KEYS);
   if (newCourt > oldCourt) {
     alerts.push({
       alertType: AlertType.COURT_DECISION,
