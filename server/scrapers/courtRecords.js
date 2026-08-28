@@ -105,27 +105,40 @@ function stripCompanySuffix(name) {
   return stripped || name; // don't return an empty string if stripping consumed everything
 }
 
-// Returns true when at least one distinctive word from `term` appears in `title`.
-// Prevents NSW Caselaw's broad relevance search from returning cases that only share a
-// generic word (e.g. "Services") with the searched entity. Word-boundary match —
-// plain substring search would match a short numeric term like "37" inside an
-// unrelated case number or address (e.g. "237").
+// Returns true only when `term` appears as a contiguous phrase in `title` — i.e. the
+// searched entity is actually named as a party, not just sharing one word with an
+// unrelated party. These search engines (NSW Caselaw, Federal Court, NT) rank by
+// full-text relevance, so a plain "any distinctive word" match let through cases about a
+// completely different entity that merely shares a word — e.g. searching "BHP Group
+// Limited" (2026-08-26 production report, ABN 49004028077) returned "BHP Coal Pty Ltd v
+// Mining and Energy Union", "BHP Steel v Oliver", "BHP Titanium Minerals", "BHP
+// Refractories Pty Ltd" and similar — all real but legally distinct BHP-group entities,
+// not BHP Group Limited itself. Requiring the full name together (word-boundary,
+// punctuation/whitespace-insensitive between words) fixes that: only titles containing
+// "BHP Group Limited" itself (e.g. "Impiombato v BHP Group Limited (No 6)") pass.
 //
-// Threshold is length > 2 (not > 3): plenty of real, highly-distinctive company names
-// reduce to a 3-letter ticker/acronym once suffixes are stripped — e.g. "BHP Group
-// Limited" strips to "BHP Group", and "Group" is itself a COMMON_WORDS entry, so a > 3
-// threshold left zero distinctive words for "BHP" itself. With zero distinctive words
-// this function falls through to "can't filter, let everything through" (below), which
-// silently turned every Federal Court query for a short-name entity like BHP into an
-// unfiltered dump of irrelevant cases rather than an entity-matched result set.
+// Single-word fallback: only used when the term ITSELF is a single word after stripping
+// company suffixes (e.g. "Multiplex", "Bunter") — there's no multi-word phrase to require
+// in that case, so word-boundary match on that one word is the strictest available check,
+// not a loosened substitute for the phrase match above.
 function titleMatchesTerm(title, term) {
-  const words = term
-    .toLowerCase()
-    .split(/\W+/)
-    .filter((w) => (w.length > 2 || /^\d+$/.test(w)) && !COMMON_WORDS.has(w));
-  if (words.length === 0) return true; // no distinctive words — can't filter
   const lower = title.toLowerCase();
-  return words.some((w) => new RegExp(`\\b${escapeRegExp(w)}\\b`).test(lower));
+  const allWords = term.toLowerCase().split(/\W+/).filter(Boolean);
+
+  if (allWords.length > 1) {
+    const phrase = allWords.map(escapeRegExp).join('\\W+');
+    if (new RegExp(`\\b${phrase}\\b`).test(lower)) return true;
+    return false;
+  }
+
+  if (allWords.length === 1) {
+    const [w] = allWords;
+    if ((w.length > 2 || /^\d+$/.test(w)) && !COMMON_WORDS.has(w)) {
+      return new RegExp(`\\b${escapeRegExp(w)}\\b`).test(lower);
+    }
+  }
+
+  return true; // no distinctive words at all in the term — can't filter
 }
 
 // Returns a per-jurisdiction term memoizer: dedupes concurrent calls for the same term

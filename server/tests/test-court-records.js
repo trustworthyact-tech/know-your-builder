@@ -154,35 +154,56 @@ const FALLBACK_JURISDICTIONS = ['qld', 'vic', 'wa', 'sa', 'tas'];
   }
 
   // ── Step 1b: regression guard for the BHP false-negative (2026-08-26) ──────────────
-  // Production returned "no cases found" for Federal Court on a real BHP search despite
-  // BHP having a huge Federal Court history. Root cause was two compounding bugs: (1)
-  // titleMatchesTerm's >3-char distinctive-word threshold filtered out "BHP" itself
-  // (3 chars) while "Group" was already a COMMON_WORDS entry, leaving zero distinctive
-  // words and falling through to "let everything through" — unfiltered noise, not zero
-  // results, but (2) separately, Federal Court's search returns 1,514 total hits for
-  // "BHP" sorted by genuine relevance, and none of the top 20 (the default page size)
-  // have "BHP" in the title — real matches only surface once num_ranks=100 widens the
-  // window. Fixed by lowering the threshold to >2 chars and adding num_ranks=100 to the
-  // Federal Court search URL. This step guards against either fix silently regressing.
+  // Production originally returned "no cases found" for Federal Court on a real BHP
+  // search despite BHP having a huge Federal Court history — fixed by adding
+  // num_ranks=100 to the Federal Court search URL (Federal Court's search returns 1,514
+  // total hits for "BHP" sorted by genuine relevance, and none of the default top-20 page
+  // have "BHP" in the title). This step guards against that recall fix regressing.
   step('\nStep 1b: BHP Group Limited on Federal Court (regression guard)...');
   try {
     const bhp = await searchCourtRecords('BHP Group Limited', [], 'federal');
-    const titleMatches = bhp.results.filter((r) => /\bbhp\b/i.test(r.title));
+    const titleMatches = bhp.results.filter((r) => /\bbhp\s+group\s+limited\b/i.test(r.title));
     if (titleMatches.length < 1) {
       fail('Step 1b',
         `0 of ${bhp.results.length} Federal Court result(s) for "BHP Group Limited" ` +
-        'actually contain "BHP" in the title.\n' +
-        'Check: (a) titleMatchesTerm\'s word-length threshold in courtRecords.js is ' +
-        'still >2, not reverted to >3; (b) num_ranks=100 is still present in ' +
-        'fetchFederalTermResults\'s searchUrl — without it the default page size (20) ' +
-        `is nowhere near enough for a high-volume entity like BHP.\nsearchUrl: ${bhp.searchUrl}`);
+        'actually contain "BHP Group Limited" (as a full phrase) in the title.\n' +
+        'Check: num_ranks=100 is still present in fetchFederalTermResults\'s searchUrl ' +
+        `— without it the default page size (20) is nowhere near enough for a ` +
+        `high-volume entity like BHP.\nsearchUrl: ${bhp.searchUrl}`);
       failed++;
     } else {
-      pass('Step 1b', `${titleMatches.length} genuine BHP title-match(es) found (e.g. "${titleMatches[0].title}")`);
+      pass('Step 1b', `${titleMatches.length} genuine BHP Group Limited title-match(es) found (e.g. "${titleMatches[0].title}")`);
       passed++;
     }
   } catch (e) {
     fail('Step 1b', `searchCourtRecords threw for the BHP regression check: ${e.message}`, e.stack);
+    failed++;
+  }
+
+  // ── Step 1c: regression guard for the BHP same-word-different-entity noise (2026-08-26) ──
+  // A real production search for "BHP Group Pty Ltd" (ABN 49004028077) returned a wall of
+  // unrelated BHP-group litigation — "BHP Coal Pty Ltd v Mining and Energy Union", "BHP
+  // Steel v Oliver", "BHP Titanium Minerals", "BHP Refractories Pty Ltd", etc. — because
+  // "BHP Group" stripped to the single distinctive word "BHP" ("Group" is a COMMON_WORDS
+  // entry) and any title containing that one word passed. Fixed by requiring the full
+  // multi-word term to appear together as a phrase. This step guards against that
+  // full-phrase requirement being loosened back to single-word matching.
+  step('\nStep 1c: BHP Group Limited excludes same-word different-entity noise (regression guard)...');
+  try {
+    const bhp = await searchCourtRecords('BHP Group Limited', [], 'nsw');
+    const noise = bhp.results.filter((r) => !/\bbhp\s+group\s+limited\b/i.test(r.title));
+    if (noise.length > 0) {
+      fail('Step 1c',
+        `${noise.length} NSW result(s) for "BHP Group Limited" don't contain the full ` +
+        `phrase "BHP Group Limited" in the title (e.g. "${noise[0].title}") — ` +
+        'titleMatchesTerm in courtRecords.js has likely regressed to single-word matching.');
+      failed++;
+    } else {
+      pass('Step 1c', `All ${bhp.results.length} NSW result(s) genuinely contain "BHP Group Limited" — no same-word noise`);
+      passed++;
+    }
+  } catch (e) {
+    fail('Step 1c', `searchCourtRecords threw for the BHP noise regression check: ${e.message}`, e.stack);
     failed++;
   }
 
