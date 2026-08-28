@@ -36,6 +36,14 @@ nixPkgs = [
 
 [variables]
 PUPPETEER_SKIP_CHROMIUM_DOWNLOAD = "true"
+# puppeteer@25 also downloads a separate chrome-headless-shell binary during `npm ci`,
+# which PUPPETEER_SKIP_CHROMIUM_DOWNLOAD does not cover. This build's container lacks
+# tar/unzip to extract it, so that download now fails the build outright (confirmed
+# 2026-08-28 — a build that changed no dependencies failed here where the prior one
+# succeeded, so something about the builder image changed underneath us). Neither
+# downloaded binary is ever used anyway — PUPPETEER_EXECUTABLE_PATH below always points
+# at the Nix-provided system Chromium. Skip all of Puppeteer's own browser downloads.
+PUPPETEER_SKIP_DOWNLOAD = "true"
 # /run/current-system/sw/bin/chromium is a NixOS system-profile path that never existed
 # in this Docker-based nixpacks build — it was masked until now because ERR_REQUIRE_ESM
 # (see nixPkgs comment above) crashed before puppeteer.launch() ever ran. Confirmed via
