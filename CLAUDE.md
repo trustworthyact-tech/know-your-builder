@@ -567,6 +567,20 @@ not `'license'`). Wired into `server/index.js` (new `actDisciplinary` search ent
 `riskGrouper.ts` (LICENSING trigger mirroring `vicBpc`'s "any result found" pattern). Live-verified
 against real hits for both a company (`KEGGINS INDUSTRIAL PTY LTD`) and an individual (`Jonny Rosso`).
 
+**Unrelated build breakage hit while deploying the above (2026-08-28, fixed same day)**: the very
+next deploy after the SA removal failed at `npm ci` with `Failed to set up chrome-headless-shell:
+Extraction failed: Required native binary ('tar.exe' or 'unzip') was not found in the system PATH`
+— reproduced identically on a from-scratch redeploy retry, so not a one-off flake. Neither commit
+being deployed touched `package.json`/the lockfile/`nixpacks.toml`, yet the prior deploy (20 minutes
+earlier, identical dependency set) had built fine — something in Railway's Nixpacks builder image
+changed underneath us. Root cause: `nixpacks.toml`'s existing `PUPPETEER_SKIP_CHROMIUM_DOWNLOAD`
+only skips the main Chromium binary; puppeteer@25 separately downloads `chrome-headless-shell` too,
+which that variable doesn't cover, and this build container apparently lacks `tar`/`unzip` to
+extract it. Neither downloaded binary is ever used regardless — `PUPPETEER_EXECUTABLE_PATH` already
+points at the Nix-provided system Chromium — so fixed by adding the broader `PUPPETEER_SKIP_DOWNLOAD
+= "true"` to `nixpacks.toml`, which skips all of Puppeteer's own browser downloads. Confirmed fixed:
+next deploy built and ran successfully.
+
 ### Production Vercel env vars — Stripe/Google are placeholders (2026-08-03)
 
 `web` project's **Production** environment has real values for everything except `STRIPE_SECRET_KEY`,
