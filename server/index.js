@@ -24,7 +24,6 @@ const { searchNSWFairTrading } = require('./scrapers/nswFairTrading');
 const { searchNTBuildingPractitioners } = require('./scrapers/ntBuildingPractitioners');
 const { searchACTLicences } = require('./scrapers/actLicences');
 const { searchWALicenceRegister } = require('./scrapers/waLicenceRegister');
-const { searchSALicenceRegister } = require('./scrapers/saLicenceRegister');
 const { searchTASLicenceRegister } = require('./scrapers/tasLicenceRegister');
 const { searchAsicExtract } = require('./scrapers/asicExtract');
 const { searchAfsaNpii } = require('./scrapers/afsaNpii');
@@ -304,11 +303,6 @@ app.post('/api/search', searchLimiter, async (req, res) => {
       key: 'waLicenceRegister',
       label: 'WA Building Services — Contractor Licence Register',
       fn: async () => searchWALicenceRegister(companyName, abn, await resolveDirectors()),
-    },
-    {
-      key: 'saLicenceRegister',
-      label: 'SA Consumer & Business Services — Licence Register',
-      fn: async () => searchSALicenceRegister(companyName, abn, await resolveDirectors(), process.env.CAPTCHA_API_KEY),
     },
     {
       key: 'tasLicenceRegister',

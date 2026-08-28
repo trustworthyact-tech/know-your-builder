@@ -219,7 +219,6 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
   const ntBuildingPractitioners = byKey('ntBuildingPractitioners');
   const actLicences = byKey('actLicences');
   const waLicenceRegister = byKey('waLicenceRegister');
-  const saLicenceRegister = byKey('saLicenceRegister');
   const tasLicenceRegister = byKey('tasLicenceRegister');
   const asicExtract = byKey('asicExtract');
   const afsaNpii = byKey('afsaNpii');
@@ -311,7 +310,6 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
   const ntBuildingPractitionersItems: ResultItem[] = ntBuildingPractitioners?.results ?? [];
   const actLicencesItems: ResultItem[] = actLicences?.results ?? [];
   const waLicenceRegisterItems: ResultItem[] = waLicenceRegister?.results ?? [];
-  const saLicenceRegisterItems: ResultItem[] = saLicenceRegister?.results ?? [];
   const tasLicenceRegisterItems: ResultItem[] = tasLicenceRegister?.results ?? [];
   const qbccEnforcementItems: ResultItem[] = qbcc?.enforcementResults ?? [];
   const licenceItems: ResultItem[] = [
@@ -323,7 +321,6 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
     ...ntBuildingPractitionersItems,
     ...actLicencesItems,
     ...waLicenceRegisterItems,
-    ...saLicenceRegisterItems,
     ...tasLicenceRegisterItems,
   ];
   const courtItems: ResultItem[] = [
@@ -367,7 +364,6 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
       ntBuildingPractitioners?.status ?? 'done',
       actLicences?.status ?? 'done',
       waLicenceRegister?.status ?? 'done',
-      saLicenceRegister?.status ?? 'done',
       tasLicenceRegister?.status ?? 'done',
     ]) ? 'unavailable' : 'clear'
   );
@@ -522,18 +518,6 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
     searchUrl: waLicenceRegister?.searchUrl,
     results: waLicenceRegister?.results ?? [],
     summary: waLicenceRegister?.summary ?? 'No WA building licence records found',
-  };
-
-  const saLicenceRegisterSearch: SearchResult = {
-    key: 'saLicenceRegister',
-    label: 'SA Consumer & Business Services — Licence Register',
-    status: saLicenceRegister?.status ?? 'done',
-    source: 'SA Consumer & Business Services',
-    jurisdiction: 'SA',
-    category: 'license',
-    searchUrl: saLicenceRegister?.searchUrl,
-    results: saLicenceRegister?.results ?? [],
-    summary: saLicenceRegister?.summary ?? 'No SA licence records found',
   };
 
   const tasLicenceRegisterSearch: SearchResult = {
@@ -725,7 +709,6 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
             ntBuildingPractitionersSearch,
             actLicencesSearch,
             waLicenceRegisterSearch,
-            saLicenceRegisterSearch,
             tasLicenceRegisterSearch,
           ]}
           riskLevel={s82Risk}

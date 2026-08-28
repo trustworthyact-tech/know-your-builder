@@ -35,7 +35,6 @@ const INITIAL_SEARCHES: SearchResult[] = [
   { key: 'ntBuildingPractitioners', label: 'NT Building Practitioners Board — Licence Register',  status: 'idle' },
   { key: 'actLicences',             label: 'ACT Access Canberra — Builder Licence Register',      status: 'idle' },
   { key: 'waLicenceRegister',       label: 'WA Building Services — Contractor Licence Register',  status: 'idle' },
-  { key: 'saLicenceRegister',       label: 'SA Consumer & Business Services — Licence Register',  status: 'idle' },
   { key: 'tasLicenceRegister',      label: 'TAS Occupational Licensing — Licence Register',       status: 'idle' },
   { key: 'asicExtract',      label: 'ASIC — Director Company History',              status: 'idle' },
 ];
