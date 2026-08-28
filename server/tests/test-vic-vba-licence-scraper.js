@@ -3,22 +3,23 @@
  *
  * PURPOSE
  *   Verifies that searchVicVbaLicence() returns a well-formed response when
- *   given a known entity. The scraper uses Puppeteer to interact with the VBA
- *   BAMS Salesforce LWC SPA, intercepting the Aura API response to extract
- *   practitioner records.
+ *   given a known entity. The scraper queries Victoria's open-data portal
+ *   (CKAN datastore_search API) for the same register previously scraped live
+ *   via Puppeteer against the BAMS Salesforce SPA — no browser required.
  *
- *   Fixture: "Multiplex" — confirmed present in the BAMS register by
- *   test-vic-vba-licence.js (probe test, 2026-06-11).
+ *   Fixture: "Arena Construction Group Pty Ltd" — confirmed present in the
+ *   open-data VBA licence register dataset (live-verified 2026-08-28,
+ *   ACN 687010251, Accreditation CDB-L 100246, status Current).
  *
  *   Two-layer check:
  *     • scraper returns wrong shape → test fails on shape check
- *     • scraper returns 0 results  → WARN with diagnostic (not a FAIL — Multiplex
- *       may have changed registration status)
+ *     • scraper returns 0 results  → WARN with diagnostic (not a FAIL — the
+ *       fixture entity's accreditation status may have changed)
  *     • scraper throws             → FAIL
  *
  * REQUIREMENTS
- *   Puppeteer (installed in server/node_modules). No API keys, no CAPTCHA.
- *   Expect ~30-60 seconds for the test to complete.
+ *   axios only (already a dependency). No API keys, no CAPTCHA, no browser.
+ *   Should complete in a few seconds.
  *
  * USAGE
  *   node server/tests/test-vic-vba-licence-scraper.js
@@ -30,14 +31,13 @@
  *
  * HOW TO INTERPRET FAILURE
  *   "Step 1 FAIL: scraper threw"
- *     → Puppeteer or BAMS SPA issue. Run the probe test for more detail:
- *       node server/tests/test-vic-vba-licence.js --name "Multiplex"
+ *     → axios/network issue, or the CKAN API shape changed.
  *   "Step 2 FAIL: missing field"
- *     → Shape contract changed in vicVbaLicence.js or the Aura response shape changed.
+ *     → Shape contract changed in vicVbaLicence.js or the datastore_search response shape changed.
  *   "Step 3 WARN: 0 results"
- *     → Multiplex may not be in the register, or nameMatchesEntity filtered it out.
- *       Run: node server/tests/test-vic-vba-licence-scraper.js --name "Multiplex"
- *       or visit https://bams.vba.vic.gov.au/bams/s/practitioner-search
+ *     → Fixture entity may no longer be in the register, or nameMatchesEntity filtered it out.
+ *       Run: node server/tests/test-vic-vba-licence-scraper.js --name "Known Licensee"
+ *       or visit https://www.vba.vic.gov.au/tools/find-practitioner
  */
 
 'use strict';
@@ -48,8 +48,9 @@ const axios = require('axios');
 const { searchVicVbaLicence } = require(path.join(__dirname, '../scrapers/vicVbaLicence'));
 const { pass, fail, step, warn, dump, header, summary } = require('./lib/helpers');
 
-const BAMS_URL = 'https://bams.vba.vic.gov.au/bams/s/practitioner-search';
-const DEFAULT_FIXTURE = 'Multiplex';
+const DATASTORE_URL = 'https://discover.data.vic.gov.au/api/3/action/datastore_search';
+const RESOURCE_ID = '3599fa1f-29f3-417e-8679-1842e2e6e2df';
+const DEFAULT_FIXTURE = 'Arena Construction Group Pty Ltd';
 
 const args = process.argv.slice(2);
 const nameIdx = args.indexOf('--name');
@@ -61,7 +62,7 @@ const fixtureName = nameIdx !== -1 ? args[nameIdx + 1] : DEFAULT_FIXTURE;
   let failed = 0;
 
   step(`Fixture: "${fixtureName}"`);
-  step('Note: this test takes 30-60 seconds due to Puppeteer + BAMS SPA interaction.');
+  step('Note: this test queries the public open-data CKAN API directly — should be quick.');
 
   // ── Step 1: Call scraper ───────────────────────────────────────────────────
   step(`Step 1: Calling searchVicVbaLicence("${fixtureName}", "", [])...`);
@@ -72,12 +73,15 @@ const fixtureName = nameIdx !== -1 ? args[nameIdx + 1] : DEFAULT_FIXTURE;
   } catch (e) {
     fail('Step 1', `searchVicVbaLicence threw: ${e.message}`, e.stack);
     step('');
-    step('Diagnostic: check if BAMS is reachable...');
+    step('Diagnostic: check if the open-data API is reachable...');
     try {
-      const { status } = await axios.get(BAMS_URL, { timeout: 10000 });
-      step(`  BAMS returned HTTP ${status} — site is up; issue is likely scraper logic`);
+      const { status } = await axios.get(DATASTORE_URL, {
+        params: { resource_id: RESOURCE_ID, q: fixtureName, limit: 1 },
+        timeout: 10000,
+      });
+      step(`  datastore_search returned HTTP ${status} — API is up; issue is likely scraper logic`);
     } catch (axErr) {
-      step(`  BAMS unreachable: ${axErr.message} — possible network issue`);
+      step(`  datastore_search unreachable: ${axErr.message} — possible network issue`);
     }
     summary(0, 1);
     process.exit(1);
@@ -130,9 +134,9 @@ const fixtureName = nameIdx !== -1 ? args[nameIdx + 1] : DEFAULT_FIXTURE;
   if (result.results.length === 0) {
     warn(`0 results returned for "${fixtureName}".`);
     warn('This may be expected if:');
-    warn('  - Multiplex is no longer registered with VBA');
+    warn('  - the fixture entity is no longer registered with VBA');
     warn('  - nameMatchesEntity filtered out results (check significant words)');
-    warn(`  - Browse manually: ${BAMS_URL}`);
+    warn(`  - Browse manually: https://www.vba.vic.gov.au/tools/find-practitioner`);
     warn(`Re-run with --name "Known Licensee" to test with a different fixture.`);
     pass('Step 3', '0 results — shape is valid, scraper did not error (WARN only)');
     passed++;

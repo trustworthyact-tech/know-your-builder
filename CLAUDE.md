@@ -313,7 +313,8 @@ director name ever reached the checks that would have caught it.**
 — the union of whatever the searcher typed into the form and whatever `asic.js` discovers. At
 least 10 scrapers depend on its output: `asicDisqualified`, `asicExtract`, `qbcc`, `vicBpc`,
 `vicVbaLicence`, `waBuildingEnergy`, `nswFairTrading`, `ntBuildingPractitioners`, `actLicences`,
-`waLicenceRegister`, `saLicenceRegister`, `tasLicenceRegister`, and `afsaNpii`. If nobody types
+`waLicenceRegister`, `tasLicenceRegister`, and `afsaNpii` (`saLicenceRegister` was removed
+2026-08-28, see below). If nobody types
 the director's name in manually (the typical case — a homeowner searching a builder rarely knows
 director names upfront), every one of those depends entirely on `asic.js` finding them.
 
@@ -442,7 +443,7 @@ see "Puppeteer-dependent scrapers systemically starved" further down):**
 - ~~If it does turn out to be "rendered, but with the wrong content," build a positive completion
   check for `fetchAdfDpnSearch`~~ Moot — `fetchAdfDpnSearch` no longer exists.
 
-### Puppeteer-dependent scrapers systemically starved under real concurrent search load — now confirmed to affect non-Puppeteer scrapers too (2026-08-19)
+### Puppeteer-dependent scrapers systemically starved under real concurrent search load — now confirmed to affect non-Puppeteer scrapers too (2026-08-19) — ROOT-CAUSED, NOT COMPUTE (2026-08-28) — FIXED (2026-08-28)
 
 Follow-up to the "four scrapers never finish" finding in the superseded entry above, now with
 much more severe evidence from a full-search test run **after** the ASIC DPN migration landed
@@ -465,18 +466,106 @@ cuts the connection. Severity looks worse than the "4 scrapers hung" state obser
 session — either load has increased, or the earlier characterization was incomplete (that test
 predates this one, wasn't specifically checking for this pattern).
 
-**Not yet done** (supersedes/expands the equivalent item in the entry above):
-- Root-cause via Railway's own metrics (CPU/memory graphs for the `know-your-builder-server`
-  service) during a load spike, not just NDJSON output — need to know if this is CPU starvation,
-  memory pressure, or genuinely an infra-side proxy timeout independent of server load.
-- If it's resource starvation: `MAX_CONCURRENT_PAGES` (`browser.js`, currently 3) and/or the
-  Railway service's resource allocation (currently `hobby` plan, confirmed via `railway status
-  --json`) likely both need attention — reducing concurrent Puppeteer pages further and/or
-  upgrading the plan are the two levers, not mutually exclusive.
-- Consider whether Railway's proxy has a fixed request timeout shorter than a worst-case full
-  search currently takes, independent of server-side performance — would explain why the same
-  symptom (partial NDJSON, clean-looking stream end) recurs even as the specific scrapers
-  affected varies between runs.
+**Root-caused (2026-08-28) — it is not compute starvation.** Reproduced the exact symptom live
+against production (`CONSTRUCTION VICTORIA PROPRIETARY LIMITED` / Veronica Roberts, same case
+used throughout this investigation): 8 of 29 scrapers (`courts_federal`, `courts_nt`, `qbcc`,
+`vicBpc`, `waLicenceRegister`, `saLicenceRegister`, `tasLicenceRegister`, `asicExtract`) never
+reached `done`/`error` even after 4 minutes, matching the historical pattern. Pulled Railway's own
+CPU/memory metrics (`railway metrics --raw --cpu --memory --json`) for that exact window
+(2026-08-28T01:33–01:40Z): CPU peaked at 0.37 vCPU of the 8 vCPU limit (**4.7%** utilization),
+memory peaked at 1.36GB of the 8GB limit (**16.6%**). The container had large headroom in both
+dimensions the entire time scrapers were stuck — this rules out CPU starvation, memory pressure,
+and "hobby plan too small" as the cause. Do not spend further effort on Railway resource
+allocation for this issue.
+
+The real mechanism: every one of the 8 stuck scrapers routes through the shared Puppeteer instance
+in `browser.js` (`getBrowser()` / `fetchWithBrowser*`), which gates concurrency to
+`MAX_CONCURRENT_PAGES` (currently 3) via a single FIFO wait queue (`acquirePageSlot`,
+`browser.js:22-27`). One or more page acquisitions is genuinely hanging — most likely a live
+external site's WAF/CAPTCHA/slow load with no timeout wrapping the page lifecycle — and because
+all Puppeteer scrapers share the same 3-slot queue, everything queued behind a hung page waits
+forever too, regardless of host resources. This also explains why the old (pre-migration)
+`asicDisqualified` got caught in the same failure in the 2026-08-19 test above (it still went
+through `getBrowser()` at the time) while the current dataset-based `asicDisqualified` — no longer
+Puppeteer-dependent — completed cleanly in this reproduction.
+
+**Identified the actual leaking scraper (2026-08-28)**: repeated live trials (3 full concurrent
+`/api/search` runs) showed the stuck-scraper set shrinking run-to-run (8 → 3 → 1) rather than
+staying constant — a red flag that ruled out "one scraper always hangs" and pointed instead at a
+cumulative leak that partially drains between requests. Cross-referencing `railway logs` for the
+test window against the code found it: `saLicenceRegister.js`'s `passGateAndGetPage()` helper
+(then at `saLicenceRegister.js:39-80`) called `browser.newPage()` with no try/finally of its own.
+Its caller initialized `let page = null` and only assigned `page = await passGateAndGetPage(...)`
+inside its own try block (then `saLicenceRegister.js:270-273`) — if `passGateAndGetPage` threw
+*after* creating the page but *before* returning it (confirmed happening via
+`[saLicenceRegister] gate/search error: Navigation timeout of 30000 ms exceeded` in production
+logs, i.e. its `waitForNavigation({ timeout: 30_000 })` at line 76), the outer `page` variable
+stayed `null` and the caller's `finally { if (page) await page.close() }` never closed the real,
+already-open page. That page's `MAX_CONCURRENT_PAGES` slot (`browser.js`) then leaked permanently
+for the life of the server process, since the slot only frees on the page's `'close'` event.
+Confirmed as the *only* file in `server/scrapers/` with this deferred-null-then-helper-assignment
+pattern (grepped every other Puppeteer scraper — all of them create and close their page in the
+same function scope). The interleaved `[qbcc] ProtocolError: Failed to open a new tab` /
+`[tasLicenceRegister] ... detached Frame` errors seen in the same logs are downstream victims —
+SA's leaked tabs eating real Chromium tab capacity from the shared pool, not leaks of their own.
+
+**Fixed (2026-08-28)**: rather than patch the leak, removed `saLicenceRegister.js` entirely (no
+viable open-data replacement exists for this specific register — see the licence-database bulk/API
+research below) and re-ran the same 3-trial live test against production. Result: 27-28 of 28
+remaining scrapers reached `done`/`error` in every trial (one trial had a single `tasLicenceRegister`
+hold-out past the 240s cutoff, with no errors logged for it — looks like ordinary slow CAPTCHA-solve
+latency, not a leak); the other two trials completed *the entire stream* in ~213s with zero stuck
+scrapers. Zero `Failed to open a new tab` /
+`detached Frame` / `Target closed` errors appeared anywhere in the post-fix logs. Confirmed fixed —
+no further action needed on this issue. The general class of bug (an unguarded page creation inside
+a helper whose caller's cleanup depends on the helper returning normally) is still worth keeping in
+mind if new Puppeteer scrapers are added — see `browser.js:48-56`'s `attachPageGate` comment, which
+already documents the assumption that "scrapers already close their page in a finally block."
+
+### `vicVbaLicence.js` swapped from Puppeteer to VIC's open-data API (2026-08-28)
+
+Was driving headless Chromium against `https://bams.vba.vic.gov.au/bams/s/practitioner-search` (a
+Salesforce Experience Cloud SPA), intercepting an internal Aura `ApexAction.execute` XHR response
+for `PractitionerDetailList` — one more consumer of the shared `MAX_CONCURRENT_PAGES` pool. Found
+that Victoria's Building Practitioner Register is published as a live CKAN datastore on
+data.vic.gov.au (resource `3599fa1f-29f3-417e-8679-1842e2e6e2df`, no auth, updated weekly, 48k+
+records, full-text search via `q=`) — the exact same underlying register. Rewrote the file to call
+`https://discover.data.vic.gov.au/api/3/action/datastore_search` via `axios` instead, following
+`actLicences.js`'s idiom (same `nameMatchesEntity()` whole-word matcher, per-query try/catch,
+dedupe by `Accreditation ID`). Output contract (`source`/`jurisdiction`/`category`/`results[]`/
+`searchUrl`/`summary`, item shape) preserved unchanged — `server/index.js`'s call site needed no
+changes. Live-verified against real data (`ARENA CONSTRUCTION GROUP PTY LTD` → status `Current`,
+ACN `687010251`).
+
+Also found and fixed a separate, pre-existing gap while touching this scraper: its results never
+reached `ReportContent.tsx` or `riskGrouper.ts` at all — only `SearchContent.tsx`'s progress
+spinner knew about the `vicVbaLicence` key. Wired it into both: `byKey`/`licenceItems`/the s82
+`isAllErrored` array/a synthetic `vicVbaLicenceSearch` object/the s82 `searchResults` array in
+`ReportContent.tsx`, and a LICENSING risk trigger in `riskGrouper.ts` (reuses the existing
+`hasInactiveStatus()` helper, same pattern as `qbcc`'s licence-status check — triggers `significant`
+severity when any result's status isn't current).
+
+### Added ACT Register of Disciplinary Actions (2026-08-28)
+
+ACT's open-data Socrata portal (already partially used by `actLicences.js` for current licence
+status via `de4w-gbt3`) also publishes a second, separate dataset that nothing in this codebase
+queried: `avib-prrz`, the Register of Disciplinary Actions — ACT's equivalent of QBCC's excluded-
+persons register or VBA's disciplinary register, both of which have no open-data equivalent in
+their own states. Confirmed live (`Last-Modified` was the day before testing) with real entries
+(e.g. `KEGGINS INDUSTRIAL PTY LTD` — Automatic Suspension under s50A of the Construction
+Occupations Licensing Act 2004 for lacking an active licensed nominee; individual licensees like
+`Jonny Rosso` also appear, via a single combined `licensee_name` field rather than the
+`surname`/`given_names` split the existing `de4w-gbt3` dataset uses).
+
+Added `searchACTDisciplinary(companyName, abn, directors)` to `actLicences.js`, reusing its
+existing `escapeRegExp`/`nameMatchesEntity`/`socrataEscape`/`BUILDING_OCCUPATIONS` helpers. Matches
+by `licensee_name` (upper-LIKE) and by ACN — derived from either a bare 9-digit ACN or the last 9
+digits of an 11-digit ABN, since `a_c_n` is stored inconsistently (spaced vs. unspaced) and compared
+digit-stripped. Output contract mirrors `vicBpc.js` (a disciplinary register, `category: 'regulatory'`,
+not `'license'`). Wired into `server/index.js` (new `actDisciplinary` search entry),
+`SearchContent.tsx`, `ReportContent.tsx` (same five spots as `vicVbaLicence` above), and
+`riskGrouper.ts` (LICENSING trigger mirroring `vicBpc`'s "any result found" pattern). Live-verified
+against real hits for both a company (`KEGGINS INDUSTRIAL PTY LTD`) and an individual (`Jonny Rosso`).
 
 ### Production Vercel env vars — Stripe/Google are placeholders (2026-08-03)
 
@@ -504,6 +593,47 @@ at `https://check.trustworthypayments.com/api/payments/webhook` if one doesn't e
 Stripe **restricted key** scoped to PaymentIntents/Subscriptions over the full secret key) and Google Cloud
 Console → OAuth client, then in Vercel: `web` project → Settings → Environments → Production → update the
 four variables → redeploy (env var changes require a fresh deploy to take effect, per `vercel redeploy`).
+
+### No scraper or link covers ASIC's own Court Enforceable Undertakings register (2026-08-27)
+
+**Confirmed via a real production case**: a search for UNIVERSAL PROPERTY GROUP PTY LIMITED (ABN
+98 078 297 748) came back clean, despite the company (and director Bhart Bhushan) having accepted
+an ASIC enforceable undertaking in 2011 over unconscionable conduct in vendor-finance lending
+(ASIC media release
+[11-81MR](https://www.asic.gov.au/about-asic/news-centre/find-a-media-release/2011-releases/11-81mr-property-developer-enters-into-enforceable-undertaking-providing-compensation-for-vendor-finance-borrowers),
+EU document logged on ASIC's [Court Enforceable Undertakings
+Register](https://asic.gov.au/online-services/search-asic-registers/other-registers/court-enforceable-undertakings-register/)).
+Live-verified end to end: ran the actual `/api/search` for this ABN and inspected all 29 result
+lines — nothing resembling this EU appears anywhere, including section 8.1's `asic`/`asicExtract`
+results.
+
+**Root cause is a coverage gap, not a bug.** `grep -ri "enforceable" server/scrapers/*.js` finds
+exactly two things: `fwo.js` (Fair Work Ombudsman underpayment EUs) and `links.js` (manual links
+to *state WHS regulators'* EU pages — WorkSafe VIC/NSW, QLD Office of Industrial Relations).
+Nothing in the codebase — no scraper, not even a `links.js`-style manual link — has ever pointed
+at ASIC's own EU register. It's a completely separate ASIC register from company search
+(`asic.js`), officer/charges search (`asicExtract.js`), or the disqualified-persons dataset
+(`asicDpnDataset.js`) — none of those would surface an EU record even if they were working
+perfectly.
+
+**Separate, already-known issue hit during the same live check**: the `asic.js` company search
+itself returned zero results for this company name — this is the same not-yet-root-caused
+name-only ASIC Connect search failure documented above under "`resolveDirectors()` is currently
+starved." Unrelated to the EU gap (a working company search still wouldn't show an EU record) but
+worth keeping in mind — it means director/company-status data was also missing from this
+particular report, not just the EU. `asicInsolvency` did correctly surface the current
+administration (1 insolvency/winding-up notice found), so that part of the picture came through.
+
+**Not yet done** — deferred, no immediate plan to pick this up:
+- Establish whether ASIC's Court Enforceable Undertakings register has a scrapeable
+  search/listing (plain HTML, API, or CAPTCHA-gated like ASIC Connect) — not yet investigated at
+  all, unlike the AustLII/Federal Court/NT investigations elsewhere in this file.
+- If scrapeable: add it as a new section 8.1 entry (`asicEnforceableUndertakings.js`,
+  `server/index.js` searches array, `INITIAL_SEARCHES` in `SearchContent.tsx`, `ReportContent.tsx`
+  rendering) following the "Adding a new scraper" convention above.
+- If not cheaply scrapeable (CAPTCHA, no full-text search, etc.): add it as a manual link via
+  `links.js` in the meantime, same pattern as the WHS regulator links already there — better than
+  the current state of not being mentioned in the report at all.
 
 ---
 

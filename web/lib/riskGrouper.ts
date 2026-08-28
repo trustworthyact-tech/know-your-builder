@@ -219,11 +219,31 @@ export function riskGrouper(findings: Record<string, SearchResult>): RiskGroupRe
       }
     }
 
+    const vicVbaLicence = resultsOf(findings, 'vicVbaLicence');
+    const inactiveVicVbaLicences = vicVbaLicence.filter(hasInactiveStatus);
+    if (inactiveVicVbaLicences.length > 0) {
+      severity = 'significant';
+      triggers.push({
+        scraperKey: 'vicVbaLicence',
+        finding: `${inactiveVicVbaLicences.length} VIC building practitioner accreditation(s) with non-current status`,
+        anchor: '#s82',
+      });
+    }
+
     const vicBpc = resultsOf(findings, 'vicBpc');
     if (vicBpc.length > 0) {
       triggers.push({
         scraperKey: 'vicBpc',
         finding: `${vicBpc.length} VIC Building and Plumbing Commission enforcement action(s) found`,
+        anchor: '#s82',
+      });
+    }
+
+    const actDisciplinary = resultsOf(findings, 'actDisciplinary');
+    if (actDisciplinary.length > 0) {
+      triggers.push({
+        scraperKey: 'actDisciplinary',
+        finding: `${actDisciplinary.length} ACT disciplinary action(s) found`,
         anchor: '#s82',
       });
     }

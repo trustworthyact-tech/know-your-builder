@@ -4,9 +4,18 @@ const axios = require('axios');
 // No auth required. Company names are stored in the `surname` field;
 // `given_names` is populated for individual practitioners.
 // Building-relevant occupations: Builder, Building Surveyor, Building Assessor.
+//
+// This file also queries a second, separate dataset on the same Socrata portal:
+// the Register of Disciplinary Actions (avib-prrz). Unlike the licence register
+// above, it stores both company and individual names in a single combined
+// `licensee_name` field (no surname/given_names split) and companies carry an
+// `a_c_n` field instead of an ABN.
 
 const RESOURCE_URL = 'https://data.act.gov.au/resource/de4w-gbt3.json';
 const PORTAL_URL = 'https://www.data.act.gov.au/Business-and-Industry/List-of-Professionals/de4w-gbt3';
+
+const DISCIPLINARY_RESOURCE_URL = 'https://data.act.gov.au/resource/avib-prrz.json';
+const DISCIPLINARY_PORTAL_URL = 'https://www.data.act.gov.au/Business-and-Industry/Register-Of-Disciplinary-Actions/avib-prrz';
 
 const BUILDING_OCCUPATIONS = new Set(['Builder', 'Building Surveyor', 'Building Assessor']);
 
@@ -134,4 +143,122 @@ async function searchACTLicences(companyName, abn, directors) {
   };
 }
 
-module.exports = { searchACTLicences };
+// ── Register of Disciplinary Actions (avib-prrz) ────────────────────────────────
+
+async function fetchDisciplinaryByName(query, acnDigits) {
+  const clauses = [];
+  if (query) {
+    clauses.push(`upper(licensee_name) like upper('%${socrataEscape(query)}%')`);
+  }
+  if (acnDigits) {
+    // a_c_n is stored inconsistently ("607 387 208" vs "687010251"); this substring
+    // match catches the unspaced form. The spaced form is still caught downstream
+    // by the digit-stripped comparison in addHits, as long as the name clause above
+    // also matched the row.
+    clauses.push(`upper(a_c_n) like upper('%${acnDigits}%')`);
+  }
+  if (clauses.length === 0) return [];
+
+  const { data } = await axios.get(DISCIPLINARY_RESOURCE_URL, {
+    params: {
+      '$where': clauses.length > 1 ? `(${clauses.join(' or ')})` : clauses[0],
+      '$limit': 50,
+    },
+    headers: { Accept: 'application/json' },
+    timeout: 20000,
+  });
+  return Array.isArray(data) ? data : [];
+}
+
+async function fetchDisciplinaryByDirector(directorName) {
+  // licensee_name is a single combined field for both companies and individuals —
+  // no given_names/surname split to concat, unlike the licence register above.
+  const { data } = await axios.get(DISCIPLINARY_RESOURCE_URL, {
+    params: {
+      '$where': `upper(licensee_name) like upper('%${socrataEscape(directorName)}%')`,
+      '$limit': 20,
+    },
+    headers: { Accept: 'application/json' },
+    timeout: 20000,
+  });
+  return Array.isArray(data) ? data : [];
+}
+
+function toDisciplinaryResultItem(hit, query) {
+  return {
+    title: hit.licensee_name || query,
+    url: DISCIPLINARY_PORTAL_URL,
+    date: hit.action_date || '',
+    status: hit.action_type || '',
+    description: (hit.circumstances_reasons || '').slice(0, 300),
+    jurisdiction: 'ACT',
+    metadata: {
+      Source: 'ACT Access Canberra',
+      LicenceNumber: hit.licence_number,
+      Occupation: hit.occupation,
+      ActionType: hit.action_type,
+      ActionDate: hit.action_date,
+      Reasons: hit.circumstances_reasons,
+      ACN: hit.a_c_n,
+    },
+  };
+}
+
+async function searchACTDisciplinary(companyName, abn, directors) {
+  const allResults = [];
+  const seen = new Set();
+
+  // A company's ABN is its two check digits followed by its ACN — derive a
+  // candidate ACN from either a bare 9-digit ACN or an 11-digit ABN so a match
+  // against a_c_n is still possible if the registered name in this dataset
+  // doesn't textually match the searched company name.
+  const abnDigits = (abn || '').replace(/\D/g, '');
+  const acnDigits =
+    abnDigits.length === 11 ? abnDigits.slice(2) : abnDigits.length === 9 ? abnDigits : '';
+
+  function addHits(hits, query) {
+    for (const hit of hits) {
+      if (!BUILDING_OCCUPATIONS.has(hit.occupation)) continue;
+      const hitAcnDigits = (hit.a_c_n || '').replace(/\D/g, '');
+      const acnMatches = Boolean(acnDigits) && hitAcnDigits === acnDigits;
+      if (!acnMatches && !nameMatchesEntity(hit.licensee_name, query)) continue;
+      const key = `${hit.licence_number}|${hit.action_date}|${hit.action_type}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      allResults.push(toDisciplinaryResultItem(hit, query));
+    }
+  }
+
+  // Strip "Pty Ltd" so partial-word matches work against the registered name.
+  const strippedName = (companyName || '').replace(/\s*pty\s*ltd\.?\s*$/i, '').trim();
+
+  if (strippedName || acnDigits) {
+    try {
+      addHits(await fetchDisciplinaryByName(strippedName, acnDigits), strippedName);
+    } catch {
+      // non-fatal
+    }
+  }
+
+  for (const director of (directors || []).filter(Boolean)) {
+    try {
+      addHits(await fetchDisciplinaryByDirector(director), director);
+    } catch {
+      // non-fatal
+    }
+  }
+
+  return {
+    source: 'ACT Access Canberra — Register of Disciplinary Actions',
+    jurisdiction: 'ACT',
+    category: 'regulatory',
+    results: allResults,
+    searchUrl: DISCIPLINARY_PORTAL_URL,
+    summary:
+      allResults.length > 0
+        ? `${allResults.length} ACT disciplinary action(s) found`
+        : 'No ACT disciplinary actions found',
+  };
+}
+
+module.exports = { searchACTLicences, searchACTDisciplinary };

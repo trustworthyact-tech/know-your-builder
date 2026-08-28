@@ -22,7 +22,7 @@ const { searchVicVbaLicence } = require('./scrapers/vicVbaLicence');
 const { searchWABuildingEnergy } = require('./scrapers/waBuildingEnergy');
 const { searchNSWFairTrading } = require('./scrapers/nswFairTrading');
 const { searchNTBuildingPractitioners } = require('./scrapers/ntBuildingPractitioners');
-const { searchACTLicences } = require('./scrapers/actLicences');
+const { searchACTLicences, searchACTDisciplinary } = require('./scrapers/actLicences');
 const { searchWALicenceRegister } = require('./scrapers/waLicenceRegister');
 const { searchTASLicenceRegister } = require('./scrapers/tasLicenceRegister');
 const { searchAsicExtract } = require('./scrapers/asicExtract');
@@ -298,6 +298,11 @@ app.post('/api/search', searchLimiter, async (req, res) => {
       key: 'actLicences',
       label: 'ACT Access Canberra — Builder Licence Register',
       fn: async () => searchACTLicences(companyName, abn, await resolveDirectors()),
+    },
+    {
+      key: 'actDisciplinary',
+      label: 'ACT Access Canberra — Register of Disciplinary Actions',
+      fn: async () => searchACTDisciplinary(companyName, abn, await resolveDirectors()),
     },
     {
       key: 'waLicenceRegister',

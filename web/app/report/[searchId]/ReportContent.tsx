@@ -214,10 +214,12 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
   const courtResults = results.filter((r) => r.key.startsWith('courts_'));
   const fwo = byKey('fwo');
   const vicBpc = byKey('vicBpc');
+  const vicVbaLicence = byKey('vicVbaLicence');
   const waBuildingEnergy = byKey('waBuildingEnergy');
   const nswFairTrading = byKey('nswFairTrading');
   const ntBuildingPractitioners = byKey('ntBuildingPractitioners');
   const actLicences = byKey('actLicences');
+  const actDisciplinary = byKey('actDisciplinary');
   const waLicenceRegister = byKey('waLicenceRegister');
   const tasLicenceRegister = byKey('tasLicenceRegister');
   const asicExtract = byKey('asicExtract');
@@ -305,10 +307,12 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
   ];
   const fwoItems: ResultItem[] = fwo?.results ?? [];
   const vicBpcItems: ResultItem[] = vicBpc?.results ?? [];
+  const vicVbaLicenceItems: ResultItem[] = vicVbaLicence?.results ?? [];
   const waBuildingEnergyItems: ResultItem[] = waBuildingEnergy?.results ?? [];
   const nswFairTradingItems: ResultItem[] = nswFairTrading?.results ?? [];
   const ntBuildingPractitionersItems: ResultItem[] = ntBuildingPractitioners?.results ?? [];
   const actLicencesItems: ResultItem[] = actLicences?.results ?? [];
+  const actDisciplinaryItems: ResultItem[] = actDisciplinary?.results ?? [];
   const waLicenceRegisterItems: ResultItem[] = waLicenceRegister?.results ?? [];
   const tasLicenceRegisterItems: ResultItem[] = tasLicenceRegister?.results ?? [];
   const qbccEnforcementItems: ResultItem[] = qbcc?.enforcementResults ?? [];
@@ -316,10 +320,12 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
     ...(qbcc?.licenceResults ?? []),
     ...qbccEnforcementItems,
     ...vicBpcItems,
+    ...vicVbaLicenceItems,
     ...waBuildingEnergyItems,
     ...nswFairTradingItems,
     ...ntBuildingPractitionersItems,
     ...actLicencesItems,
+    ...actDisciplinaryItems,
     ...waLicenceRegisterItems,
     ...tasLicenceRegisterItems,
   ];
@@ -359,10 +365,12 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
     isAllErrored([
       qbcc?.status ?? 'done',
       vicBpc?.status ?? 'done',
+      vicVbaLicence?.status ?? 'done',
       waBuildingEnergy?.status ?? 'done',
       nswFairTrading?.status ?? 'done',
       ntBuildingPractitioners?.status ?? 'done',
       actLicences?.status ?? 'done',
+      actDisciplinary?.status ?? 'done',
       waLicenceRegister?.status ?? 'done',
       tasLicenceRegister?.status ?? 'done',
     ]) ? 'unavailable' : 'clear'
@@ -460,6 +468,18 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
     summary: vicBpc?.summary ?? 'No VBA disciplinary proceedings found',
   };
 
+  const vicVbaLicenceSearch: SearchResult = {
+    key: 'vicVbaLicence',
+    label: 'VIC Building Authority — Licence Register',
+    status: vicVbaLicence?.status ?? 'done',
+    source: 'Victorian Building Authority',
+    jurisdiction: 'VIC',
+    category: 'license',
+    searchUrl: vicVbaLicence?.searchUrl,
+    results: vicVbaLicence?.results ?? [],
+    summary: vicVbaLicence?.summary ?? 'No VBA licence records found for this entity',
+  };
+
   const waBuildingEnergySearch: SearchResult = {
     key: 'waBuildingEnergy',
     label: 'WA Building and Energy — Enforcement',
@@ -506,6 +526,18 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
     searchUrl: actLicences?.searchUrl,
     results: actLicences?.results ?? [],
     summary: actLicences?.summary ?? 'No ACT builder licence records found',
+  };
+
+  const actDisciplinarySearch: SearchResult = {
+    key: 'actDisciplinary',
+    label: 'ACT Access Canberra — Register of Disciplinary Actions',
+    status: actDisciplinary?.status ?? 'done',
+    source: 'ACT Access Canberra',
+    jurisdiction: 'ACT',
+    category: 'regulatory',
+    searchUrl: actDisciplinary?.searchUrl,
+    results: actDisciplinary?.results ?? [],
+    summary: actDisciplinary?.summary ?? 'No ACT disciplinary actions found',
   };
 
   const waLicenceRegisterSearch: SearchResult = {
@@ -704,10 +736,12 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
           searchResults={[
             ...(qbcc ? [licenceSearch] : []),
             vicBpcSearch,
+            vicVbaLicenceSearch,
             waBuildingEnergySearch,
             nswFairTradingSearch,
             ntBuildingPractitionersSearch,
             actLicencesSearch,
+            actDisciplinarySearch,
             waLicenceRegisterSearch,
             tasLicenceRegisterSearch,
           ]}
