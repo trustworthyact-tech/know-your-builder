@@ -30,6 +30,7 @@ const { searchAfsaNpii } = require('./scrapers/afsaNpii');
 const { generateLinks } = require('./scrapers/links');
 const { startPaymentTimesRefresh } = require('./scrapers/paymentTimesRefresh');
 const { startAsicDpnDatasetRefresh } = require('./scrapers/asicDpnDatasetRefresh');
+const { startVicBpcDatasetRefresh } = require('./scrapers/vicBpcDatasetRefresh');
 
 // Fail fast on missing scraper credentials rather than surfacing "missing key"
 // errors deep inside individual scraper calls at request time.
@@ -357,3 +358,4 @@ app.listen(PORT, () => console.log(`Know Your Builder server running on http://l
 
 startPaymentTimesRefresh();
 startAsicDpnDatasetRefresh();
+startVicBpcDatasetRefresh();

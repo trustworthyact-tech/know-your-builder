@@ -1,12 +1,20 @@
 const cheerio = require('cheerio');
-const { fetchWithBrowserSearch } = require('./browser');
+const { fetchVbaBpcRecords } = require('./vicBpcDataset');
 
-const BASE = 'https://www.vba.vic.gov.au';
-// Prosecution register covers completed orders, disqualifications, and historical actions.
-// Current proceedings register only covers pending/active proceedings.
-const PROSECUTION_REGISTER_URL = `${BASE}/tools/prosecution-and-disciplinary-register`;
-const CURRENT_PROCEEDINGS_URL = `${BASE}/about/current-disciplinary-proceedings/register-of-disciplinary-proceedings`;
-const REGISTER_URL = PROSECUTION_REGISTER_URL;
+// The VBA (Victorian Building Authority) rebranded to the Building and Plumbing
+// Commission. The old prosecution & disciplinary register at
+// vba.vic.gov.au/tools/prosecution-and-disciplinary-register now redirects to
+// bpc.vic.gov.au/compliance-and-enforcement-register, which is a completely
+// different SPA — no more List.js search box or .accordion__block markup.
+//
+// Crucially, that new page's own search box doesn't do a server-side search at
+// all: the page fetches its entire ~943-record dataset from a backend API up
+// front and filters it client-side in JS, so the API returns the same full list
+// no matter what query string is sent to it. There is nothing left to "search"
+// server-side — so this scraper no longer drives Puppeteer per query. Instead
+// vicBpcDataset.js fetches (and caches) the whole register once, and we do the
+// name matching locally against that cached list. Confirmed live 2026-08-28.
+const PROSECUTION_REGISTER_URL = 'https://www.bpc.vic.gov.au/compliance-and-enforcement-register';
 
 // Every significant word must appear in the record text to prevent false positives.
 function escapeRegExp(s) {
@@ -24,107 +32,88 @@ function nameMatchesEntity(text, companyName) {
   return words.every((w) => new RegExp(`\\b${escapeRegExp(w)}\\b`).test(lower));
 }
 
-// The VBA prosecution register uses an accordion layout.
-// Each .accordion__block has a .da_name button (practitioner name) and a
-// .da_record div (registration, proceeding type, date, action details).
-//
-// The page has two entry types:
-//   1. Disciplinary entries  — da_name is just the practitioner name;
-//      uses "Decision date:", "Disciplinary proceeding:", "Disciplinary action taken" h3
-//   2. Prosecution entries   — da_name is "Prosecution of <Name>";
-//      uses "Outcome date:", "Prosecuted for:" h3, "Outcome:" h3
-function parseAccordionItems($, companyName) {
-  const results = [];
+// Strips HTML tags from the API's rich-text fields (summary / actionTaken come
+// back as HTML, e.g. "<div><p>...</p></div>").
+function stripHtml(html) {
+  if (!html) return '';
+  return cheerio.load(html).text().replace(/\s+/g, ' ').trim();
+}
 
-  $('.accordion__block').each((_, block) => {
-    const $block = $(block);
-    const rawHeading = $block.find('.da_name').text().trim();
-    const fullText = $block.text();
+function capitalize(s) {
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+}
 
-    if (!nameMatchesEntity(fullText, companyName)) return;
+// Maps one API record into this scraper's result-item shape (same field names
+// parseAccordionItems() used to produce: title, url, date, status, description,
+// jurisdiction, metadata).
+function mapRecordToResult(record) {
+  const data = record.data || {};
+  const title = (record.titlePrefix || '') + (record.title || '');
 
-    const $record = $block.find('.da_record');
+  const status =
+    (data.decisionType && capitalize(data.decisionType)) ||
+    data.disciplinaryProceeding ||
+    (record.titlePrefix ? record.titlePrefix.trim() : '') ||
+    'Compliance action';
 
-    // Date: accept "Decision date:" (disciplinary) or "Outcome date:" (prosecution)
-    const dateRaw =
-      $record.find('p:contains("Decision date")').text().replace('Decision date:', '').trim() ||
-      $record.find('p:contains("Outcome date")').text().replace('Outcome date:', '').trim();
+  const summaryText = stripHtml(data.summary);
+  const actionText = stripHtml(data.actionTaken);
+  const description = (summaryText || actionText || `BPC compliance action — ${title}`).slice(0, 300);
 
-    // Registration (disciplinary entries only)
-    const registrationRaw = $record.find('p:contains("Registration")').text()
-      .replace('Registration:', '').trim();
-
-    // Proceeding type (disciplinary entries only)
-    const proceeding = $record.find('p:contains("Disciplinary proceeding")').text()
-      .replace('Disciplinary proceeding:', '').trim();
-
-    // Action text — covers both "Disciplinary action taken" and "Outcome:" headings
-    const actionHeading = $record.find('h3').filter((_, h) =>
-      $(h).text().includes('Disciplinary action') || $(h).text().includes('Outcome'));
-    const actionText = actionHeading.next('p').text().trim() + ' ' +
-      actionHeading.nextAll('ul').first().text().trim();
-
-    // Grounds text (disciplinary entries)
-    const groundsHeading = $record.find('h3').filter((_, h) => $(h).text().includes('grounds'));
-    const grounds = groundsHeading.next('p').text().trim();
-
-    // Prosecution entries label the h3 "Prosecuted for:" — use its following text as grounds
-    const prosecutedForHeading = $record.find('h3').filter((_, h) =>
-      $(h).text().includes('Prosecuted for'));
-    const prosecutedFor = prosecutedForHeading.next('p').text().trim() +
-      ' ' + prosecutedForHeading.nextAll('p').first().text().trim();
-
-    // Link to the register page (no per-case deep-link available)
-    const url = PROSECUTION_REGISTER_URL;
-
-    results.push({
-      title: rawHeading,
-      url,
-      date: dateRaw.replace(/\s+/g, ' '),
-      status: actionText.trim().slice(0, 120) || proceeding || 'VBA action',
-      description: (grounds || prosecutedFor.trim()).slice(0, 250) ||
-        `VBA proceeding — ${proceeding || rawHeading}`,
-      jurisdiction: 'VIC',
-      metadata: {
-        Source: 'Victorian Building Authority',
-        Registration: registrationRaw,
-        Proceeding: proceeding,
-        Date: dateRaw.replace(/\s+/g, ' '),
-        Action: actionText.trim().slice(0, 200),
-      },
-    });
-  });
-
-  return results;
+  return {
+    title,
+    url: PROSECUTION_REGISTER_URL,
+    date: data.decisionDate || '',
+    status,
+    description,
+    jurisdiction: 'VIC',
+    metadata: {
+      Source: 'Victorian Building Authority / Building and Plumbing Commission',
+      Registration: Array.isArray(data.registrations) ? data.registrations.join('; ') : '',
+      Proceeding: data.disciplinaryProceeding || '',
+      Date: data.decisionDate || '',
+      Action: actionText.slice(0, 200),
+    },
+  };
 }
 
 async function searchVicBpc(companyName, abn, directors) {
-  const allResults = [];
-  const seen = new Set();
-
   const queries = [
-    // Strip Pty Ltd so List.js matches on the distinctive words
+    // Strip Pty Ltd so matching works on the distinctive words
     companyName.replace(/\s*(?:pty|proprietary)?\.?\s*(?:ltd|limited)\.?\s*$/i, '').trim(),
     ...(directors || []).filter(Boolean),
   ];
 
-  const urls = [PROSECUTION_REGISTER_URL, CURRENT_PROCEEDINGS_URL];
+  let records;
+  try {
+    const fetched = await fetchVbaBpcRecords();
+    records = fetched.records;
+  } catch (err) {
+    // No live data AND no cache at all — fail loud rather than silently
+    // reporting "no proceedings found", mirroring courtRecords.js's
+    // buildManualFallback / allFailed convention for a source that could not
+    // be checked at all.
+    return {
+      source: 'Victorian Building Authority — Disciplinary Register',
+      jurisdiction: 'VIC',
+      category: 'regulatory',
+      status: 'error',
+      results: [],
+      searchUrl: PROSECUTION_REGISTER_URL,
+      error: 'Search failed',
+      summary: 'Could not reach the VBA/BPC compliance and enforcement register — try again or search manually',
+    };
+  }
+
+  const allResults = [];
+  const seen = new Set();
+
   for (const query of queries) {
-    for (const url of urls) {
-      try {
-        const html = await fetchWithBrowserSearch(url, query, '#listjs-search');
-        const $ = cheerio.load(html);
-        // Match against the query term (company name or director name)
-        const found = parseAccordionItems($, query);
-        for (const r of found) {
-          if (!seen.has(r.title + r.date)) {
-            seen.add(r.title + r.date);
-            allResults.push(r);
-          }
-        }
-      } catch {
-        // non-fatal
-      }
+    for (const record of records) {
+      if (seen.has(record.id)) continue;
+      if (!nameMatchesEntity(record.title || '', query)) continue;
+      seen.add(record.id);
+      allResults.push(mapRecordToResult(record));
     }
   }
 

@@ -1,38 +1,49 @@
 /**
- * TEST: VIC Building Practitioners Board — Disciplinary Register
+ * TEST: VIC Building and Plumbing Commission — Compliance and Enforcement Register
  *
  * PURPOSE
  *   Verifies that searchVicBpc() returns a result for a practitioner confirmed
- *   to be on the VBA prosecution & disciplinary register. The test fetches the
- *   raw HTML with axios first (no browser) to discover a live fixture, then
- *   calls the full scraper (which uses Puppeteer + List.js search) and confirms
- *   the same entry is returned.
+ *   to be on the BPC compliance-and-enforcement register.
  *
- *   Comparing the two layers pinpoints where the failure is:
- *     • Raw HTML has entry but scraper misses it → browser automation broken
- *     • Raw HTML has entry and scraper finds it   → PASS
- *     • Raw HTML has no entries                  → VBA changed page structure
+ *   The VBA (Victorian Building Authority) rebranded to the Building and
+ *   Plumbing Commission and its old prosecution & disciplinary register
+ *   (vba.vic.gov.au/tools/prosecution-and-disciplinary-register, List.js
+ *   search + .accordion__block markup) now redirects to a completely
+ *   different SPA at bpc.vic.gov.au/compliance-and-enforcement-register. That
+ *   page fetches its whole ~943-record dataset from a backend API up front and
+ *   filters client-side — the API ignores query strings entirely, so there is
+ *   no server-side search left to drive. vicBpcDataset.js fetches the full
+ *   register once (via a Puppeteer page, since the API is Cloudflare-gated)
+ *   and caches it; vicBpc.js matches names against that cached list locally.
+ *
+ *   This test fetches the dataset directly first to discover/confirm a live
+ *   fixture, then calls the full scraper and confirms the same entry comes
+ *   back through it.
+ *
+ *     • Dataset fetch returns 0 records        → API/pagination broken, or
+ *       Cloudflare is blocking the headless browser (check vicBpcDataset.js)
+ *     • Dataset has records but scraper misses → name-matching or mapping
+ *       logic broken (check vicBpc.js)
+ *     • Dataset has records and scraper finds  → PASS
  *
  * REQUIREMENTS
  *   Puppeteer (installed in server/node_modules) — no API keys needed.
  *
  * USAGE
  *   node server/tests/test-vicbpc.js
- *   node server/tests/test-vicbpc.js --name "Richard Jones"
+ *   node server/tests/test-vicbpc.js --name "Paul Matei"
  *
  * EXIT CODE
  *   0 — fixture practitioner found by scraper
  *   1 — not found or error at any layer
  *
  * HOW TO INTERPRET FAILURE
- *   "Step 1 FAIL: no accordion blocks found"
- *     → VBA changed their HTML structure (check .accordion__block selector)
- *   "Step 2 FAIL: no .da_name found"
- *     → VBA changed the practitioner name element (check .da_name selector)
+ *   "Step 1 FAIL: dataset fetch returned 0 records"
+ *     → BPC changed their API shape/pagination, or Cloudflare is blocking the
+ *       headless browser (check fetchVbaBpcRecords in vicBpcDataset.js)
  *   "Step 3 FAIL: scraper returned 0 results"
- *     → Puppeteer could not load the page, or List.js search input (#listjs-search)
- *       selector is wrong, or the accordion parsing logic broke after the fixture
- *       was found in raw HTML — compare accordion structure in the raw HTML
+ *     → nameMatchesEntity is filtering out the fixture, or the mapping in
+ *       vicBpc.js's mapRecordToResult broke
  *   "Step 4 FAIL: fixture not in results"
  *     → nameMatchesEntity filter is too strict; check the significant-word
  *       threshold (> 3 chars, not stopwords) in server/scrapers/vicBpc.js
@@ -40,13 +51,10 @@
 
 'use strict';
 
-const path    = require('path');
-const cheerio = require('cheerio');
+const path = require('path');
 const { searchVicBpc } = require(path.join(__dirname, '../scrapers/vicBpc'));
-const { getBrowser } = require(path.join(__dirname, '../scrapers/browser'));
+const { fetchVbaBpcRecords, REGISTER_PAGE_URL } = require(path.join(__dirname, '../scrapers/vicBpcDataset'));
 const { pass, fail, step, warn, dump, header, summary } = require('./lib/helpers');
-
-const PROSECUTION_URL = 'https://www.vba.vic.gov.au/tools/prosecution-and-disciplinary-register';
 
 // ── Parse CLI args ────────────────────────────────────────────────────────────
 
@@ -57,99 +65,68 @@ const suppliedName = nameIdx !== -1 ? args[nameIdx + 1] : null;
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 (async () => {
-  header('VIC Building Practitioners Board — Disciplinary Register Test');
+  header('VIC Building and Plumbing Commission — Compliance and Enforcement Register Test');
   let passed = 0;
   let failed = 0;
 
-  // ── Step 1: Fetch raw HTML via Puppeteer (Cloudflare blocks plain axios) ────
-  step('Step 1: Fetching VBA prosecution register via Puppeteer (Cloudflare bypass)...');
+  // ── Step 1: Fetch the dataset directly (Puppeteer + Cloudflare bypass) ─────
+  step('Step 1: Fetching BPC compliance-and-enforcement dataset via fetchVbaBpcRecords()...');
+  step(`  (Loads ${REGISTER_PAGE_URL} in Puppeteer, then paginates the backend API from inside the page — allow ~10-30s)`);
 
-  let rawHtml;
-  let _cfPage;
+  let records;
   try {
-    const _browser = await getBrowser();
-    _cfPage = await _browser.newPage();
-    await _cfPage.setExtraHTTPHeaders({ 'Accept-Language': 'en-AU,en;q=0.9' });
-    await _cfPage.goto(PROSECUTION_URL, { waitUntil: 'networkidle2', timeout: 45000 });
-
-    // Poll until the Cloudflare "Just a moment..." challenge clears
-    const cfDeadline = Date.now() + 15000;
-    while (Date.now() < cfDeadline) {
-      const title = await _cfPage.title();
-      if (!/just a moment|cloudflare|checking your browser/i.test(title)) break;
-      await new Promise((r) => setTimeout(r, 500));
+    const result = await fetchVbaBpcRecords();
+    records = result.records;
+    if (result.stale) {
+      warn(`Dataset came from stale cache (cachedAt: ${result.cachedAt.toISOString()}) — live fetch failed.`);
     }
-
-    rawHtml = await _cfPage.content();
   } catch (e) {
-    fail('Step 1', `Puppeteer page load failed: ${e.message}`);
-    warn('  Check whether the VBA site is accessible and the URL is still valid.');
-    if (_cfPage) await _cfPage.close().catch(() => {});
+    fail('Step 1', `fetchVbaBpcRecords threw: ${e.message}`, e.stack);
+    warn('  Check whether the BPC site is accessible and the API/pagination shape is unchanged.');
     summary(0, 1);
     process.exit(1);
   }
-  await _cfPage.close().catch(() => {});
 
-  const $raw = cheerio.load(rawHtml);
-  const accordionBlocks = $raw('.accordion__block');
-
-  if (accordionBlocks.length === 0) {
+  if (!Array.isArray(records) || records.length === 0) {
     fail('Step 1',
-      'No .accordion__block elements found in raw HTML.\n' +
-      'The VBA may have changed their page structure, or the page is behind Cloudflare.\n' +
-      `URL: ${PROSECUTION_URL}\n` +
-      'Raw HTML snippet (first 500 chars):',
-      rawHtml.slice(0, 500));
+      'Dataset fetch returned 0 records.\n' +
+      'BPC may have changed their API shape or pagination, or Cloudflare is blocking the headless browser.\n' +
+      `Register page: ${REGISTER_PAGE_URL}`);
     failed++;
     summary(passed, failed);
     process.exit(1);
   }
 
-  pass('Step 1', `Found ${accordionBlocks.length} accordion blocks in raw HTML`);
+  pass('Step 1', `Fetched ${records.length} records from the BPC register`);
   passed++;
 
-  // ── Step 2: Extract fixture name ───────────────────────────────────────────
-  step('Step 2: Extracting practitioner name from first accordion block...');
+  // ── Step 2: Pick a fixture name ─────────────────────────────────────────────
+  step('Step 2: Selecting a fixture name from the fetched dataset...');
 
   let fixtureName = suppliedName;
 
   if (!fixtureName) {
-    const firstName = $raw(accordionBlocks.first()).find('.da_name').text().trim();
-    if (!firstName) {
-      fail('Step 2',
-        'First accordion block has no .da_name element.\n' +
-        'The VBA may have changed the practitioner name element class.\n' +
-        'Raw block HTML:',
-        $raw(accordionBlocks.first()).html()?.slice(0, 600));
+    const first = records.find((r) => r.title && r.title.trim().length > 0);
+    if (!first) {
+      fail('Step 2', 'No record in the dataset has a usable "title" field.',
+        records.slice(0, 2));
       failed++;
       summary(passed, failed);
       process.exit(1);
     }
-    fixtureName = firstName;
+    fixtureName = first.title.trim();
   }
 
   pass('Step 2', `Test fixture: "${fixtureName}"`);
   passed++;
 
-  // Sanity check: confirm the fixture name actually appears in raw HTML
-  const fixtureInRaw = (() => {
-    let found = false;
-    accordionBlocks.each((_, block) => {
-      if ($raw(block).find('.da_name').text().trim() === fixtureName) found = true;
-    });
-    return found;
-  })();
-
-  if (!fixtureInRaw && !suppliedName) {
-    warn('Fixture name not found in .da_name elements after extraction — proceeding anyway.');
+  const fixtureInDataset = records.some((r) => (r.title || '').trim() === fixtureName);
+  if (!fixtureInDataset && !suppliedName) {
+    warn('Fixture name not found by exact match in dataset titles — proceeding anyway.');
   }
 
-  // ── Step 3: Call searchVicBpc ──────────────────────────────────────────────
-  // searchVicBpc takes (companyName, abn, directors). We pass the fixture name
-  // as companyName (after stripping any Pty Ltd suffix the scraper would strip).
-  // If the fixture is a personal name we also pass it as a director.
+  // ── Step 3: Call searchVicBpc ────────────────────────────────────────────────
   step(`Step 3: Calling searchVicBpc("${fixtureName}", "", ["${fixtureName}"])...`);
-  step('  (Puppeteer will load the VBA page and type into #listjs-search — allow ~30s)');
 
   let result;
   try {
@@ -161,30 +138,33 @@ const suppliedName = nameIdx !== -1 ? args[nameIdx + 1] : null;
     process.exit(1);
   }
 
-  pass('Step 3', `scraper returned without throwing`);
+  pass('Step 3', 'scraper returned without throwing');
   step(`  Summary: "${result.summary}"`);
   step(`  Results count: ${result.results.length}`);
 
+  if (result.status === 'error') {
+    fail('Step 3', `Scraper returned status: 'error' — ${result.summary}`);
+    failed++;
+    summary(passed, failed);
+    process.exit(1);
+  }
+
   if (result.results.length === 0) {
     fail('Step 3',
-      'Scraper returned 0 results even though the entry exists in raw HTML.\n' +
+      'Scraper returned 0 results even though the entry exists in the fetched dataset.\n' +
       'Possible causes:\n' +
-      '  • #listjs-search selector not found → VBA changed the search input ID\n' +
-      '  • Browser automation failed silently → check fetchWithBrowserSearch in browser.js\n' +
-      '  • Cloudflare is blocking the headless browser (axois works but Puppeteer blocked)\n' +
       '  • nameMatchesEntity filtering too strict — all significant words must appear in\n' +
-      '    the accordion block text (see nameMatchesEntity in server/scrapers/vicBpc.js)');
+      '    record.title (see nameMatchesEntity in server/scrapers/vicBpc.js)\n' +
+      '  • mapRecordToResult or the fetchVbaBpcRecords cache is out of sync');
     failed++;
     summary(passed, failed);
     process.exit(1);
   }
   passed++;
 
-  if (result.results.length > 0) {
-    step('  Sample results:');
-    result.results.slice(0, 3).forEach((r, i) =>
-      dump(`Result ${i + 1}`, { title: r.title, date: r.date, status: r.status?.slice(0, 80) }));
-  }
+  step('  Sample results:');
+  result.results.slice(0, 3).forEach((r, i) =>
+    dump(`Result ${i + 1}`, { title: r.title, date: r.date, status: r.status, description: r.description?.slice(0, 120) }));
 
   // ── Step 4: Verify fixture appears in results ──────────────────────────────
   step(`Step 4: Checking if "${fixtureName}" appears in results...`);
@@ -206,6 +186,31 @@ const suppliedName = nameIdx !== -1 ? args[nameIdx + 1] : null;
     failed++;
   } else {
     pass('Step 4', `"${fixtureName}" confirmed in scraper results`);
+    passed++;
+  }
+
+  // ── Step 5: Sanity check — a clearly-fake name yields an empty, non-error result
+  step('Step 5: Checking a clearly-fake name returns an empty (not error) result...');
+
+  let fakeResult;
+  try {
+    fakeResult = await searchVicBpc('Zzqxv Nonexistentium Corporation Pty Ltd', '', []);
+  } catch (e) {
+    fail('Step 5', `searchVicBpc threw for a fake name: ${e.message}`, e.stack);
+    failed++;
+    summary(passed, failed);
+    process.exit(1);
+  }
+
+  if (fakeResult.status === 'error') {
+    fail('Step 5', `Fake-name search unexpectedly returned status: 'error' — ${fakeResult.summary}`);
+    failed++;
+  } else if (fakeResult.results.length !== 0) {
+    fail('Step 5', `Fake-name search unexpectedly returned ${fakeResult.results.length} result(s)`,
+      fakeResult.results.map((r) => r.title));
+    failed++;
+  } else {
+    pass('Step 5', 'Fake name correctly returned 0 results, no error');
     passed++;
   }
 

@@ -10,6 +10,25 @@ const HEADERS = {
 };
 
 const EXCLUDED_REGISTER_URL = 'https://my.qbcc.qld.gov.au/myQBCC/s/excluded-individual-register';
+const LICENSEE_REGISTER_URL = 'https://my.qbcc.qld.gov.au/myQBCC/s/qbcc-licensee-register';
+
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Every significant word must appear in the record text to prevent false positives —
+// the QBCC Act Licensees search matches on a substring of lastName, so a broad query
+// like "CONSTRUCTION" alone would otherwise return every licensee whose name contains it.
+function nameMatchesEntity(text, query) {
+  if (!query) return false;
+  const words = query
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((w) => (w.length > 3 || /^\d+$/.test(w)) && !/^(pty|ltd|limited|the|and|of|a)$/.test(w));
+  if (words.length === 0) return false;
+  const lower = text.toLowerCase();
+  return words.every((w) => new RegExp(`\\b${escapeRegExp(w)}\\b`).test(lower));
+}
 
 // Splits a director name into { firstName, lastName }.
 // Handles ASIC SURNAME-first format (e.g. "SMITH John") and normal order.
@@ -223,7 +242,7 @@ async function searchQBCCExcluded(directorNames) {
 const ADJUDICATION_REGISTRY_URL = 'https://my.qbcc.qld.gov.au/myQBCC/s/adjudication-registry';
 const AURA_ENDPOINT = 'https://my.qbcc.qld.gov.au/myQBCC/s/sfsites/aura?r=0&aura.ApexAction.execute=1';
 
-async function callQBCCAura(method, params) {
+async function callQBCCAura(classname, method, params) {
   const message = {
     actions: [{
       id: '1;a',
@@ -231,7 +250,7 @@ async function callQBCCAura(method, params) {
       callingDescriptor: 'UNKNOWN',
       params: {
         namespace: '',
-        classname: 'QBCCAdjudicationSearchController',
+        classname,
         method,
         params,
         cacheable: false,
@@ -266,7 +285,7 @@ async function callQBCCAura(method, params) {
 }
 
 async function callAdjudicationApi(searchBy, lastName) {
-  return (await callQBCCAura('getAdjudicationRegistryDecisionBy', { searchBy, firstName: '', lastName })) || [];
+  return (await callQBCCAura('QBCCAdjudicationSearchController', 'getAdjudicationRegistryDecisionBy', { searchBy, firstName: '', lastName })) || [];
 }
 
 // Each decision PDF ("Decision Coversheet") is served from a private S3 bucket via a
@@ -274,84 +293,73 @@ async function callAdjudicationApi(searchBy, lastName) {
 // never cached or stored. fileName is the `uploadFilename` field (see adjudicationResults
 // below) with ".pdf" appended, e.g. "00000003107711_1.pdf".
 async function getDecisionSignedUrl(fileName) {
-  return callQBCCAura('getSignedURL', { fileName });
+  return callQBCCAura('QBCCAdjudicationSearchController', 'getSignedURL', { fileName });
+}
+
+// Searches "Search QBCC Act Licensees" for each given name. The Aura call only takes
+// firstName/lastName (no dedicated company-name field found to work — passing the
+// company name via `name` alone returned zero results in live testing 2026-08-31, but
+// `lastName` alone works, since company licensees are stored there with matching
+// fname/lname). Logs and skips (rather than silently swallowing) any name that fails —
+// see the call site in searchQBCC() for why this doesn't throw.
+async function searchQBCCLicensees(searchNames) {
+  const allResults = [];
+  const seen = new Set();
+
+  for (const searchName of searchNames) {
+    try {
+      const items = await callQBCCAura('PublicRegisterSearchController', 'searchQBCCActLicenses', {
+        name: '',
+        firstName: '',
+        lastName: searchName,
+      });
+
+      for (const item of items || []) {
+        const customer = item.customer || {};
+        const title = customer.name || searchName;
+        if (!nameMatchesEntity(title, searchName)) continue;
+
+        const licenceNo = item.licenceNumber || '';
+        const dedupeKey = item.licenceRecordId || licenceNo || title;
+        if (seen.has(dedupeKey)) continue;
+        seen.add(dedupeKey);
+
+        allResults.push({
+          title,
+          url: LICENSEE_REGISTER_URL,
+          metadata: {
+            'Licence Number': licenceNo,
+            Classification: item.classificationName || '',
+            Address: customer.businessAddress || '',
+            'Financial Category': item.financialCategoryGroupLabel || '',
+          },
+        });
+      }
+    } catch (err) {
+      console.error(`[qbcc] licensee search failed for "${searchName}":`, err.message);
+    }
+  }
+
+  return allResults;
 }
 
 async function searchQBCC(companyName, abn, directors, alternateNames = []) {
-  const results = [];
-
   // Search under the entity's primary name plus any ABR-registered business/trading
   // names — a sole trader's QBCC licence or adjudication decision is often filed
   // under a business name (e.g. "H.U.S.M") rather than their personal name.
   const searchNames = [...new Set([companyName, ...alternateNames].filter(Boolean))];
 
-  // QBCC public contractor search
-  const seenLicence = new Set();
-  for (const searchName of searchNames) {
-    try {
-      const searchUrl = `https://www.qbcc.qld.gov.au/api/licensee-search?name=${encodeURIComponent(searchName)}&licenceNumber=&suburb=&licenceType=&licenceStatus=Active`;
-      const { data } = await axios.get(searchUrl, { headers: HEADERS, timeout: 15000 });
-
-      const items = Array.isArray(data) ? data : data?.results || data?.data || [];
-      for (const item of items) {
-        const licencee = item.licenceeName || item.name || item.companyName || '';
-        const licenceNo = item.licenceNumber || item.licenceNo || '';
-        const licenceClass = item.licenceClass || item.licenceType || item.category || '';
-        const status = item.licenceStatus || item.status || '';
-        const expiry = item.expiryDate || item.licenceExpiry || '';
-        const financialCategory = item.financialCategory || item.financialLimit || '';
-
-        const dedupeKey = licenceNo || `${licencee}|${licenceClass}`;
-        if (seenLicence.has(dedupeKey)) continue;
-        seenLicence.add(dedupeKey);
-
-        results.push({
-          title: licencee || searchName,
-          url: `https://my.qbcc.qld.gov.au/myQBCC/s/findlocalcontractor`,
-          status,
-          date: expiry,
-          metadata: {
-            'Licence Number': licenceNo,
-            'Licence Class': licenceClass,
-            Status: status,
-            'Expiry Date': expiry,
-            'Financial Category': financialCategory,
-          },
-        });
-      }
-    } catch {
-      // Try HTML scrape of the public-facing search
-      try {
-        const encoded = encodeURIComponent(searchName);
-        const { data } = await axios.get(
-          `https://www.qbcc.qld.gov.au/find-a-local-contractor?name=${encoded}`,
-          { headers: { ...HEADERS, Accept: 'text/html' }, timeout: 20000 }
-        );
-        const $ = cheerio.load(data);
-
-        $('table tbody tr, [class*="contractor"], [class*="licensee"]').each((_, row) => {
-          const cells = $('td', row);
-          if (cells.length < 2) return;
-          const title = cells.eq(0).text().trim();
-          const licenceNo = cells.eq(1).text().trim();
-          const dedupeKey = licenceNo || title;
-          if (seenLicence.has(dedupeKey)) return;
-          seenLicence.add(dedupeKey);
-          results.push({
-            title,
-            url: `https://my.qbcc.qld.gov.au/myQBCC/s/findlocalcontractor`,
-            metadata: {
-              'Licence Number': licenceNo,
-              'Licence Class': cells.eq(2)?.text().trim() || '',
-              Status: cells.eq(3)?.text().trim() || '',
-            },
-          });
-        });
-      } catch {
-        // ignore
-      }
-    }
-  }
+  // QBCC public contractor search — via "Search QBCC Act Licensees"
+  // (my.qbcc.qld.gov.au/myQBCC/s/qbcc-licensee-register), a Salesforce Aura call to
+  // PublicRegisterSearchController.searchQBCCActLicenses. Replaces the old
+  // www.qbcc.qld.gov.au REST API and HTML fallback, both dead (404, confirmed live
+  // 2026-08-31) after a site restructure — that old failure was silently swallowed
+  // (`catch { // ignore }`), so every search returned a false "0 licences" for years
+  // undetected. This search only takes lastName (company names are stored in
+  // lname/fname both); the API itself does a broad substring match on lastName, so
+  // results are filtered locally with nameMatchesEntity() to drop false positives
+  // (confirmed live: searching "CONSTRUCTION" alone returns ~2000 unrelated hits).
+  const results = await searchQBCCLicensees(searchNames);
 
   const adjudicationResults = [];
   try {
@@ -412,7 +420,7 @@ async function searchQBCC(companyName, abn, directors, alternateNames = []) {
     licenceResults: results,
     adjudicationResults,
     enforcementResults: excludedResults,
-    searchUrl: `https://my.qbcc.qld.gov.au/myQBCC/s/findlocalcontractor`,
+    searchUrl: LICENSEE_REGISTER_URL,
     adjudicationSearchUrl: `https://my.qbcc.qld.gov.au/myQBCC/s/adjudication-registry`,
     enforcementSearchUrl: EXCLUDED_REGISTER_URL,
     summary:
