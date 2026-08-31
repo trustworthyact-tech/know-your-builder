@@ -104,7 +104,7 @@ async function searchVicBpc(companyName, abn, directors) {
 
   const queries = [
     // Strip Pty Ltd so List.js matches on the distinctive words
-    companyName.replace(/\s*pty\s*ltd\.?\s*$/i, '').trim(),
+    companyName.replace(/\s*(?:pty|proprietary)?\.?\s*(?:ltd|limited)\.?\s*$/i, '').trim(),
     ...(directors || []).filter(Boolean),
   ];
 

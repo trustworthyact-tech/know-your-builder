@@ -297,7 +297,7 @@ async function searchTASLicenceRegister(companyName, abn, directors, captchaApiK
   const seen = new Set(); // deduplicate by licence number
 
   // Stripped company name (remove "Pty Ltd" suffix)
-  const strippedName = companyName.replace(/\s*pty\s*ltd\.?\s*$/i, '').trim();
+  const strippedName = companyName.replace(/\s*(?:pty|proprietary)?\.?\s*(?:ltd|limited)\.?\s*$/i, '').trim();
 
   // Queries: company name + each director
   const queries = [strippedName, ...(directors || []).filter(Boolean)];

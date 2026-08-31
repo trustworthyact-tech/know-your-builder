@@ -142,7 +142,7 @@ async function searchWALicenceRegister(companyName, abn, directors) {
   const seen = new Set();
 
   const baseCompanyName = (companyName || '')
-    .replace(/\s*pty\.?\s*ltd\.?\s*$/i, '')
+    .replace(/\s*(?:pty|proprietary)?\.?\s*(?:ltd|limited)\.?\s*$/i, '')
     .trim();
 
   const queries = [baseCompanyName, ...(directors || []).filter(Boolean)].filter(Boolean);

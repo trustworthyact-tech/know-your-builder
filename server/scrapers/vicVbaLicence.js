@@ -81,7 +81,7 @@ async function searchVicVbaLicence(companyName, abn, directors) {
     }
   }
 
-  const strippedName = (companyName || '').replace(/\s*pty\s*ltd\.?\s*$/i, '').trim();
+  const strippedName = (companyName || '').replace(/\s*(?:pty|proprietary)?\.?\s*(?:ltd|limited)\.?\s*$/i, '').trim();
   const queries = [strippedName, ...(directors || []).filter(Boolean)].filter(Boolean);
 
   for (const query of queries) {

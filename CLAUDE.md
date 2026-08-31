@@ -581,6 +581,69 @@ points at the Nix-provided system Chromium — so fixed by adding the broader `P
 = "true"` to `nixpacks.toml`, which skips all of Puppeteer's own browser downloads. Confirmed fixed:
 next deploy built and ran successfully.
 
+### Section 8.2 licence checks silently missed "Pty Limited" entities — FIXED (2026-08-31)
+
+**Reported**: UNIVERSAL PROPERTY GROUP PTY LIMITED (ABN 98078297748) holds NSW contractor licence
+85273C, confirmed `Current`, but a search returned nothing for NSW Fair Trading.
+
+**Root cause**: every affected scraper stripped company suffixes with the same narrow regex,
+`/\s*pty\s*ltd\.?\s*$/i` — which matches "Pty Ltd" only, not "Pty Limited" (the form both the
+reporter and this company's actual registration use). When the suffix isn't stripped, the full
+"...PTY LIMITED" string gets sent to the external register's search, and several of these registers
+do exact substring/phrase matching against the literal registered name (which says "...PTY LTD"),
+so the extra word "LIMITED" breaks the match entirely even though the record exists. Live-confirmed
+directly (stripped query vs. unstripped query, same real record each time):
+- NSW Fair Trading: 1 result → **0 results**
+- ACT licence register (`actLicences.js`, `searchACTLicences`): 1 result → **0 results**
+- ACT disciplinary register (`actLicences.js`, `searchACTDisciplinary`, added 2026-08-28 this
+  session): 1 result → **0 results** — i.e. this bug was already present in code added three days
+  before it was reported, via the same copy-pasted regex.
+- VIC practitioner register (`vicVbaLicence.js`): 1 result → 1 result, **not affected** — CKAN's
+  full-text search tolerates extra words, unlike the others' exact-match behaviour.
+
+The same buggy regex (or a near-identical variant) was also found, by code inspection, in
+`vicBpc.js`, `ntBuildingPractitioners.js`, `tasLicenceRegister.js`, and `waLicenceRegister.js` —
+not all empirically live-tested (some require driving a CAPTCHA-gated Puppeteer session), but all
+route through the same class of exact/substring-sensitive search mechanism, so treat them as
+equally exposed until proven otherwise.
+
+**Fixed**: broadened the regex to `/\s*(?:pty|proprietary)?\.?\s*(?:ltd|limited)\.?\s*$/i` across
+all 8 occurrences in `nswFairTrading.js`, `actLicences.js` (both functions), `ntBuildingPractitioners.js`,
+`tasLicenceRegister.js`, `vicBpc.js`, `vicVbaLicence.js`, and `waLicenceRegister.js` — now also
+handles "Pty Limited" and "Proprietary Limited". Kept the fix file-local rather than extracting a
+shared helper, matching this codebase's existing convention of duplicating small per-scraper
+helpers (`escapeRegExp`, `nameMatchesEntity` are already independently defined in 11+ files) rather
+than introducing cross-file coupling. Live-reverified: NSW, ACT licence, and ACT disciplinary all
+now correctly find the same real records when searched with the unabbreviated "Pty Limited"/"Proprietary
+Limited" forms. Existing test suites for the touched files (`test-nsw-fairtrading.js`,
+`test-act-licences.js`, `test-act-disciplinary.js`, `test-vic-vba-licence-scraper.js`,
+`test-nt-building-practitioners.js`) all still pass.
+
+**Two separate, unrelated issues found along the way — flagged, not fixed (user explicitly deferred
+these)**:
+- `qbcc.js`'s general contractor-licence search is completely dead: both its JSON API
+  (`www.qbcc.qld.gov.au/api/licensee-search`) and its own HTML-scrape fallback
+  (`/find-a-local-contractor`) now 404 (confirmed live) — QBCC's public site has been restructured
+  onto Drupal 11, and this old endpoint/page no longer exists. The failure is completely silent
+  (`catch { // ignore }`, no log, no error surfaced) — every QBCC search currently returns a
+  normal-looking "done, 0 licences" result indistinguishable from a genuinely clean check. This is
+  independent of the suffix-stripping bug above (fails for every company, not just "Pty Limited"
+  ones) and is the more severe of the two. Does not affect QBCC's excluded-persons register or
+  adjudication registry, which use a different domain/mechanism. **Not yet fixed** — needs QBCC's
+  current contractor-search location found (likely moved onto the `my.qbcc.qld.gov.au` Salesforce
+  portal alongside the excluded-persons register) and the failure changed to surface as an honest
+  `error` status instead of a silent empty result.
+- `vicBpc.js`'s entire prosecution/disciplinary register scrape is broken: running
+  `test-vicbpc.js` (while verifying the regex fix above didn't regress anything) showed VIC's
+  register has been rebranded from "VBA" to "Building and Plumbing Commission" — the fetched page's
+  `<title>` is now "The Compliance and Enforcement Register | Building and Plumbing Commission"
+  with canonical URL `https://www.bpc.vic.gov.au/compliance-and-enforcement-register`, and contains
+  zero `.accordion__block` elements, the markup `parseAccordionItems()` depends on entirely. This
+  fails before any search query is even typed in, so it's unrelated to the regex fix — the whole
+  page structure changed. **Not yet fixed** — needs the new BPC page's markup inspected and
+  `parseAccordionItems()` rewritten against it (or confirmation of whether the equivalent data has
+  moved to an open dataset instead, worth checking given the pattern elsewhere in this file).
+
 ### Production Vercel env vars — Stripe/Google are placeholders (2026-08-03)
 
 `web` project's **Production** environment has real values for everything except `STRIPE_SECRET_KEY`,

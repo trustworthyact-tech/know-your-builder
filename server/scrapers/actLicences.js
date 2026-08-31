@@ -114,7 +114,7 @@ async function searchACTLicences(companyName, abn, directors) {
   }
 
   // Strip "Pty Ltd" so partial-word matches work against the registered name.
-  const strippedName = companyName.replace(/\s*pty\s*ltd\.?\s*$/i, '').trim();
+  const strippedName = companyName.replace(/\s*(?:pty|proprietary)?\.?\s*(?:ltd|limited)\.?\s*$/i, '').trim();
 
   try {
     addHits(await fetchByName(strippedName), strippedName);
@@ -230,7 +230,7 @@ async function searchACTDisciplinary(companyName, abn, directors) {
   }
 
   // Strip "Pty Ltd" so partial-word matches work against the registered name.
-  const strippedName = (companyName || '').replace(/\s*pty\s*ltd\.?\s*$/i, '').trim();
+  const strippedName = (companyName || '').replace(/\s*(?:pty|proprietary)?\.?\s*(?:ltd|limited)\.?\s*$/i, '').trim();
 
   if (strippedName || acnDigits) {
     try {

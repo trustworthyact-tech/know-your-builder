@@ -63,7 +63,7 @@ async function searchNTBuildingPractitioners(companyName, abn, directors) {
   const seen = new Set();
 
   const queries = [
-    companyName.replace(/\s*pty\s*ltd\.?\s*$/i, '').trim(),
+    companyName.replace(/\s*(?:pty|proprietary)?\.?\s*(?:ltd|limited)\.?\s*$/i, '').trim(),
     ...(directors || []).filter(Boolean),
   ];
 
