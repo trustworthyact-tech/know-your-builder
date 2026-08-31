@@ -727,6 +727,21 @@ different tool/page than the one the actual production scraper uses). The new sc
 will show these as failing from its first run; that's an honest, real, and now-visible baseline,
 not a regression from anything in this session — worth investigating separately.
 
+**Post-deploy verification caught a transient, unrelated incident, not a regression**: minutes
+after this deploy went live, a production request hung for 1000+ seconds with 25 of 29 scrapers
+stuck, including several untouched by this session's changes (`tasLicenceRegister`,
+`asicInsolvency`, `atoDebt`). Server logs showed the shared Chromium instance itself crashed
+(`ConnectionClosedError: Connection closed`, `Failed to open a new tab` across unrelated
+scrapers) — `browser.js`'s `getBrowser()` already has a `b.on('disconnected', ...)` handler that
+nulls `browserInstance` so the next call relaunches a fresh browser, and this self-healed: a
+follow-up request ~70 minutes later completed cleanly (138s, zero stuck, correct QBCC/vicBpc
+results). Root cause of the crash itself not investigated (could be a one-off OOM or unrelated
+transient fault) — flagged here mainly because it's exactly the class of thing the new health
+check should surface if it recurs, and because whichever specific request is in-flight *during*
+such a crash currently has no per-request timeout/retry safety net and will just hang for its
+full duration. Worth considering a bounded overall timeout on `getBrowser()`-dependent scraper
+calls as a future robustness improvement, separate from this session's scope.
+
 ### Production Vercel env vars — Stripe/Google are placeholders (2026-08-03)
 
 `web` project's **Production** environment has real values for everything except `STRIPE_SECRET_KEY`,
