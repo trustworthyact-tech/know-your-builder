@@ -629,10 +629,8 @@ these)**:
   normal-looking "done, 0 licences" result indistinguishable from a genuinely clean check. This is
   independent of the suffix-stripping bug above (fails for every company, not just "Pty Limited"
   ones) and is the more severe of the two. Does not affect QBCC's excluded-persons register or
-  adjudication registry, which use a different domain/mechanism. **Not yet fixed** — needs QBCC's
-  current contractor-search location found (likely moved onto the `my.qbcc.qld.gov.au` Salesforce
-  portal alongside the excluded-persons register) and the failure changed to surface as an honest
-  `error` status instead of a silent empty result.
+  adjudication registry, which use a different domain/mechanism. **Fixed 2026-08-31** — see the
+  dedicated entry below.
 - `vicBpc.js`'s entire prosecution/disciplinary register scrape is broken: running
   `test-vicbpc.js` (while verifying the regex fix above didn't regress anything) showed VIC's
   register has been rebranded from "VBA" to "Building and Plumbing Commission" — the fetched page's
@@ -640,9 +638,94 @@ these)**:
   with canonical URL `https://www.bpc.vic.gov.au/compliance-and-enforcement-register`, and contains
   zero `.accordion__block` elements, the markup `parseAccordionItems()` depends on entirely. This
   fails before any search query is even typed in, so it's unrelated to the regex fix — the whole
-  page structure changed. **Not yet fixed** — needs the new BPC page's markup inspected and
-  `parseAccordionItems()` rewritten against it (or confirmation of whether the equivalent data has
-  moved to an open dataset instead, worth checking given the pattern elsewhere in this file).
+  page structure changed. **Fixed 2026-08-31** — see the dedicated entry below.
+
+### QBCC and VBA/BPC licence checks fixed; register-drift monitoring added (2026-08-31)
+
+Follow-up to the two "flagged, not fixed" issues above.
+
+**QBCC contractor-licence search** — `www.qbcc.qld.gov.au/api/licensee-search` and its HTML
+fallback `/find-a-local-contractor` were both dead (404, QBCC restructured onto Drupal 11). Found
+the real replacement by driving `https://my.qbcc.qld.gov.au/myQBCC/s/qbcc-licensee-register`
+("Search QBCC Act Licensees") with Puppeteer and reading captured network traffic: a Salesforce
+Aura call to `PublicRegisterSearchController.searchQBCCActLicenses({name, firstName, lastName})`.
+Better still — `qbcc.js` already had a working **direct axios** Aura-call helper,
+`callQBCCAura()`, used for the adjudication registry (`QBCCAdjudicationSearchController`), taking
+a fake `fwuid: 'scraper'` / `aura.token: 'null'` and no session cookies at all. Confirmed live that
+the exact same trick works for `PublicRegisterSearchController` too — no Puppeteer needed for this
+search at all, just a plain POST. Generalized `callQBCCAura(method, params)` to
+`callQBCCAura(classname, method, params)` (both existing callers updated) and added
+`searchQBCCLicensees()`. Notable field-shape finding: company licensees are stored with
+`fname === lname === business name` (there's no separate company-name field — passing the query
+via `name` alone returns 0 results; `lastName` alone works and matches company names too), and the
+API does a broad substring match on `lastName` (searching "CONSTRUCTION" alone returns ~2000
+unrelated hits), so results are filtered locally with a `nameMatchesEntity()` whole-word matcher
+(newly added to this file) before being returned. No status/expiry/financial-category fields exist
+in this response shape (unlike the old dead endpoint) — only licence number, classification, and
+address are available; `riskGrouper.ts`'s `hasInactiveStatus` check on `qbcc?.licenceResults` can
+no longer find anything to flag from this source, an honest limitation of what QBCC now exposes
+here, not a bug. The old `catch { // ignore }` that silently swallowed every failure is gone —
+`searchQBCCLicensees()` now `console.error`s per failed name. Added
+`server/tests/test-qbcc-licensee.js` — there was previously no test at all covering this specific
+function, which is exactly why the break went unnoticed.
+
+**VIC disciplinary register (VBA → BPC)** — see the dedicated finding above for the rebrand
+itself. Found the new backend, `https://www.bpc.vic.gov.au/_api/data/compliance-and-enforcements`
+(250 records/page, 943 total, 4 pages), Cloudflare-protected against direct axios/curl (returns a
+"Just a moment..." challenge) but reachable through Puppeteer, which clears the challenge
+automatically on page load. Confirmed the new page's own search box does nothing server-side — the
+API returns the same full list regardless of query string, and the real site filters client-side
+in JS after fetching everything — so this was rebuilt as a bulk-cache scraper rather than a live
+per-query one, mirroring `asicDpnDataset.js`/`asicDpnDatasetRefresh.js` exactly: new
+`vicBpcDataset.js` (`fetchVbaBpcRecords()`, walks pages via `page.evaluate(() => fetch(...))` from
+inside an already-Cloudflare-cleared Puppeteer page, JSON-cached to disk, `stale`-cache fallback,
+in-flight-fetch dedup) and `vicBpcDatasetRefresh.js` (24h `setInterval`, wired into
+`server/index.js` alongside the other two refreshers). `vicBpc.js` itself no longer touches
+Puppeteer at all during a live search — it calls `fetchVbaBpcRecords()` and matches locally with
+its existing `nameMatchesEntity()`, same as every other rewritten scraper this session. Returns
+`status: 'error'` (rather than a false "no proceedings found") if a live fetch fails with no cache
+available at all. `test-vicbpc.js` updated to match (previously asserted `.accordion__block`
+presence, which no longer exists).
+
+**Register-drift monitoring — the actual answer to "can this be automated"**: full auto-migration
+isn't safely automatable (discovering a new endpoint requires interpreting an unfamiliar site by
+hand, as both fixes above did — an unsupervised process doing that in production risks silently
+scraping the wrong thing). The achievable version is detecting a break quickly and saying so
+loudly. `server/tests/run-all.sh` already ran 22 register-accuracy tests in parallel with
+pass/fail reporting — its own README even noted a test was excluded "to avoid running deep-check
+network calls in routine CI," implying CI was anticipated but never built. Added
+`.github/workflows/register-health-check.yml`: runs `run-all.sh` daily (`schedule` cron) plus
+on-demand (`workflow_dispatch`), needs `CAPTCHA_API_KEY` added as a GitHub Actions repo secret (not
+something this session could do — requires the user to add it in Settings → Secrets and variables
+→ Actions). No new alerting code — GitHub already emails on a failed scheduled workflow run.
+Runs on GitHub's own runner, never the production process, so it can't contend with real traffic
+for the shared `MAX_CONCURRENT_PAGES` pool.
+
+**Two bugs found and fixed in `run-all.sh` itself while wiring this up** — both would have made
+the new health check permanently, misleadingly red from day one, which defeats its purpose:
+1. `set -euo pipefail` plus a label (`asic-parser`) left in the results-reporting loop after its
+   `run_test` call was deleted back on 2026-08-19 meant `cat`-ing its nonexistent log file crashed
+   the *entire script* immediately upon reaching the reporting phase — every run silently never got
+   past printing failure details for the very first label, never reached the final "ALL TESTS
+   PASSED"/"SOME TESTS FAILED" line or `exit $OVERALL`. Removed the stale label.
+2. Two different test files (`test-vic-vba-licence.js` and `test-vic-vba-licence-scraper.js`) were
+   both given the identical label `vic-vba-licence`, so their log/exit files collided — one test's
+   real result was silently overwritten by the other's. Renamed the scraper-level one to
+   `vic-vba-licence-scraper`.
+
+Also removed two now-dead entries from `run-all.sh`: `sa-cbs-licence` (probed
+`saLicenceRegister.js`, retired earlier this session — the probe itself 404s against a register
+this app no longer covers) and `nt-building-licence` (probed a stale, now-unresolvable domain,
+superseded by `test-nt-building-practitioners.js` against the real scraper's actual domain, which
+already passes).
+
+**Six pre-existing failures surfaced by actually running the full suite for the first time —
+flagged, not fixed, out of scope for this pass**: `wa-be-licence`, `act-licence`,
+`tas-cbos-licence`, `asic-insolvency`, `modern-slavery`, `fwo` (all older single-purpose "probe"
+scripts, distinct from the scraper-function tests they sit alongside — several appear to test a
+different tool/page than the one the actual production scraper uses). The new scheduled workflow
+will show these as failing from its first run; that's an honest, real, and now-visible baseline,
+not a regression from anything in this session — worth investigating separately.
 
 ### Production Vercel env vars — Stripe/Google are placeholders (2026-08-03)
 

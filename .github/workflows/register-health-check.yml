@@ -1,0 +1,37 @@
+name: Register health check
+
+# Runs the live register-accuracy test suite (server/tests/run-all.sh) on a schedule so a
+# government site changing shape underneath a scraper (a rebrand, a moved endpoint, a dead
+# API — this repo has hit all three) gets caught within a day instead of by accident weeks
+# later. On failure, GitHub emails the repo's watchers/last committer by default — no extra
+# alerting code needed. Runs on GitHub's own runner, never the production Railway process, so
+# it can't compete with real user traffic for the shared Puppeteer page-slot pool
+# (server/scrapers/browser.js's MAX_CONCURRENT_PAGES).
+#
+# Known pre-existing failures as of 2026-08-31 (unrelated to this workflow, not yet
+# investigated): wa-be-licence, act-licence, tas-cbos-licence, asic-insolvency,
+# modern-slavery, fwo. See CLAUDE.md.
+
+on:
+  schedule:
+    - cron: '0 20 * * *' # 20:00 UTC daily (~06:00 AEST)
+  workflow_dispatch: {}
+
+jobs:
+  health-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '23'
+
+      - name: Install server dependencies
+        working-directory: server
+        run: npm ci
+
+      - name: Run register accuracy tests
+        env:
+          CAPTCHA_API_KEY: ${{ secrets.CAPTCHA_API_KEY }}
+        run: bash server/tests/run-all.sh

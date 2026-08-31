@@ -46,19 +46,25 @@ run_test() {
 run_test "vicbpc"               "server/tests/test-vicbpc.js" &
 run_test "wa-building"          "server/tests/test-wa-building.js" &
 run_test "qbcc-excluded"        "server/tests/test-qbcc-excluded.js" &
+run_test "qbcc-licensee"        "server/tests/test-qbcc-licensee.js" &
 run_test "nsw-fairtrading"      "server/tests/test-nsw-fairtrading-licence.js" &
 run_test "vic-vba-licence"      "server/tests/test-vic-vba-licence.js" &
 run_test "wa-be-licence"        "server/tests/test-wa-be-licence.js" &
-run_test "sa-cbs-licence"       "server/tests/test-sa-cbs-licence.js" &
-run_test "nt-building-licence"  "server/tests/test-nt-building-licence.js" &
+# sa-cbs-licence removed 2026-08-31 — saLicenceRegister.js (the scraper this probed) was
+# retired entirely (a page-leak bug with no viable open-data replacement); the probe itself
+# now 404s against a register this app no longer covers at all.
+# nt-building-licence removed 2026-08-31 — probed a stale domain (buildinglicences.nt.gov.au,
+# now unresolvable DNS) superseded by test-nt-building-practitioners.js against the real
+# scraper's actual domain (www.ntlis.nt.gov.au), which already covers this and passes.
 run_test "act-licence"          "server/tests/test-act-licence.js" &
 run_test "tas-cbos-licence"     "server/tests/test-tas-cbos-licence.js" &
 # Section 8.2 — State/Territory Licence Registers (scraper functions)
 run_test "act-licences"              "server/tests/test-act-licences.js" &
+run_test "act-disciplinary"          "server/tests/test-act-disciplinary.js" &
 run_test "nsw-fairtrading-scraper"   "server/tests/test-nsw-fairtrading.js" &
 run_test "nt-building-practitioners" "server/tests/test-nt-building-practitioners.js" &
 run_test "wa-licence-register"       "server/tests/test-wa-licence-register.js" &
-run_test "vic-vba-licence"           "server/tests/test-vic-vba-licence-scraper.js" &
+run_test "vic-vba-licence-scraper"   "server/tests/test-vic-vba-licence-scraper.js" &
 # Section 8.3 — Financial Risk Signals
 run_test "asic-insolvency"      "server/tests/test-asic-insolvency.js" &
 run_test "ato-debt"             "server/tests/test-ato-debt.js" &
@@ -75,7 +81,7 @@ echo ""
 
 # Print output for any failed tests
 OVERALL=0
-for label in asic-parser vicbpc wa-building qbcc-excluded nsw-fairtrading vic-vba-licence wa-be-licence sa-cbs-licence nt-building-licence act-licence tas-cbos-licence act-licences nsw-fairtrading-scraper nt-building-practitioners wa-licence-register vic-vba-licence asic-insolvency ato-debt payment-times modern-slavery qbcc-adjudication court-records fwo; do
+for label in vicbpc wa-building qbcc-excluded qbcc-licensee nsw-fairtrading vic-vba-licence wa-be-licence act-licence tas-cbos-licence act-licences act-disciplinary nsw-fairtrading-scraper nt-building-practitioners wa-licence-register vic-vba-licence-scraper asic-insolvency ato-debt payment-times modern-slavery qbcc-adjudication court-records fwo; do
   exit_code=$(cat "$LOG_DIR/${label}.exit" 2>/dev/null || echo 1)
   if [ "$exit_code" != "0" ]; then
     OVERALL=1
@@ -89,7 +95,7 @@ done
 
 # Always print full output for all tests (verbose mode)
 if [ "${VERBOSE:-}" = "1" ]; then
-  for label in asic-parser vicbpc wa-building qbcc-excluded nsw-fairtrading vic-vba-licence wa-be-licence sa-cbs-licence nt-building-licence act-licence tas-cbos-licence act-licences nsw-fairtrading-scraper nt-building-practitioners wa-licence-register vic-vba-licence asic-insolvency ato-debt payment-times modern-slavery qbcc-adjudication court-records fwo; do
+  for label in vicbpc wa-building qbcc-excluded qbcc-licensee nsw-fairtrading vic-vba-licence wa-be-licence act-licence tas-cbos-licence act-licences act-disciplinary nsw-fairtrading-scraper nt-building-practitioners wa-licence-register vic-vba-licence-scraper asic-insolvency ato-debt payment-times modern-slavery qbcc-adjudication court-records fwo; do
     echo "──────────────────────────────────────────────────────────"
     echo "  Output: $label"
     echo "──────────────────────────────────────────────────────────"
