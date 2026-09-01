@@ -2,29 +2,30 @@
  * TEST: NSW Fair Trading — Building & Contractor Licence Register
  *
  * PURPOSE
- *   Probes the NSW Fair Trading licence search (via OneGov JSON API) to confirm:
+ *   Probes the NSW Fair Trading licence search (via the Verify NSW JSON API) to
+ *   confirm:
  *     1. The API endpoint is accessible and returns results
  *     2. Searching by name returns a parseable JSON structure
  *     3. A discovered entity can be found again by re-searching its name
  *
- *   There is no automated scraper for this register yet. This test establishes
- *   that it CAN be scraped and documents the API shape needed.
+ *   There is now an automated scraper for this register — see
+ *   server/scrapers/nswFairTrading.js and test-nsw-fairtrading.js, which tests
+ *   the scraper function itself. This file remains as a raw-API probe.
  *
  * BACKGROUND
  *   The old domain (onlineservices.fairtrading.nsw.gov.au) is defunct (NXDOMAIN).
- *   The register is now the OneGov Public Register SPA at:
- *     https://www.onegov.nsw.gov.au/publicregister/
+ *   The OneGov Public Register SPA that superseded it
+ *   (https://www.onegov.nsw.gov.au/publicregister/) has itself since been
+ *   retired — it now redirects straight to the Verify NSW homepage instead of
+ *   any deep-linked record. The register is now the Verify NSW SPA at:
+ *     https://verify.licence.nsw.gov.au/
  *   which calls a JSON REST API at:
- *     https://api.onegov.nsw.gov.au/LicenceCheckService/api/Search/PerformSearch
+ *     https://verify.licence.nsw.gov.au/publicregisterapi/api/v1/licence/search/advQuery
  *   with a JSON POST body:
- *     { searchCriteria, licenceGroupCode, searchType, rowsPerPage }
+ *     { licenceGroup, search, autoComplete, pageNumber, pageSize, licenceTypes }
  *
  *   Discovered group codes (building-relevant):
- *     "Trades"   — contractor licences (Home Building Act), includes builders/contractors
- *     "Property" — property/real estate agents
- *
- *   The link on fairtrading.nsw.gov.au redirects to nsw.gov.au content; the
- *   actual searchable register lives on onegov.nsw.gov.au.
+ *     "Trades" — contractor licences (Home Building Act), includes builders/contractors
  *
  * REQUIREMENTS
  *   No API keys or Puppeteer — axios only.
@@ -39,19 +40,22 @@
  *
  * HOW TO INTERPRET FAILURE
  *   "Step 1 FAIL: request failed"    → API URL changed or site blocked bots
- *   "Step 2 FAIL: no results found"  → licenceGroupCode changed or JSON shape changed
+ *   "Step 2 FAIL: no results found"  → licenceGroup changed or JSON shape changed
  *   "Step 3 FAIL: fixture not found" → search non-deterministic or name extraction broke
  *
- * SCRAPER NOTES (for future implementation)
- *   API base: https://api.onegov.nsw.gov.au/LicenceCheckService
- *   POST /api/Search/PerformSearch
- *     body: { searchCriteria: string, licenceGroupCode: "Trades", searchType: "fulltext", rowsPerPage: 20 }
- *   Response: { licenceSearchResults: [...], hasMoreRows: bool, searchId: string }
- *   Each result: { licensee, licenceNumber, licenceType, status, suburb, postcode,
- *                  expiryDate, abn, acn, licenceID }
- *   Pagination: POST /api/Search/ScrollLicenceResults with { searchId, endPageNumber, rowsPerPage }
- *   No auth required. Requires Origin + Referer headers from onegov.nsw.gov.au.
- *   Direct link: https://www.onegov.nsw.gov.au/publicregister/#/publicregister/result/{licenceID}
+ * SCRAPER NOTES
+ *   API base: https://verify.licence.nsw.gov.au/publicregisterapi/api/v1/licence
+ *   POST /search/advQuery
+ *     body: { licenceGroup: "Trades", search: string, autoComplete: false, pageNumber: 0, pageSize: 20, licenceTypes: [] }
+ *   Response: { pagingInfo: {...}, results: [...] }
+ *   Each result: { licenceId, licenceNumber, licenceType, licenceTypeFriendly, status,
+ *                  suburb, postcode, expires, ABN, ACN }
+ *   No auth required. Requires Origin + Referer headers from verify.licence.nsw.gov.au.
+ *   Per-licence compliance history (penalty notices, disciplinary action, etc — not
+ *   present on the search response) is on the details endpoint:
+ *     GET /search/details/{encodeURIComponent(licenceType)}/{encodeURIComponent(licenceId)}
+ *     → { componentData: { notifications: [...], compliances: [...], complianceSummary: [...] } }
+ *   Direct link: https://verify.licence.nsw.gov.au/details/{licenceType}/{licenceId}
  */
 
 'use strict';
@@ -59,17 +63,17 @@
 const axios = require('axios');
 const { pass, fail, step, warn, header, summary } = require('./lib/helpers');
 
-// Production OneGov LicenceCheckService API
-const API_BASE = 'https://api.onegov.nsw.gov.au/LicenceCheckService';
-const SEARCH_URL = `${API_BASE}/api/Search/PerformSearch`;
+// Production Verify NSW public register API
+const API_BASE = 'https://verify.licence.nsw.gov.au/publicregisterapi/api/v1/licence';
+const SEARCH_URL = `${API_BASE}/search/advQuery`;
 // Deep link to a specific result on the public register SPA
-const REGISTER_BASE = 'https://www.onegov.nsw.gov.au/publicregister';
+const REGISTER_BASE = 'https://verify.licence.nsw.gov.au';
 
 const HEADERS = {
   'Content-Type': 'application/json',
   'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  Origin: 'https://www.onegov.nsw.gov.au',
-  Referer: 'https://www.onegov.nsw.gov.au/publicregister/',
+  Origin: 'https://verify.licence.nsw.gov.au',
+  Referer: 'https://verify.licence.nsw.gov.au/',
 };
 
 // Building-relevant group codes discovered by JS analysis of the OneGov SPA bundle
@@ -82,10 +86,12 @@ const suppliedName = nameIdx !== -1 ? args[nameIdx + 1] : null;
 
 async function searchLicences(query, groupCode = BUILDING_GROUP) {
   const { data } = await axios.post(SEARCH_URL, {
-    searchCriteria: query,
-    licenceGroupCode: groupCode,
-    searchType: 'fulltext',
-    rowsPerPage: 20,
+    licenceGroup: groupCode,
+    search: query,
+    autoComplete: false,
+    pageNumber: 0,
+    pageSize: 20,
+    licenceTypes: [],
   }, { headers: HEADERS, timeout: 20000 });
   return data;
 }
@@ -103,10 +109,10 @@ async function searchLicences(query, groupCode = BUILDING_GROUP) {
   for (const term of (suppliedName ? [suppliedName] : BROAD_TERMS)) {
     try {
       const data = await searchLicences(term);
-      if (data && Array.isArray(data.licenceSearchResults) && data.licenceSearchResults.length > 0) {
+      if (data && Array.isArray(data.results) && data.results.length > 0) {
         results = data;
         usedTerm = term;
-        step(`  Got ${data.licenceSearchResults.length} result(s) for term "${term}"`);
+        step(`  Got ${data.results.length} result(s) for term "${term}"`);
         break;
       } else {
         warn(`  Search "${term}" returned 0 results`);
@@ -119,19 +125,19 @@ async function searchLicences(query, groupCode = BUILDING_GROUP) {
   if (!results) {
     fail('Step 1', 'All search attempts failed.\n' +
       `Target API: POST ${SEARCH_URL}\n` +
-      `Body shape: { searchCriteria, licenceGroupCode: "${BUILDING_GROUP}", searchType: "fulltext", rowsPerPage: 20 }\n` +
-      'Check if the licenceGroupCode or API URL changed.');
+      `Body shape: { licenceGroup: "${BUILDING_GROUP}", search, autoComplete: false, pageNumber: 0, pageSize: 20, licenceTypes: [] }\n` +
+      'Check if the licenceGroup or API URL changed.');
     summary(0, 1);
     process.exit(1);
   }
 
-  pass('Step 1', `API reachable (search term: "${usedTerm}"). hasMoreRows=${results.hasMoreRows}`);
+  pass('Step 1', `API reachable (search term: "${usedTerm}"). totalRecords=${results.pagingInfo?.totalRecords}`);
   passed++;
 
   // Step 2: Parse and validate JSON structure
   step('Step 2: Validating JSON result structure...');
-  const firstResult = results.licenceSearchResults[0];
-  const requiredFields = ['licenceID', 'licensee', 'licenceNumber', 'status', 'licenceType'];
+  const firstResult = results.results[0];
+  const requiredFields = ['licenceId', 'licensee', 'licenceNumber', 'status', 'licenceType'];
   const missingFields = requiredFields.filter((f) => !(f in firstResult));
 
   if (missingFields.length > 0) {
@@ -144,14 +150,14 @@ async function searchLicences(query, groupCode = BUILDING_GROUP) {
     process.exit(1);
   }
 
-  const names = results.licenceSearchResults.map((r) => r.licensee).filter(Boolean);
+  const names = results.results.map((r) => r.licensee).filter(Boolean);
   const fixtureName = suppliedName || names[0];
   pass('Step 2',
-    `Found ${results.licenceSearchResults.length} result(s) with all required fields.\n` +
+    `Found ${results.results.length} result(s) with all required fields.\n` +
     `  Fixture: "${fixtureName}"\n` +
     `  Sample: ${names.slice(0, 3).join(', ')}`);
   passed++;
-  step(`  First result: licensee="${firstResult.licensee}", licence=${firstResult.licenceNumber}, status=${firstResult.status}, abn=${firstResult.abn}`);
+  step(`  First result: licensee="${firstResult.licensee}", licence=${firstResult.licenceNumber}, status=${firstResult.status}, abn=${firstResult.ABN}`);
 
   // Step 3: Re-search with the fixture name to confirm consistency
   step(`Step 3: Re-searching for "${fixtureName}" to verify search is consistent...`);
@@ -166,7 +172,7 @@ async function searchLicences(query, groupCode = BUILDING_GROUP) {
     process.exit(1);
   }
 
-  const reNames = (reData.licenceSearchResults || []).map((r) => r.licensee).filter(Boolean);
+  const reNames = (reData.results || []).map((r) => r.licensee).filter(Boolean);
   // Match on the first significant word of the fixture name
   const firstWord = fixtureName.split(' ')[0].toLowerCase();
   const found = reNames.some((n) => n.toLowerCase().includes(firstWord));
@@ -180,13 +186,13 @@ async function searchLicences(query, groupCode = BUILDING_GROUP) {
     pass('Step 3', `"${fixtureName}" confirmed in re-search results (${reNames.length} total)`);
     passed++;
     step('');
-    step('SCRAPER NOTE: NSW Fair Trading (OneGov) results are scrapeable via JSON API.');
+    step('SCRAPER NOTE: NSW Fair Trading (Verify NSW) results are scrapeable via JSON API.');
     step(`  API endpoint: POST ${SEARCH_URL}`);
-    step(`  Licence group for builders/contractors: licenceGroupCode="${BUILDING_GROUP}"`);
-    step(`  Response key: licenceSearchResults[] with fields: licensee, licenceNumber, status, abn, acn, expiryDate`);
-    step(`  Pagination: searchId returned, use ScrollLicenceResults for page 2+`);
-    step(`  Deep link: ${REGISTER_BASE}/#/publicregisterdetails/{licenceID}`);
-    step(`  Search URL for links.js: ${REGISTER_BASE}/#/publicregister/search/${BUILDING_GROUP}`);
+    step(`  Licence group for builders/contractors: licenceGroup="${BUILDING_GROUP}"`);
+    step(`  Response key: results[] with fields: licensee, licenceNumber, status, ABN, ACN, expires`);
+    step(`  Compliance history (not in the search response): GET ${API_BASE}/search/details/{licenceType}/{licenceId}`);
+    step(`  Deep link: ${REGISTER_BASE}/details/{licenceType}/{licenceId}`);
+    step(`  Search URL for links.js: ${REGISTER_BASE}/home/${BUILDING_GROUP.toLowerCase()}`);
   }
 
   summary(passed, failed);

@@ -58,6 +58,10 @@ function hasInactiveStatus(item: ResultItem): boolean {
   return INACTIVE_STATUSES.some((s) => status.includes(s));
 }
 
+function hasComplianceHistory(item: ResultItem): boolean {
+  return (item.metadata?.['ComplianceHistory'] ?? '').startsWith('Yes');
+}
+
 export function riskGrouper(findings: Record<string, SearchResult>): RiskGroupResult[] {
   const groups: RiskGroupResult[] = [];
 
@@ -264,6 +268,16 @@ export function riskGrouper(findings: Record<string, SearchResult>): RiskGroupRe
         scraperKey: 'asicDisqualified',
         finding: `${asicDisqualified.length} director(s) found on the ASIC disqualified persons register`,
         anchor: '#s81',
+      });
+    }
+
+    const nswFairTrading = resultsOf(findings, 'nswFairTrading');
+    const nswComplianceLicences = nswFairTrading.filter(hasComplianceHistory);
+    if (nswComplianceLicences.length > 0) {
+      triggers.push({
+        scraperKey: 'nswFairTrading',
+        finding: `${nswComplianceLicences.length} NSW contractor licence(s) with recorded compliance history (penalty notice, disciplinary action, or condition imposed)`,
+        anchor: '#s82',
       });
     }
 

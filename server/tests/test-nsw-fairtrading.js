@@ -3,8 +3,8 @@
  *
  * PURPOSE
  *   Verifies that searchNSWFairTrading() returns a correctly shaped result when
- *   given an entity name that exists in the OneGov NSW licence register.
- *   The test self-discovers a fixture by POSTing to the OneGov API with a
+ *   given an entity name that exists in the Verify NSW licence register.
+ *   The test self-discovers a fixture by POSTing to the Verify NSW API with a
  *   broad search term ("constructions"), then calls the full scraper function
  *   and confirms the same entity comes back.
  *
@@ -17,13 +17,13 @@
  *       → nameMatchesEntity filter in searchNSWFairTrading is too strict,
  *         or the fixture name contains only short/stopword tokens
  *     • Raw API returns 0 results
- *       → OneGov endpoint or request format changed
+ *       → Verify NSW endpoint or request format changed
  *     • Scraper throws
  *       → Network error, header rejection, or API shape changed
  *
  * REQUIREMENTS
  *   No API keys or Puppeteer needed — axios only (used by the scraper itself).
- *   OneGov requires Origin/Referer headers matching www.onegov.nsw.gov.au.
+ *   Verify NSW requires Origin/Referer headers matching verify.licence.nsw.gov.au.
  *
  * USAGE
  *   node server/tests/test-nsw-fairtrading.js
@@ -35,13 +35,13 @@
  *
  * HOW TO INTERPRET FAILURE
  *   "Step 1 FAIL: raw API returned 0 results"
- *     → The OneGov endpoint or POST body format may have changed.
- *       Check: POST https://api.onegov.nsw.gov.au/LicenceCheckService/api/Search/PerformSearch
- *       with { searchCriteria: "constructions", licenceGroupCode: "Trades", searchType: "fulltext" }
- *       Required headers: Origin/Referer from onegov.nsw.gov.au
+ *     → The Verify NSW endpoint or POST body format may have changed.
+ *       Check: POST https://verify.licence.nsw.gov.au/publicregisterapi/api/v1/licence/search/advQuery
+ *       with { licenceGroup: "Trades", search: "constructions", autoComplete: false, pageNumber: 0, pageSize: 10, licenceTypes: [] }
+ *       Required headers: Origin/Referer from verify.licence.nsw.gov.au
  *   "Step 2 FAIL: could not extract licensee name from raw results"
  *     → The 'licensee' field is missing or empty. Check the raw API response
- *       shape — the field name may have changed in the OneGov API.
+ *       shape — the field name may have changed in the Verify NSW API.
  *   "Step 3 FAIL: scraper threw"
  *     → searchNSWFairTrading() itself threw an exception. Check axios headers
  *       and POST body in server/scrapers/nswFairTrading.js.
@@ -63,14 +63,14 @@ const axios = require('axios');
 const { searchNSWFairTrading } = require(path.join(__dirname, '../scrapers/nswFairTrading'));
 const { pass, fail, step, warn, dump, header, summary } = require('./lib/helpers');
 
-const SEARCH_URL = 'https://api.onegov.nsw.gov.au/LicenceCheckService/api/Search/PerformSearch';
-const REGISTER_BASE = 'https://www.onegov.nsw.gov.au/publicregister';
+const SEARCH_URL = 'https://verify.licence.nsw.gov.au/publicregisterapi/api/v1/licence/search/advQuery';
+const REGISTER_BASE = 'https://verify.licence.nsw.gov.au';
 
 const RAW_HEADERS = {
   'Content-Type': 'application/json',
   'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  Origin: 'https://www.onegov.nsw.gov.au',
-  Referer: 'https://www.onegov.nsw.gov.au/publicregister/',
+  Origin: 'https://verify.licence.nsw.gov.au',
+  Referer: 'https://verify.licence.nsw.gov.au/',
 };
 
 // ── Parse CLI args ─────────────────────────────────────────────────────────────
@@ -105,10 +105,10 @@ function firstSigWord(name) {
   let passed = 0;
   let failed = 0;
 
-  // ── Step 1: Discover fixture via raw OneGov API ───────────────────────────
-  step('Step 1: Querying OneGov NSW API for contractor licences...');
+  // ── Step 1: Discover fixture via raw Verify NSW API ───────────────────────
+  step('Step 1: Querying Verify NSW API for contractor licences...');
   step(`  URL: POST ${SEARCH_URL}`);
-  step('  Body: { searchCriteria: "constructions", licenceGroupCode: "Trades", searchType: "fulltext" }');
+  step('  Body: { licenceGroup: "Trades", search: "constructions", autoComplete: false, pageNumber: 0, pageSize: 10, licenceTypes: [] }');
 
   let rawHits = [];
 
@@ -117,14 +117,16 @@ function firstSigWord(name) {
       const { data } = await axios.post(
         SEARCH_URL,
         {
-          searchCriteria: 'constructions',
-          licenceGroupCode: 'Trades',
-          searchType: 'fulltext',
-          rowsPerPage: 10,
+          licenceGroup: 'Trades',
+          search: 'constructions',
+          autoComplete: false,
+          pageNumber: 0,
+          pageSize: 10,
+          licenceTypes: [],
         },
         { headers: RAW_HEADERS, timeout: 20000 }
       );
-      rawHits = Array.isArray(data?.licenceSearchResults) ? data.licenceSearchResults : [];
+      rawHits = Array.isArray(data?.results) ? data.results : [];
     } catch (e) {
       fail('Step 1', `Raw API request failed: ${e.message}`);
       summary(0, 1);
@@ -133,7 +135,7 @@ function firstSigWord(name) {
 
     if (rawHits.length === 0) {
       fail('Step 1',
-        'Raw OneGov API returned 0 results for searchCriteria="constructions".\n' +
+        'Raw Verify NSW API returned 0 results for search="constructions".\n' +
         'The endpoint or POST body format may have changed.\n' +
         `Check: POST ${SEARCH_URL}\n` +
         'Or run with --name "Entity Name" to skip fixture discovery.');
@@ -141,7 +143,7 @@ function firstSigWord(name) {
       process.exit(1);
     }
 
-    pass('Step 1', `Found ${rawHits.length} raw result(s) from OneGov API`);
+    pass('Step 1', `Found ${rawHits.length} raw result(s) from Verify NSW API`);
     passed++;
   } else {
     pass('Step 1', `Skipped — using supplied name: "${suppliedName}"`);
@@ -252,7 +254,7 @@ function firstSigWord(name) {
       `  (a) Significant words from fixture: ${JSON.stringify(sigWords(fixtureName))}\n` +
       '  (b) nameMatchesEntity requires every sig word to appear in hit.licensee verbatim\n' +
       '  (c) Check server/scrapers/nswFairTrading.js nameMatchesEntity function\n' +
-      `  (d) Browse register: ${REGISTER_BASE}/#/publicregister/search/Trades`
+      `  (d) Browse register: ${REGISTER_BASE}/home/trades`
     );
     // 0 results is a WARN, not a FAIL
     summary(passed, failed);

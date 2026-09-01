@@ -233,7 +233,18 @@ results, and fold that into `resolveExtraSearchTerms()`. Also route those names 
 `stripCompanySuffix()` in `austlii.js` — associated companies will carry "Pty Ltd" suffixes just
 like the primary entity does.
 
-### AustLII scraper is currently non-functional — Cloudflare block, not a bug (2026-08-12)
+### AustLII scraper is currently non-functional — Cloudflare block, not a bug (2026-08-12) — DEAD END, WON'T PURSUE (2026-09-01)
+
+**Decided (2026-09-01): not pursuing a live AustLII scraper further.** AustLII's block is
+deliberate policy enforcement (see below), not incidental bot protection, and the only paths that
+would restore automated coverage — negotiating written permission, or paying for premium proxy
+tiers to route around the block — either require an external party's sign-off on a timeline this
+project doesn't control, or mean deliberately engineering around a block AustLII put up specifically
+to stop this. Removed from the active incomplete-work list on that basis. Section 8.5's court
+coverage continues to run on FWO + QBCC adjudication only (see "In the meantime" below) — this is a
+capability gap, not a bug, and is expected to stay that way unless AustLII's own policy changes.
+The "manual search-yourself link" option (#2 below) remains a legitimate, fully-compliant way to at
+least surface the register to a user by hand if that's ever wanted — it just hasn't been built.
 
 All 9 `austlii.js` jurisdiction searches (`austlii_federal`/`austlii_qld`/etc.) currently return
 empty results in production. This is **not a regression from the 2026-08-11 trading-names/suffix-
@@ -754,6 +765,71 @@ some of these sites than a residential/normal outbound IP does. Treat a CI failu
 specific tests with that in mind — re-run `workflow_dispatch` before assuming a genuine break, or
 cross-check against a local run, since this is IP-reputation noise rather than the site itself
 having moved.
+
+### NSW Fair Trading migrated OneGov → Verify NSW; deep links dead-ended and compliance history was invisible (2026-09-01)
+
+**Reported**: for UNIVERSAL PROPERTY GROUP PTY LIMITED (ABN 98 078 297 748 — the same company as the
+"Pty Limited" suffix-stripping fix above), the section 8.2 NSW Fair Trading result correctly showed
+licence 85273C as `Current`, but two problems: (1) the licence in fact also carries an active
+compliance history (a 2026-08-19 condition imposed under s36(1)(c) of the Home Building Act, plus a
+2023 penalty notice) that the report gave no indication of; (2) the result's link
+(`https://www.onegov.nsw.gov.au/publicregister/#/publicregisterdetails/{licenceID}`) didn't go to the
+record at all — it landed on a generic registers landing page.
+
+**Root cause of the link, and by extension the whole scraper's medium-term viability**: the OneGov
+Public Register SPA the old `REGISTER_BASE` pointed at has itself been retired and rebranded —
+navigating to it now redirects straight to `https://verify.licence.nsw.gov.au/home/`, a new site,
+discarding the URL fragment entirely (confirmed live via Puppeteer: `page.goto()` on the old deep
+link resolved to the new homepage). This is the same category of register-drift already documented
+above for QBCC and VBA→BPC — a site rebrand breaking a hardcoded URL, not a scraper logic bug. The
+*search* API the scraper POSTs to (`api.onegov.nsw.gov.au/LicenceCheckService`) still happened to
+work standalone, which is exactly why this went unnoticed: the scraper kept returning correct licence
+data, only the link and (separately) the compliance data were broken.
+
+**Compliance history was never fetchable from the search response at all**, on either the old or new
+API — confirmed by inspecting the full `licenceSearchResults[]`/`results[]` item shape on both: no
+compliance/notification field exists there. It's only present on Verify NSW's per-licence details
+endpoint, `GET .../publicregisterapi/api/v1/licence/search/details/{licenceType}/{licenceId}` (found
+by driving the new site with Puppeteer and reading captured network calls), which returns
+`componentData.notifications` (a `"Compliance Did Not Pass"` warning entry when applicable) and
+`componentData.complianceSummary` (per-category counts — cancellations, penalty notices, disciplinary
+actions, prosecutions, etc). Confirmed live for this exact company: 1 penalty notice, plus the active
+condition text quoted above.
+
+**Fixed**: migrated `nswFairTrading.js` off the dead OneGov SPA entirely, onto Verify NSW —
+`SEARCH_URL` now POSTs to `verify.licence.nsw.gov.au/publicregisterapi/api/v1/licence/search/advQuery`
+(body shape changed: `licenceGroup`/`search`/`pageNumber`/`pageSize` replace the old
+`searchCriteria`/`licenceGroupCode`/`searchType`/`rowsPerPage`; response field names changed too —
+`results[]` not `licenceSearchResults[]`, `licenceId`/`expires`/`ABN` not
+`licenceID`/`expiryDate`/`abn`). No auth or CAPTCHA needed for either endpoint — plain `axios`, same
+as before. Added `fetchComplianceInfo()`, one extra `GET` per matched licence against the details
+endpoint (cheap — this register typically returns 0-2 hits per company, not a bulk scrape), non-fatal
+on failure (leaves `ComplianceHistory` metadata unset rather than asserting "none" when the fetch
+genuinely failed — same false-negative concern as the CAPTCHA-gated-check convention above, even
+though this endpoint itself isn't CAPTCHA-gated). Result `url` now points at
+`verify.licence.nsw.gov.au/details/{licenceType}/{licenceId}` — a real deep link, live-confirmed to
+land on the actual record. `description` gets a `" — compliance history on record"` suffix and
+`metadata.ComplianceHistory` is set to `"Yes (N recorded event(s)) — see licence record for details"`
+or `"None recorded"` when a compliance check succeeds; `ResultCard` already renders arbitrary
+`metadata` entries and `description` generically, so this reaches the report with no frontend changes.
+Live-verified end to end for the reported company: status `Current`, description now reads
+`"Contractor — Licence 85273C — compliance history on record"`, link resolves to the specific record.
+
+Updated `test-nsw-fairtrading.js` (scraper-function test) and `test-nsw-fairtrading-licence.js`
+(raw-API probe, still run in CI per `run-all.sh`) to the new endpoint/field names — both pass live
+against the new API, including re-confirming the "Pty Limited" suffix-stripping fix still works
+(`Universal Property Group Pty Limited` → 1 match) and a second unrelated fixture (`Doss
+Constructions Pty Ltd`, discovered via the CI probe term "constructions").
+
+**Risk-summary wiring added same day**: `ComplianceHistory` now also feeds a `riskGrouper.ts`
+LICENSING trigger, via a new `hasComplianceHistory()` helper (mirrors `hasInactiveStatus()` —
+checks `metadata.ComplianceHistory` starts with `"Yes"`) and a `nswFairTrading` block placed
+alongside the existing QBCC/VIC/ACT/WA triggers in the LICENSING group, anchored `#s82`. Deliberately
+does **not** set `severity = 'significant'` — a currently-valid licence with compliance history
+(penalty notice, disciplinary action, condition) is treated the same as the existing vicBpc/
+actDisciplinary/waBuildingEnergy "enforcement action found" triggers (a `'findings'`-level signal),
+not escalated to `'significant'` the way an actually inactive/expired/disqualified status is. `npx
+tsc --noEmit` clean.
 
 ### Production Vercel env vars — Stripe/Google are placeholders (2026-08-03)
 
