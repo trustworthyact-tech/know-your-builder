@@ -1,3 +1,4 @@
+import Image from 'next/image';
 import { HomeSearch } from '@/components/HomeSearch';
 
 const CHECKLIST = [
@@ -15,12 +16,18 @@ export default function HomePage() {
       <div className="max-w-xl mx-auto px-4 pt-14 pb-16">
         {/* Hero */}
         <div className="text-center mb-8">
-          <div className="w-16 h-16 rounded-full bg-primary flex items-center justify-center mx-auto mb-4 shadow-md">
-            <span className="text-white font-extrabold text-xl tracking-tight">KYB</span>
-          </div>
+          <Image
+            src="/trustworthy-mark.png"
+            alt="Trustworthy"
+            width={64}
+            height={64}
+            className="mx-auto mb-4 drop-shadow-sm"
+            priority
+          />
           <h1 className="text-3xl font-bold text-primary mb-2">Know Your Builder</h1>
           <p className="text-sm text-text-secondary max-w-xs mx-auto">
-            Automated due diligence across 40+ Australian government databases
+            Automated due diligence across 40+ Australian government databases, from the team
+            at Trustworthy
           </p>
         </div>
 

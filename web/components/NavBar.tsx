@@ -2,6 +2,7 @@
 
 import { useSession, signOut } from 'next-auth/react';
 import Link from 'next/link';
+import Image from 'next/image';
 
 export function NavBar() {
   const { data: session, status } = useSession();
@@ -9,9 +10,24 @@ export function NavBar() {
   return (
     <header className="bg-surface border-b border-border-light">
       <div className="max-w-5xl mx-auto px-4 h-12 flex items-center justify-between">
-        <Link href="/" className="text-sm font-bold text-primary tracking-tight">
-          Know Your Builder
-        </Link>
+        <div className="flex items-center gap-3">
+          <a
+            href="https://trustworthypayments.com"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-1.5 shrink-0"
+            aria-label="Trustworthy"
+          >
+            <Image src="/trustworthy-mark.png" alt="" width={20} height={20} />
+            <span className="text-xs font-semibold text-text-muted hidden sm:block">
+              Trustworthy
+            </span>
+          </a>
+          <span className="bg-border w-px h-4" aria-hidden="true" />
+          <Link href="/" className="text-sm font-bold text-primary tracking-tight">
+            Know Your Builder
+          </Link>
+        </div>
 
         <div className="flex items-center gap-4">
           {status === 'loading' ? null : session ? (

@@ -3,9 +3,9 @@
 @tailwind utilities;
 
 :root {
-  --color-primary: #1A3A5C;
+  --color-primary: #13263D;
   --color-primary-light: #2E5F8C;
-  --color-accent: #F0A500;
+  --color-accent: #FDA62A;
   --color-background: #F4F6F9;
   --color-surface: #FFFFFF;
   --color-text-primary: #0F1C2E;
@@ -21,5 +21,5 @@ html {
 body {
   background-color: var(--color-background);
   color: var(--color-text-primary);
-  font-family: var(--font-inter), system-ui, -apple-system, sans-serif;
+  font-family: var(--font-dm-sans), system-ui, -apple-system, sans-serif;
 }
