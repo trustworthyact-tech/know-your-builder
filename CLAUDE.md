@@ -742,6 +742,19 @@ such a crash currently has no per-request timeout/retry safety net and will just
 full duration. Worth considering a bounded overall timeout on `getBrowser()`-dependent scraper
 calls as a future robustness improvement, separate from this session's scope.
 
+**First real health-check runs (2026-08-31/09-01) — both triggers confirmed working, one new
+environmental finding**: the `schedule` cron fired on its own hours after this workflow was added
+(no manual action), and a manual `workflow_dispatch` run both completed — confirming both trigger
+paths work end-to-end, `CAPTCHA_API_KEY` is readable from the repo secret, and every test this
+session added or fixed (`qbcc-licensee`, `vicbpc`, `act-disciplinary`, `vic-vba-licence-scraper`)
+passes in CI. But `act-licences`, `court-records` (act/federal/nt fixtures), and `asic-insolvency`
+failed in CI despite passing locally minutes earlier — GitHub's shared runner IP ranges appear to
+get more aggressive anti-bot treatment (WAF blocks, Cloudflare challenges, connection resets) from
+some of these sites than a residential/normal outbound IP does. Treat a CI failure on these
+specific tests with that in mind — re-run `workflow_dispatch` before assuming a genuine break, or
+cross-check against a local run, since this is IP-reputation noise rather than the site itself
+having moved.
+
 ### Production Vercel env vars — Stripe/Google are placeholders (2026-08-03)
 
 `web` project's **Production** environment has real values for everything except `STRIPE_SECRET_KEY`,
