@@ -29,6 +29,17 @@ function nameMatchesEntity(text, query) {
     .filter((w) => (w.length > 3 || /^\d+$/.test(w)) && !/^(pty|ltd|limited|the|and|of|a)$/.test(w));
   if (words.length === 0) return false;
   const lower = text.toLowerCase();
+  // Multi-word queries must match as a contiguous phrase, anchored to whitespace/start/end
+  // rather than a plain \b — \b treats an apostrophe as a word boundary too, so "Kane
+  // Constructions" would otherwise match inside "O'Kane Constructions Pty Ltd" (a different,
+  // unrelated company) purely because "Kane" sits right after the apostrophe, and "every word
+  // present anywhere" would separately match "Kane Worthy Constructions Pty Ltd" even with an
+  // unrelated word in between. Confirmed live 2026-09-02: both false-positived for "Kane
+  // Constructions Pty Ltd" before this fix.
+  if (words.length > 1) {
+    const phrase = words.map(escapeRegExp).join('\\W+');
+    return new RegExp(`(^|\\s)${phrase}(\\s|$)`).test(lower);
+  }
   return words.every((w) => new RegExp(`\\b${escapeRegExp(w)}\\b`).test(lower));
 }
 

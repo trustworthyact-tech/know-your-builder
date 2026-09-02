@@ -27,6 +27,20 @@ function nameMatchesEntity(text, query) {
     .filter((w) => (w.length > 3 || /^\d+$/.test(w)) && !/^(pty|ltd|limited|the|and|of|a)$/.test(w));
   if (words.length === 0) return false;
   const lower = text.toLowerCase();
+  // Multi-word queries must match as a contiguous phrase, anchored to whitespace/start/end
+  // rather than a plain \b — "every word present anywhere" let unrelated companies through
+  // whenever they happened to share every significant word (see vicVbaLicence.js's identical
+  // fix for the same bug class, confirmed live 2026-09-02 against "Kane Constructions").
+  // Note: this does NOT fix a single-word alternate/trading name (e.g. a company's own ABR
+  // business name "Hutchies") coincidentally matching a different, unrelated company's title —
+  // there's no second word to require a phrase against, and this endpoint returns no ABN/ACN
+  // to cross-check. That's a real, currently-unresolved residual risk of resolveAlternateNames()
+  // feeding single-word business names into this search — confirmed live 2026-09-02 ("HUTCHIES"
+  // matching "Hutchies Carpentry Pty Ltd" for a search on "Hutchinson Builders").
+  if (words.length > 1) {
+    const phrase = words.map(escapeRegExp).join('\\W+');
+    return new RegExp(`(^|\\s)${phrase}(\\s|$)`).test(lower);
+  }
   return words.every((w) => new RegExp(`\\b${escapeRegExp(w)}\\b`).test(lower));
 }
 

@@ -29,6 +29,13 @@ function nameMatchesEntity(text, companyName) {
     .filter((w) => (w.length > 3 || /^\d+$/.test(w)) && !/^(pty|ltd|limited|the|and|of|a)$/.test(w));
   if (words.length === 0) return false;
   const lower = text.toLowerCase();
+  // Multi-word queries must match as a contiguous phrase, anchored to whitespace/start/end —
+  // see vicVbaLicence.js's identical fix for why a plain \b / "every word present anywhere"
+  // check lets unrelated companies through (confirmed live 2026-09-02 for "Kane Constructions").
+  if (words.length > 1) {
+    const phrase = words.map(escapeRegExp).join('\\W+');
+    return new RegExp(`(^|\\s)${phrase}(\\s|$)`).test(lower);
+  }
   return words.every((w) => new RegExp(`\\b${escapeRegExp(w)}\\b`).test(lower));
 }
 

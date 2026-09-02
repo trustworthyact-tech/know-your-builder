@@ -80,6 +80,13 @@ function nameMatchesEntity(text, query) {
     .filter((w) => (w.length > 3 || /^\d+$/.test(w)) && !/^(pty|ltd|limited|the|and|of|a)$/.test(w));
   if (words.length === 0) return false;
   const lower = text.toLowerCase();
+  // Multi-word queries must match as a contiguous phrase, anchored to whitespace/start/end —
+  // see vicVbaLicence.js's identical fix for why a plain \b / "every word present anywhere"
+  // check lets unrelated companies through (confirmed live 2026-09-02 for "Kane Constructions").
+  if (words.length > 1) {
+    const phrase = words.map(escapeRegExp).join('\\W+');
+    return new RegExp(`(^|\\s)${phrase}(\\s|$)`).test(lower);
+  }
   return words.every((w) => new RegExp(`\\b${escapeRegExp(w)}\\b`).test(lower));
 }
 
@@ -295,6 +302,7 @@ async function searchTASLicenceRegister(companyName, abn, directors, captchaApiK
 
   const allResults = [];
   const seen = new Set(); // deduplicate by licence number
+  let failedCount = 0;
 
   // Stripped company name (remove "Pty Ltd" suffix)
   const strippedName = companyName.replace(/\s*(?:pty|proprietary)?\.?\s*(?:ltd|limited)\.?\s*$/i, '').trim();
@@ -356,6 +364,7 @@ async function searchTASLicenceRegister(companyName, abn, directors, captchaApiK
           });
         }
       } catch (err) {
+        failedCount++;
         console.warn(
           `[tasLicenceRegister] search failed for "${query}" (type ${licenceTypeValue}):`,
           err.message
@@ -373,13 +382,30 @@ async function searchTASLicenceRegister(companyName, abn, directors, captchaApiK
     await page.close().catch(() => {});
   }
 
+  // Every query attempt failed (e.g. CAPTCHA solve failures) — an honest "search failed", not
+  // a fabricated "checked, clean". Without this, a total failure and a genuine zero-result
+  // search were indistinguishable in the returned summary — confirmed live 2026-09-02 (a
+  // well-known Tasmanian builder came back with the same "no records found" wording a real
+  // clean check would produce, with no way to tell from the result which one actually happened).
+  if (searchPairs.length > 0 && failedCount === searchPairs.length) {
+    return {
+      ...BASE_RESULT,
+      status: 'error',
+      error: 'Search failed',
+      summary: 'Could not complete the TAS licence search after retrying — try again or search manually',
+    };
+  }
+
+  const incompleteNote =
+    failedCount > 0 ? ' (search incomplete — one or more name variants could not be checked)' : '';
+
   return {
     ...BASE_RESULT,
     results: allResults,
     summary:
-      allResults.length > 0
+      (allResults.length > 0
         ? `${allResults.length} TAS building licence record(s) found`
-        : 'No TAS building licence records found',
+        : 'No TAS building licence records found') + incompleteNote,
   };
 }
 
