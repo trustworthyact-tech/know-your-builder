@@ -244,7 +244,7 @@ async function searchASIC(companyName, abn, acn, captchaApiKey) {
       if (name) {
         const companyItem = {
           title: name,
-          url: searchUrl,
+          url: buildDetailUrl(derivedAcn),
           status,
           date: fields['Registration date'] || fields['Date of registration'] || '',
           metadata: {
