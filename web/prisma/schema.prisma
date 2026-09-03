@@ -108,6 +108,10 @@ model Search {
   entityAbn    String?
   entityName   String
 
+  // Contact captured at search time — required by the email gate going forward;
+  // nullable here only because rows created before this field existed have none.
+  email        String?
+
   // Context captured at search time
   persona      Persona?
   projectType  String?  // new_build | renovation | commercial | subdivision | other

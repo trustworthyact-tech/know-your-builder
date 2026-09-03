@@ -48,7 +48,7 @@ const saveBodySchema = z.object({
   projectState: z.string().trim().optional(),
   findings: z.record(z.string(), searchResultSchema),
   isDeepCheck: z.boolean(),
-  email: z.string().email().optional(),
+  email: z.string().trim().email('A valid email is required'),
 });
 
 export async function POST(req: NextRequest) {
@@ -117,6 +117,7 @@ export async function POST(req: NextRequest) {
         userId: session?.user?.id ?? null,
         entityName,
         entityAbn: entityAbn || null,
+        email,
         persona: persona ?? null,
         projectType: projectType || null,
         projectStage: projectStage || null,
@@ -132,7 +133,7 @@ export async function POST(req: NextRequest) {
   }
 
   // Send report email (best-effort — never fail the response if email fails)
-  if (email) {
+  {
     try {
       const results = Object.values(findings);
       const nonLinkResults = results.filter((r) => r.key !== 'links');
