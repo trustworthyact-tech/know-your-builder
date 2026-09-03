@@ -72,8 +72,12 @@ function buildSearchUrl(companyName, abn) {
 
 // Search the wa.gov.au Elastic index for Building and Energy enforcement announcements
 // matching the given query term (company name or ABN).
+// Retries once before giving up on a query — distinguishes "this term genuinely
+// returned 0 results" from "the fetch failed", same pattern used by courtRecords.js's
+// fetchOne. A bare catch-and-return-[] here would be indistinguishable from an honest
+// "checked, found nothing" — a silent false negative.
 async function fetchWAResults(query, entityName) {
-  if (!query) return [];
+  if (!query) return { results: [], failed: false };
   const url = `${ELASTIC_HOST}/${ELASTIC_INDEX}/_search`;
   const body = {
     query: {
@@ -97,77 +101,83 @@ async function fetchWAResults(query, entityName) {
     _source: ['title', 'url', 'field_published_date', 'body', 'field_description'],
   };
 
-  try {
-    const { data } = await axios.post(url, body, {
-      auth: ELASTIC_AUTH,
-      headers: { 'Content-Type': 'application/json' },
-      timeout: 20000,
-    });
-
-    const hits = (data.hits && data.hits.hits) || [];
-    const results = [];
-
-    for (const hit of hits) {
-      const src = hit._source || {};
-      const title = Array.isArray(src.title) ? src.title[0] : src.title || '';
-      const relUrl = Array.isArray(src.url) ? src.url[0] : src.url || '';
-      const fullUrl = relUrl ? `${BASE}${relUrl}` : '';
-      const ts = Array.isArray(src.field_published_date)
-        ? src.field_published_date[0]
-        : src.field_published_date;
-      const date = ts
-        ? new Date(ts * 1000).toISOString().slice(0, 10)
-        : '';
-      const description = Array.isArray(src.field_description)
-        ? src.field_description[0]
-        : src.field_description || '';
-      const bodyText = Array.isArray(src.body) ? src.body[0] : src.body || '';
-      const fullText = `${title} ${description} ${bodyText}`;
-
-      if (!title) continue;
-      if (!isEnforcementOutcome(fullText) && !isEnforcementOutcome(title)) continue;
-      if (!nameMatchesEntity(fullText, entityName)) continue;
-
-      results.push({
-        title,
-        url: fullUrl || `${BASE}${COLLECTION_URLS[0]}`,
-        date,
-        status: 'WA Building & Energy enforcement action',
-        description: description || bodyText.slice(0, 200) || 'WA Building and Energy enforcement or prosecution outcome',
-        jurisdiction: 'WA',
-        metadata: {
-          Source: 'WA Building and Energy',
-          Date: date,
-        },
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const { data } = await axios.post(url, body, {
+        auth: ELASTIC_AUTH,
+        headers: { 'Content-Type': 'application/json' },
+        timeout: 20000,
       });
-    }
 
-    return results;
-  } catch {
-    return [];
+      const hits = (data.hits && data.hits.hits) || [];
+      const results = [];
+
+      for (const hit of hits) {
+        const src = hit._source || {};
+        const title = Array.isArray(src.title) ? src.title[0] : src.title || '';
+        const relUrl = Array.isArray(src.url) ? src.url[0] : src.url || '';
+        const fullUrl = relUrl ? `${BASE}${relUrl}` : '';
+        const ts = Array.isArray(src.field_published_date)
+          ? src.field_published_date[0]
+          : src.field_published_date;
+        const date = ts
+          ? new Date(ts * 1000).toISOString().slice(0, 10)
+          : '';
+        const description = Array.isArray(src.field_description)
+          ? src.field_description[0]
+          : src.field_description || '';
+        const bodyText = Array.isArray(src.body) ? src.body[0] : src.body || '';
+        const fullText = `${title} ${description} ${bodyText}`;
+
+        if (!title) continue;
+        if (!isEnforcementOutcome(fullText) && !isEnforcementOutcome(title)) continue;
+        if (!nameMatchesEntity(fullText, entityName)) continue;
+
+        results.push({
+          title,
+          url: fullUrl || `${BASE}${COLLECTION_URLS[0]}`,
+          date,
+          status: 'WA Building & Energy enforcement action',
+          description: description || bodyText.slice(0, 200) || 'WA Building and Energy enforcement or prosecution outcome',
+          jurisdiction: 'WA',
+          metadata: {
+            Source: 'WA Building and Energy',
+            Date: date,
+          },
+        });
+      }
+
+      return { results, failed: false };
+    } catch {
+      if (attempt === 1) return { results: [], failed: true };
+    }
   }
 }
 
 async function searchWABuildingEnergy(companyName, abn, directors) {
   const searchUrl = buildSearchUrl(companyName, abn);
   const allResults = [];
+  const outcomes = [];
 
   // Company/ABN search — prefer ABN (more precise), fall back to name
   const companyQuery = abn ? abn.replace(/\s/g, '') : companyName;
-  const companyResults = await fetchWAResults(companyQuery, companyName);
-  allResults.push(...companyResults);
+  const companyOutcome = await fetchWAResults(companyQuery, companyName);
+  outcomes.push(companyOutcome);
+  allResults.push(...companyOutcome.results);
 
   // If ABN search returned nothing, also try the name
-  if (abn && companyResults.length === 0 && companyName) {
-    const nameResults = await fetchWAResults(companyName, companyName);
-    allResults.push(...nameResults);
+  if (abn && companyOutcome.results.length === 0 && companyName) {
+    const nameOutcome = await fetchWAResults(companyName, companyName);
+    outcomes.push(nameOutcome);
+    allResults.push(...nameOutcome.results);
   }
 
   // Per-director searches
   for (const director of (directors || [])) {
     if (!director) continue;
-    const hits = await fetchWAResults(director, director);
-    allResults.push(...hits);
+    const dirOutcome = await fetchWAResults(director, director);
+    outcomes.push(dirOutcome);
+    allResults.push(...dirOutcome.results);
   }
 
   // Deduplicate by URL
@@ -178,6 +188,28 @@ async function searchWABuildingEnergy(companyName, abn, directors) {
     return true;
   });
 
+  const anyFailed = outcomes.some((o) => o.failed);
+  const allFailed = outcomes.length > 0 && outcomes.every((o) => o.failed);
+
+  // Every query failed (both attempts each) — an honest "search failed", not a
+  // fabricated "checked, clean".
+  if (allFailed) {
+    return {
+      source: 'WA Building and Energy',
+      jurisdiction: 'WA',
+      category: 'regulatory',
+      status: 'error',
+      results: [],
+      searchUrl,
+      error: 'Search failed',
+      summary: 'Could not complete the WA Building and Energy search after retrying — try again or search manually',
+    };
+  }
+
+  const incompleteNote = anyFailed
+    ? ' (search incomplete — one or more name variants could not be checked after retrying)'
+    : '';
+
   return {
     source: 'WA Building and Energy',
     jurisdiction: 'WA',
@@ -185,9 +217,9 @@ async function searchWABuildingEnergy(companyName, abn, directors) {
     results,
     searchUrl,
     summary:
-      results.length > 0
+      (results.length > 0
         ? `${results.length} WA Building and Energy enforcement action(s) found`
-        : 'No WA Building and Energy enforcement actions found for this entity',
+        : 'No WA Building and Energy enforcement actions found for this entity') + incompleteNote,
   };
 }
 

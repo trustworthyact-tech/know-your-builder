@@ -160,33 +160,42 @@ function parseNewsItems($, searchUrl, companyName) {
   return results;
 }
 
+// Retries once before giving up on a query — distinguishes "this term genuinely
+// returned 0 results" from "the fetch failed", same pattern used by courtRecords.js's
+// fetchOne. A bare catch-and-return-[] here would be indistinguishable from an honest
+// "checked, found nothing" — a silent false negative.
 async function fetchFwoResults(query, entityName) {
   const url = `${BASE}/newsroom/news-and-media-search?keys=${encodeURIComponent(query)}`;
-  try {
-    const { data } = await axios.get(url, { headers: HEADERS, timeout: 20000, maxRedirects: 5 });
-    const $ = cheerio.load(data);
-    return parseNewsItems($, url, entityName);
-  } catch {
-    return [];
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const { data } = await axios.get(url, { headers: HEADERS, timeout: 20000, maxRedirects: 5 });
+      const $ = cheerio.load(data);
+      return { results: parseNewsItems($, url, entityName), failed: false };
+    } catch {
+      if (attempt === 1) return { results: [], failed: true };
+    }
   }
 }
 
 async function searchFWO(companyName, abn, directors) {
   const searchUrl = buildSearchUrl(companyName, abn);
   const allResults = [];
+  const outcomes = [];
 
   // Company/ABN search
-  const companyResults = await fetchFwoResults(
+  const companyOutcome = await fetchFwoResults(
     abn ? abn.replace(/\s/g, '') : companyName,
     companyName
   );
-  allResults.push(...companyResults);
+  outcomes.push(companyOutcome);
+  allResults.push(...companyOutcome.results);
 
   // Per-director searches
   for (const director of (directors || [])) {
     if (!director) continue;
-    const hits = await fetchFwoResults(director, director);
-    allResults.push(...hits);
+    const dirOutcome = await fetchFwoResults(director, director);
+    outcomes.push(dirOutcome);
+    allResults.push(...dirOutcome.results);
   }
 
   // Deduplicate by URL
@@ -197,6 +206,28 @@ async function searchFWO(companyName, abn, directors) {
     return true;
   });
 
+  const anyFailed = outcomes.some((o) => o.failed);
+  const allFailed = outcomes.length > 0 && outcomes.every((o) => o.failed);
+
+  // Every query failed (both attempts each) — an honest "search failed", not a
+  // fabricated "checked, clean".
+  if (allFailed) {
+    return {
+      source: 'Fair Work Ombudsman',
+      jurisdiction: 'Federal',
+      category: 'payment',
+      status: 'error',
+      results: [],
+      searchUrl,
+      error: 'Search failed',
+      summary: 'Could not complete the Fair Work Ombudsman search after retrying — try again or search manually',
+    };
+  }
+
+  const incompleteNote = anyFailed
+    ? ' (search incomplete — one or more name variants could not be checked after retrying)'
+    : '';
+
   return {
     source: 'Fair Work Ombudsman',
     jurisdiction: 'Federal',
@@ -204,9 +235,9 @@ async function searchFWO(companyName, abn, directors) {
     results,
     searchUrl,
     summary:
-      results.length > 0
+      (results.length > 0
         ? `${results.length} FWO enforcement outcome(s) found — wage underpayment, litigation, or compliance action`
-        : 'No Fair Work Ombudsman enforcement outcomes found',
+        : 'No Fair Work Ombudsman enforcement outcomes found') + incompleteNote,
   };
 }
 
