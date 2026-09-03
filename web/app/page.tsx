@@ -2,11 +2,11 @@ import Image from 'next/image';
 import { HomeSearch } from '@/components/HomeSearch';
 
 const CHECKLIST = [
-  ['🏛', 'ABR, ASIC & company notices'],
+  ['🏛', 'ABR business register & ASIC company notices'],
   ['💳', 'Payment Times Reporting Register'],
   ['⚖️', 'NSW courts & tribunals, plus links to check other states'],
-  ['🏗', 'QBCC, NSW Fair Trading & state licence registers'],
-  ['🔍', 'Modern Slavery & WGEA registers'],
+  ['🏗', 'QBCC, NSW Fair Trading & most state licence registers'],
+  ['🔍', 'Modern Slavery Register, plus a direct WGEA link'],
   ['📋', '40+ court, tribunal & regulatory databases'],
 ] as const;
 

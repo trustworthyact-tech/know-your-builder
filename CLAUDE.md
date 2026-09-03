@@ -42,7 +42,7 @@ HomeScreen → SearchingScreen → ReportScreen
 
 **`links.js` is not a scraper** — it returns pre-populated deep-link URLs for databases that are too hard to scrape. No HTTP calls.
 
-**AustLII is called nine times**, once per jurisdiction key (`federal`, `qld`, `nsw`, `vic`, `wa`, `sa`, `nt`, `act`, `tas`), scoped via `mask_path`.
+**Court/tribunal search (`server/scrapers/courtRecords.js`) covers all 9 jurisdiction keys** (`federal`, `qld`, `nsw`, `vic`, `wa`, `sa`, `nt`, `act`, `tas`). Four of them (`federal`, `nsw`, `act`, `nt`) run live full-text search directly against each court's own site; the other five (`qld`, `vic`, `wa`, `sa`, `tas`) have no free automated full-text search available and return an honest `status: 'error'` with a manual search link rather than a fabricated "clean" result. This replaced the AustLII scraper (`281554d`, 2026-08-26) — see "Incomplete work" below for why AustLII was abandoned.
 
 **SearchResult keys are a stable contract.** `INITIAL_SEARCHES` in `SearchContent.tsx` must stay in sync with the keys emitted by `server/index.js`. Adding a scraper requires both.
 
@@ -213,27 +213,55 @@ if (apiKey && acn) return searchViaDataApi(acn, apiKey);
 ```
 `searchViaDataApi` calls `GET https://data.asic.gov.au/api/v1/companies/{acn}/officers?includeFormer=true` and `GET .../charges` and maps to the standard `ResultItem` shape. The rest of the pipeline requires no changes.
 
-### AustLII/FWO don't search asicExtract's associated companies (2026-08-11)
+### Court-records search / FWO don't search asicExtract's associated companies (2026-08-11) — file references updated 2026-09-03, still open
 
 Section 8.1 surfaces phoenix-detected companies via `asicExtract.js` (other companies the
-target entity's directors are/were involved with) alongside ABR business/trading names. AustLII
-and FWO now search the latter (via `resolveExtraSearchTerms()` in `server/index.js`, combining
-`resolveDirectors()` + `resolveAlternateNames()`) but not the former — litigation or enforcement
-history filed under a related/associated company name is still invisible to those two sections.
+target entity's directors are/were involved with) alongside ABR business/trading names. The
+court-records search (`courtRecords.js` — replaced `austlii.js`, see above) and FWO now search
+the latter (via `resolveExtraSearchTerms()` in `server/index.js`, combining `resolveDirectors()`
++ `resolveAlternateNames()`) but not the former — litigation or enforcement history filed under a
+related/associated company name is still invisible to those two sections. Confirmed still true as
+of 2026-09-03: `resolveExtraSearchTerms()` in current `index.js` still only combines those same
+two inputs.
 
-Not done because `asicExtract` is a slow, CAPTCHA-gated ASIC lookup that AustLII/FWO don't
-currently depend on finishing — `resolveExtraSearchTerms()`'s two inputs both run in parallel
-with everything else already, so adding them cost no extra latency. Waiting on `asicExtract`
-instead would add a real sequential dependency and slow those 10 searches down.
+Not done because `asicExtract` is a slow, CAPTCHA-gated ASIC lookup that the court-records search
+and FWO don't currently depend on finishing — `resolveExtraSearchTerms()`'s two inputs both run
+in parallel with everything else already, so adding them cost no extra latency. Waiting on
+`asicExtract` instead would add a real sequential dependency and slow those searches down.
 
 To complete: give `asicExtract`'s promise the same treatment as `asicPromise` — hoist it above
-the `searches` array (it's currently only invoked inside its own entry, `index.js:~310`), add a
+the `searches` array (it's currently only invoked inside its own entry), add a
 `resolveAssociatedCompanies()` helper that awaits it and extracts `title`/`metadata.ACN` from its
 results, and fold that into `resolveExtraSearchTerms()`. Also route those names through
-`stripCompanySuffix()` in `austlii.js` — associated companies will carry "Pty Ltd" suffixes just
-like the primary entity does.
+`stripCompanySuffix()` in `courtRecords.js` (not `austlii.js`, which no longer exists) —
+associated companies will carry "Pty Ltd" suffixes just like the primary entity does.
 
-### AustLII scraper is currently non-functional — Cloudflare block, not a bug (2026-08-12) — DEAD END, WON'T PURSUE (2026-09-01)
+### AustLII scraper is currently non-functional — Cloudflare block, not a bug (2026-08-12) — DEAD END, WON'T PURSUE (2026-09-01) — SUPERSEDED (built 2026-08-26, reconciled here 2026-09-03)
+
+**Superseded — the replacement was actually built *before* the "won't pursue" note below was
+written, the two were just never reconciled.** `server/scrapers/courtRecords.js` replaced
+`austlii.js` entirely in `281554d` (2026-08-26), five days before the "DEAD END, WON'T PURSUE"
+paragraph immediately below was added — so that paragraph's "no live path forward" conclusion was
+already out of date by the time it was written. Current state: `federal`, `nsw`, `act` and `nt`
+run genuine live full-text searches against each court's own site (NSW Caselaw, ACT Courts, the
+Federal Court judgments search, and NT Supreme Court's site search) — no AustLII, no ScraperAPI,
+no Cloudflare dependency at all for these four. Two follow-up accuracy fixes landed after the
+initial replacement: `d9dde8a` (2026-08-26) fixed a silent false-negative on Federal Court
+searches, and `313fb66` (2026-08-29) fixed same-word-different-entity noise (e.g. a search for
+"BHP Group Limited" no longer matches unrelated results like "BHP Coal Pty Ltd v ..."). The
+remaining five jurisdictions (`qld`, `vic`, `wa`, `sa`, `tas`) still have no free, unauthenticated,
+full-text search available anywhere (confirmed during the original investigation below) — these
+deliberately return `status: 'error'` with a manual search link (`buildManualFallback` in
+`courtRecords.js`) instead of a fabricated "checked, clean" result, which is what the "NSW courts
+& tribunals, plus links to check other states" copy on the marketing site refers to.
+
+The investigation and reasoning immediately below (why AustLII specifically was blocked, and why
+the alternatives were ruled out) remains accurate as historical record — only its "no live path
+forward, dead end" conclusion has been superseded by the above.
+
+---
+
+**Original entry, 2026-08-12 / 2026-09-01 (historical — see superseded note above):**
 
 **Decided (2026-09-01): not pursuing a live AustLII scraper further.** AustLII's block is
 deliberate policy enforcement (see below), not incidental bot protection, and the only paths that

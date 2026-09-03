@@ -6,27 +6,11 @@ function generateLinks({ abn, acn, companyName }) {
     // URLs verified 2026-06-11 via probe tests (server/tests/test-*-licence.js).
     // These are landing/search pages for manual lookup — none support automated
     // deep-linking directly into results.
-    {
-      jurisdiction: 'NSW',
-      category: 'license',
-      source: 'NSW Fair Trading — Licence Check',
-      // Old domain defunct. NSW migrated to OneGov SPA (onegov.nsw.gov.au/publicregister)
-      // backed by a JSON API — fully scrapeable without Puppeteer. See test-nsw-fairtrading-licence.js.
-      url: `https://www.onegov.nsw.gov.au/publicregister/`,
-      description: 'NSW contractor, building and trade licence verification',
-    },
-    {
-      jurisdiction: 'VIC',
-      category: 'license',
-      source: 'Victorian Building Authority — Licence Check',
-      // Both /check/licence and /find-a-practitioner return 404.
-      // The real search tool is a Salesforce Experience Cloud app at
-      // bams.vba.vic.gov.au — linked from /tools/find-practitioner.
-      // The BAMS app uses an Aura ApexAction API (PractitionerSearchUtil.getPractitioners)
-      // and requires Puppeteer interaction (inputs are in LWC shadow DOM).
-      url: `https://bams.vba.vic.gov.au/bams/s/practitioner-search`,
-      description: 'VIC building practitioner registration and licence status',
-    },
+    // NSW Fair Trading and VIC (VBA/BAMS) licence checks are deliberately omitted here —
+    // both are now covered by live automated scrapers (nswFairTrading.js, vicVbaLicence.js),
+    // so a manual link would be redundant and, since these entries pointed at now-dead URLs
+    // (OneGov and the old BAMS Salesforce app respectively), actively misleading — it would
+    // suggest to the user that these registers require a manual check when they don't.
     {
       jurisdiction: 'WA',
       category: 'license',
