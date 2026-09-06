@@ -35,7 +35,7 @@ HomeScreen → SearchingScreen → ReportScreen
                   ▼
          server/index.js :3001     (Express, all scrapers in parallel)
                   │
-     abn  austlii  qbcc  paymentTimes  modernSlavery  asic  fwo  …  links
+     abn  austlii  qbcc  paymentTimes  modernSlavery  asic  fwo  …
 ```
 
 `POST /api/search` streams NDJSON — each scraper writes one line when it finishes. The frontend merges results by `key` and updates the UI per-result.
@@ -886,7 +886,12 @@ Stripe **restricted key** scoped to PaymentIntents/Subscriptions over the full s
 Console → OAuth client, then in Vercel: `web` project → Settings → Environments → Production → update the
 four variables → redeploy (env var changes require a fresh deploy to take effect, per `vercel redeploy`).
 
-### No scraper or link covers ASIC's own Court Enforceable Undertakings register (2026-08-27)
+### No scraper or link covers ASIC's own Court Enforceable Undertakings register (2026-08-27) — FIXED (2026-09-06)
+
+**Fixed — see "ASIC Court Enforceable Undertakings register added; manual reference links and
+AFSA NPII removed (2026-09-06)" below** for the full record, including why the "Not yet done"
+items directly below were answered differently than either option they proposed (no bulk API
+exists, but the register turned out to be a single scrapeable static page).
 
 **Confirmed via a real production case**: a search for UNIVERSAL PROPERTY GROUP PTY LIMITED (ABN
 98 078 297 748) came back clean, despite the company (and director Bhart Bhushan) having accepted
@@ -928,6 +933,80 @@ administration (1 insolvency/winding-up notice found), so that part of the pictu
   the current state of not being mentioned in the report at all.
 
 ---
+
+### ASIC Court Enforceable Undertakings register added; manual reference links and AFSA NPII removed (2026-09-06)
+
+Follow-up to the gap immediately above, plus two other items surfaced during the same
+investigation (checking a real person/company pair for undisclosed ASIC/AFSA records).
+
+**ASIC Court Enforceable Undertakings (CEU) register — added to §8.1.** Neither of the two options
+the previous entry proposed panned out as expected: queried data.gov.au's CKAN Action API directly
+for ASIC's organization (`package_search?q=organization:australian-securities-and-investments-
+commission-asic`) and confirmed it publishes exactly 12 datasets — companies, business names,
+licensee/adviser/auditor registers, banned & disqualified persons — no bulk/open-data API for this
+register at all. But the register page itself
+(`https://www.asic.gov.au/online-services/search-asic-registers/court-enforceable-undertakings-register`)
+turned out to be a single, fully public, unauthenticated static HTML page listing every undertaking
+since 1998 (~500 records, confirmed live via plain `curl` — 200 OK, no Cloudflare/WAF, no CAPTCHA,
+no pagination). That made it a better fit for the fetch-once-cache-and-match-locally pattern this
+codebase already uses for `vicBpcDataset.js`/`asicDpnDataset.js` than either a live per-query
+scrape or a manual link would have been. New files: `asicEnforceableUndertakingsDataset.js`
+(fetch+cache, plain axios/cheerio — no Puppeteer needed, since there's no Cloudflare to clear
+unlike the VIC BPC case), `asicEnforceableUndertakingsDatasetRefresh.js` (24h refresh, mirroring
+`vicBpcDatasetRefresh.js`), and `asicEnforceableUndertakings.js` (name/director matching against
+the cached list, reusing `vicBpc.js`'s phrase-anchored `nameMatchesEntity()`). Wired into
+`server/index.js`'s searches array, §8.1 in `SearchContent.tsx`/`ReportContent.tsx`, and a new
+`significant`-severity CORPORATE trigger in `riskGrouper.ts` (an accepted CEU is treated as
+comparable in weight to the existing ASIC disqualified-persons trigger). One parsing quirk found
+and handled: pre-~2011 rows have no `<p>` wrapper around the party name — just bare text nodes
+separated by `<br>`, immediately followed by the media-release `<a>` with no separator, which a
+naive `.text()` call joins into e.g. "Mrs I C HilderMedia Release 98/236". Fixed by stripping the
+`<a>` and converting `<br>` to a join point before extracting text. Live-verified end to end
+(`server/tests/test-asic-eu.js`, self-discovers a real current fixture from the page's own listing
+the same way `test-vicbpc.js`/`test-asic-insolvency.js` do) and added to `run-all.sh`.
+
+**Manual reference links (`links.js`, "Additional Database Links") removed entirely — not just the
+four stale/duplicated WA/NT/ACT/TAS entries flagged 2026-09-04, all twelve.** Investigation found
+the web report never actually rendered this section at all — the `links` key was fetched by
+`server/index.js`, streamed to the client, and tracked in a couple of dead
+`.filter((r) => r.key !== 'links')` calls, but no `byKey('links')` ever existed in
+`ReportContent.tsx` to surface it. Only the React Native mobile app (`src/screens/ReportScreen.tsx`)
+actually displayed it, as an "Additional Databases — Manual Review" section. Deleted
+`server/scrapers/links.js` and its `server/index.js` wiring; removed the corresponding
+`ReportSection` block, `byKey` call, and `Category` type entry on both web and mobile; removed the
+now-fully-dead `isLinkSection` prop/branch from the mobile `ReportSection` component. Not touched:
+`courtRecords.js`'s own manual-fallback links for the 5 court jurisdictions with no free full-text
+search (`buildManualFallback`/`supplementalLinks`) — a distinct, still-needed feature.
+
+**AFSA NPII (Deep Check personal-insolvency check) removed entirely**, per the standing
+recommendation in `server/tests/README.md` since 2026-07-05 (`services.afsa.gov.au/brs/`
+decommissioned the free NPII register in favour of a paid-only Bankruptcy Register Search with no
+free tier — every search, including fictitious names, redirected to a payment page). Re-confirmed
+broken live during this session's investigation: it silently returned `results: []` for a real
+individual independently confirmed (via web search) to have a bankruptcy history — indistinguishable
+from a genuine clean result, the exact silent-false-negative shape this file's scraper conventions
+exist to prevent. Deleted `server/scrapers/afsaNpii.js`, `server/tests/test-afsa-npii.js`, and
+`server/tests/run-s83.sh` (which existed solely to run that one test outside `run-all.sh` — its
+other four tests were already covered by `run-all.sh` directly). Removed the corresponding
+`server/index.js` `isDeepCheck` push block, `DEEP_CHECK_SEARCHES` array and insertion logic in
+`SearchContent.tsx`, and all `afsaNpii` references in `ReportContent.tsx`/`riskGrouper.ts`.
+
+**Deep Check ($15) pricing/UI deliberately left in place, per user decision, despite losing its
+only exclusive scraper.** `asicExtract` already runs on every search unconditionally, so removing
+AFSA NPII means Deep Check currently returns identical results to a free search. Decided not to
+touch pricing, Stripe amounts, or the `EmailGate` paid-tier checkbox in this change — only its
+description copy was corrected to drop the AFSA NPII claim ("Adds full historical director list via
+ASIC Data API..."). Worth revisiting if/when a new deep-check-exclusive scraper is added, or if the
+tier should be retired/repriced in the meantime. Note the remaining half of that description
+("ASIC Data API") is itself still aspirational per Phase 7c above — not fixed here, just not
+compounded with a second false claim.
+
+**Mobile app (`src/screens/ReportScreen.tsx`) scope note**: confirmed already significantly stale
+versus the current backend independent of this change — it still reads retired
+`austlii_federal`/`austlii_qld`/etc. keys (replaced by `courts_*` in `281554d`, 2026-08-26) and has
+no section at all for `asic`, `asicDisqualified`, `asicExtract`, or most scrapers added since. There
+is no §8.1-equivalent section on mobile to extend, so the new ASIC CEU register is web-only for now.
+Flagged here as a separate, pre-existing gap worth its own task.
 
 ---
 

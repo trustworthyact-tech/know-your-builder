@@ -34,7 +34,6 @@ const INITIAL_SEARCHES: SearchResult[] = [
   { key: 'austlii_nt', label: 'NT Courts & Tribunals (AustLII)', status: 'idle' },
   { key: 'austlii_act', label: 'ACT Courts & Tribunals (AustLII)', status: 'idle' },
   { key: 'austlii_tas', label: 'TAS Courts & Tribunals (AustLII)', status: 'idle' },
-  { key: 'links', label: 'Additional Database Links', status: 'idle' },
 ];
 
 export function SearchingScreen({ navigation, route }: Props) {

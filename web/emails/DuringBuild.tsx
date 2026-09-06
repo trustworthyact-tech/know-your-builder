@@ -144,7 +144,7 @@ const WATCH_ITEMS = [
   },
   {
     title: 'Insolvency notices',
-    desc: 'ASIC and AFSA publish external administration and winding-up notices. These can appear mid-build and affect your ability to recover deposits.',
+    desc: 'ASIC publishes external administration and winding-up notices. These can appear mid-build and affect your ability to recover deposits.',
   },
   {
     title: 'Stage inspections',

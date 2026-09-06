@@ -46,9 +46,8 @@ export function ReportScreen({ navigation, route }: Props) {
   const nt = byKey(results, 'austlii_nt');
   const act = byKey(results, 'austlii_act');
   const tas = byKey(results, 'austlii_tas');
-  const links = byKey(results, 'links');
 
-  const totalHits = totalResults(results.filter((r) => r.key !== 'links'));
+  const totalHits = totalResults(results);
   const courtHits = totalResults([...federal, ...qld, ...nsw, ...vic, ...wa, ...sa, ...nt, ...act, ...tas]);
 
   const identityResult = identity[0];
@@ -88,7 +87,7 @@ export function ReportScreen({ navigation, route }: Props) {
       `Indicative risk level: ${riskLevel}`,
       ``,
       `SOURCES SEARCHED`,
-      ...results.filter((r) => r.key !== 'links').map(
+      ...results.map(
         (r) => `• ${r.label}: ${r.summary || (r.results?.length ?? 0) + ' results'}`
       ),
     ];
@@ -248,14 +247,6 @@ export function ReportScreen({ navigation, route }: Props) {
           title="Tasmania Courts & Tribunals"
           icon="🌊"
           searchResults={tas}
-        />
-
-        {/* ── Additional Links ── */}
-        <ReportSection
-          title="Additional Databases — Manual Review"
-          icon="🔗"
-          searchResults={links}
-          isLinkSection
         />
 
         {/* Disclaimer */}

@@ -242,8 +242,8 @@ export function EmailGate({ persona, entityName, isRecheck = false, freeChecks =
                   <span className="text-accent font-bold">$15</span>
                 </p>
                 <p className="text-xs text-text-muted leading-snug mt-0.5">
-                  Adds full historical director list + personal insolvency check via ASIC Data API
-                  and AFSA NPII. Recommended for high-value contracts.
+                  Adds full historical director list via ASIC Data API. Recommended for
+                  high-value contracts.
                 </p>
               </div>
             </label>

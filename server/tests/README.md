@@ -10,7 +10,7 @@ register before calling the scraper, so it never relies on stale hardcoded data.
 
 ## Test inventory
 
-### Section 8.3 — Financial Risk Signals (all in run-all.sh except AFSA NPII)
+### Section 8.3 — Financial Risk Signals (all in run-all.sh)
 
 | File | Register | Browser needed | API key needed | Typical run time |
 |------|----------|----------------|----------------|------------------|
@@ -18,11 +18,6 @@ register before calling the scraper, so it never relies on stale hardcoded data.
 | `test-ato-debt.js` | ASIC Published Notices — ATO Tax Debt | Yes (Puppeteer) | No | ~60s |
 | `test-payment-times.js` | Payment Times Reporting Register | No | No | ~30–120s (Excel download) |
 | `test-modern-slavery.js` | Modern Slavery Statements Register | No | No | ~15s |
-| `test-afsa-npii.js` | AFSA NPII — Personal Insolvency | No | No | ~15s |
-
-**Note on `test-afsa-npii.js`:** The AFSA NPII scraper is a deep-check-only feature (paid tier). Its test is not included in `run-all.sh` to avoid running deep-check network calls in routine CI. Run it separately: `node server/tests/test-afsa-npii.js`. Use `run-s83.sh` (in this directory) to run all 5 section 8.3 tests including AFSA NPII.
-
-**KNOWN BROKEN (2026-07-05):** `npii.afsa.gov.au` is decommissioned. AFSA migrated NPII to the Bankruptcy Register Search (BRS) at `services.afsa.gov.au/brs/`. The BRS now requires a registered AFSA account and per-result payment. The scraper (`afsaNpii.js`) silently returns empty results and the test fails at Step 1 with a clear diagnosis. A full rebuild is needed — see the "Common failure patterns" section below.
 
 **KNOWN FLAKY (2026-07-20):** `test-payment-times.js` occasionally fails with a 406 from an
 Azure Front Door WAF false-positive on the register download — retried automatically now (see
@@ -41,6 +36,7 @@ Azure Front Door WAF false-positive on the register download — retried automat
 | `test-qbcc-excluded.js` | QBCC Excluded | Yes (Puppeteer) | No | ~3–5 min |
 | `test-vicbpc.js` | VBA Disciplinary | Yes (Puppeteer) | No | ~30–60s |
 | `test-wa-building.js` | WA B&E Enforcement | No | No | ~20–30s |
+| `test-asic-eu.js` | ASIC Court Enforceable Undertakings Register | No | No | ~10–20s |
 
 ### Section 8.5 — Courts, Enforcement & Disciplinary (in run-all.sh; also `run-s85.sh`)
 
@@ -303,53 +299,16 @@ After running, report:
 
 ---
 
-### Sub-agent prompt: AFSA NPII — personal insolvency (no browser, no API key)
+### AFSA NPII — feature removed (2026-09-06)
 
-**STATUS: HARD BLOCKED as of 2026-07-07 (investigated).**
-`npii.afsa.gov.au` is decommissioned. AFSA migrated NPII to the Bankruptcy Register
-Search (BRS) at `https://services.afsa.gov.au/brs/`. The BRS 3-step POST flow was
-fully reverse-engineered but every search (including fake names) redirects to a payment
-page — there is no free tier. The feature cannot be rebuilt without an AFSA BRS account
-and per-search payment budget. Recommendation: remove or replace this data source.
-
-The test fails at Step 1 with a clear diagnosis message.
-
-```
-Working directory: /Users/jameskwan/know-your-builder
-
-Run this test (from repo root):
-  node server/tests/test-afsa-npii.js
-
-No Puppeteer or API key required — axios only. Typical run time ~15s.
-This scraper is DEEP-CHECK ONLY (paid tier) and is NOT included in run-all.sh.
-
-KNOWN BROKEN: npii.afsa.gov.au is decommissioned. The test will fail at Step 1
-with a diagnosis explaining the BRS migration. This is expected.
-
-Steps (as designed — currently Step 1 fails intentionally):
-  Step 1 — GETs https://services.afsa.gov.au/brs/search (new BRS URL)
-           Fails because the BRS uses CSRF tokens, not JSF ViewState.
-           The failure message documents what is needed for a full rebuild.
-  Step 2 — (not reached) would POST a broad surname search
-  Step 3 — (not reached) would call searchAfsaNpii([fixtureName])
-  Step 4 — (not reached) would verify fixture surname in results
-
-After running, report:
-1. Full console output (verbatim)
-2. Confirm Step 1 FAIL with the BRS migration message — this is EXPECTED
-3. To rebuild the scraper, read server/scrapers/afsaNpii.js (the MIGRATION NOTE
-   at the top) and the "AFSA NPII — domain decommissioned" section in this README.
-   The BRS rebuild requires:
-   a. Replace JSF ViewState with CSRF token from <meta name="_csrf"> on /brs/search
-   b. 3-step POST flow:
-      1. GET /brs/search → CSRF + cookies
-      2. POST /brs/search-add-email → surname, givenName, searchDobMethod=ANY,
-         _matchNoDateOfBirth=on, searchByName=true → "Your email address" page
-      3. POST /brs/searchbyname → customerEmailOpted=false, emailEntered=true → results
-   c. Verify whether a paid AFSA BRS account is needed for any results
-      (free account may return "no records found"; paid needed for actual records)
-4. Do NOT modify test files unless specifically updating for the BRS rebuild.
-```
+The sub-agent prompt previously here debugged `searchAfsaNpii`/`test-afsa-npii.js`, both deleted
+in the same change that removed the AFSA NPII deep-check feature from the product entirely — see
+`CLAUDE.md`'s "Incomplete work" log for the full record. This had been broken since 2026-07-05
+(AFSA decommissioned the free NPII register in favour of a paid-only Bankruptcy Register Search
+with no free tier) and was silently returning `results: []` for every query — indistinguishable
+from a genuine clean result. `server/scrapers/afsaNpii.js` and `server/tests/test-afsa-npii.js` no
+longer exist; `run-s83.sh` (which existed solely to run this test outside `run-all.sh`) was deleted
+too — its other four tests were already covered by `run-all.sh` directly.
 
 ---
 
@@ -634,38 +593,14 @@ After running, report:
 
 ## Common failure patterns and fixes
 
-### AFSA NPII — domain decommissioned, now a fully paid service (hard blocker)
+### AFSA NPII — domain decommissioned, now a fully paid service (historical — feature retired 2026-09-06)
 
-`npii.afsa.gov.au` is gone (DNS ENOTFOUND as of 2026-07-05). AFSA migrated the NPII
-to the Bankruptcy Register Search (BRS) at `https://services.afsa.gov.au/brs/`.
-
-**Investigated 2026-07-07 — confirmed fully paid, no free tier:**
-
-The 3-step BRS POST flow was successfully implemented and tested:
-1. GET `/brs/search` → extracts CSRF token + session cookies
-2. POST `/brs/search-add-email` → submits name criteria (surname, givenName,
-   surnameMatchMethod, givenNameMatchMethod, searchDobMethod=ANY,
-   _matchNoDateOfBirth=on, searchByName=true) → returns "Your email address" page
-3. POST `/brs/searchbyname` → submits customerEmailOpted=false, emailEntered=true
-
-Step 3 redirects to:
-`https://services.afsa.gov.au/payment-service/pay/transaction/paymentoptions?reference=NS...`
-
-**Every search, including searches for completely fictitious names, requires payment.**
-There is no "no results found" response without completing a payment transaction.
-The BRS charges per search, not per result found.
-
-This makes automated scraping of the AFSA NPII register impossible without:
-- A registered AFSA BRS account
-- A connected payment method  
-- Budget for per-search fees (pricing not published; requires account to view)
-
-**Recommendation:** Remove the AFSA NPII deep-check feature from the product, or
-replace it with a different director personal insolvency data source. The old free
-NPII public register no longer exists. Contact AFSA directly if a bulk/API pricing
-arrangement is needed.
-
-Until resolved, `searchAfsaNpii()` silently returns empty results for all queries.
+`server/scrapers/afsaNpii.js` (now removed) targeted `npii.afsa.gov.au`, which AFSA had
+decommissioned in favour of a paid-only Bankruptcy Register Search — every search, including
+fictitious names, redirected to a payment page with no free tier. The recommendation this section
+used to end with ("remove the AFSA NPII deep-check feature from the product") was acted on — see
+the "AFSA NPII — feature removed" note earlier in this file and `CLAUDE.md`'s "Incomplete work"
+log for the full record.
 
 ### VIC BPC — `#listjs-search` not found
 The VBA renamed or removed the List.js search input. Check the current selector

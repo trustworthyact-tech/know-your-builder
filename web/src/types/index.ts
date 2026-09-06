@@ -21,7 +21,7 @@ export interface ResultItem {
 }
 
 export type SearchStatus = 'idle' | 'searching' | 'done' | 'error';
-export type Category = 'identity' | 'financial' | 'payment' | 'license' | 'legal' | 'regulatory' | 'links' | 'other';
+export type Category = 'identity' | 'financial' | 'payment' | 'license' | 'legal' | 'regulatory' | 'other';
 export type Jurisdiction = 'Federal' | 'QLD' | 'NSW' | 'VIC' | 'WA' | 'SA' | 'NT' | 'ACT' | 'TAS' | 'All';
 
 export interface SearchResult {

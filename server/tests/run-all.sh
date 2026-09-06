@@ -45,6 +45,8 @@ run_test() {
 # scrapers/asicDpnMatch.test.js), not a live-site integration test.
 run_test "vicbpc"               "server/tests/test-vicbpc.js" &
 run_test "wa-building"          "server/tests/test-wa-building.js" &
+# Section 8.1 — Identity & Corporate Structure
+run_test "asic-eu"              "server/tests/test-asic-eu.js" &
 run_test "qbcc-excluded"        "server/tests/test-qbcc-excluded.js" &
 run_test "qbcc-licensee"        "server/tests/test-qbcc-licensee.js" &
 run_test "nsw-fairtrading"      "server/tests/test-nsw-fairtrading-licence.js" &
@@ -81,7 +83,7 @@ echo ""
 
 # Print output for any failed tests
 OVERALL=0
-for label in vicbpc wa-building qbcc-excluded qbcc-licensee nsw-fairtrading vic-vba-licence wa-be-licence act-licence tas-cbos-licence act-licences act-disciplinary nsw-fairtrading-scraper nt-building-practitioners wa-licence-register vic-vba-licence-scraper asic-insolvency ato-debt payment-times modern-slavery qbcc-adjudication court-records fwo; do
+for label in vicbpc wa-building asic-eu qbcc-excluded qbcc-licensee nsw-fairtrading vic-vba-licence wa-be-licence act-licence tas-cbos-licence act-licences act-disciplinary nsw-fairtrading-scraper nt-building-practitioners wa-licence-register vic-vba-licence-scraper asic-insolvency ato-debt payment-times modern-slavery qbcc-adjudication court-records fwo; do
   exit_code=$(cat "$LOG_DIR/${label}.exit" 2>/dev/null || echo 1)
   if [ "$exit_code" != "0" ]; then
     OVERALL=1
@@ -95,7 +97,7 @@ done
 
 # Always print full output for all tests (verbose mode)
 if [ "${VERBOSE:-}" = "1" ]; then
-  for label in vicbpc wa-building qbcc-excluded qbcc-licensee nsw-fairtrading vic-vba-licence wa-be-licence act-licence tas-cbos-licence act-licences act-disciplinary nsw-fairtrading-scraper nt-building-practitioners wa-licence-register vic-vba-licence-scraper asic-insolvency ato-debt payment-times modern-slavery qbcc-adjudication court-records fwo; do
+  for label in vicbpc wa-building asic-eu qbcc-excluded qbcc-licensee nsw-fairtrading vic-vba-licence wa-be-licence act-licence tas-cbos-licence act-licences act-disciplinary nsw-fairtrading-scraper nt-building-practitioners wa-licence-register vic-vba-licence-scraper asic-insolvency ato-debt payment-times modern-slavery qbcc-adjudication court-records fwo; do
     echo "──────────────────────────────────────────────────────────"
     echo "  Output: $label"
     echo "──────────────────────────────────────────────────────────"

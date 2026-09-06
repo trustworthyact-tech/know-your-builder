@@ -38,11 +38,7 @@ const INITIAL_SEARCHES: SearchResult[] = [
   { key: 'waLicenceRegister',       label: 'WA Building Services — Contractor Licence Register',  status: 'idle' },
   { key: 'tasLicenceRegister',      label: 'TAS Occupational Licensing — Licence Register',       status: 'idle' },
   { key: 'asicExtract',      label: 'ASIC — Director Company History',              status: 'idle' },
-];
-
-// Additional entries appended when isDeepCheck is true (inserted before 'links')
-const DEEP_CHECK_SEARCHES: SearchResult[] = [
-  { key: 'afsaNpii', label: 'AFSA NPII — Director Personal Insolvency (Deep Check)', status: 'idle' },
+  { key: 'asicEnforceableUndertakings', label: 'ASIC — Court Enforceable Undertakings Register', status: 'idle' },
 ];
 
 type Step = 'persona' | 'email-gate' | 'server-check' | 'running' | 'saving' | 'done' | 'error';
@@ -157,17 +153,7 @@ export function SearchContent() {
       }
 
       setStep('running');
-
-      // Build full search list — insert deep check items before 'links' when opted in
-      if (gate.isDeepCheck) {
-        setSearches([
-          ...INITIAL_SEARCHES.filter((s) => s.key !== 'links'),
-          ...DEEP_CHECK_SEARCHES,
-          INITIAL_SEARCHES.find((s) => s.key === 'links')!,
-        ].map((s) => ({ ...s, status: 'searching' as const })));
-      } else {
-        setSearches((prev) => prev.map((s) => ({ ...s, status: 'searching' as const })));
-      }
+      setSearches((prev) => prev.map((s) => ({ ...s, status: 'searching' as const })));
 
       try {
         await runDueDiligence(input, updateSearch, { isDeepCheck: gate.isDeepCheck });

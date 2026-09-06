@@ -26,11 +26,11 @@ const { searchACTLicences, searchACTDisciplinary } = require('./scrapers/actLice
 const { searchWALicenceRegister } = require('./scrapers/waLicenceRegister');
 const { searchTASLicenceRegister } = require('./scrapers/tasLicenceRegister');
 const { searchAsicExtract } = require('./scrapers/asicExtract');
-const { searchAfsaNpii } = require('./scrapers/afsaNpii');
-const { generateLinks } = require('./scrapers/links');
+const { searchAsicEnforceableUndertakings } = require('./scrapers/asicEnforceableUndertakings');
 const { startPaymentTimesRefresh } = require('./scrapers/paymentTimesRefresh');
 const { startAsicDpnDatasetRefresh } = require('./scrapers/asicDpnDatasetRefresh');
 const { startVicBpcDatasetRefresh } = require('./scrapers/vicBpcDatasetRefresh');
+const { startAsicEuDatasetRefresh } = require('./scrapers/asicEnforceableUndertakingsDatasetRefresh');
 
 // Fail fast on missing scraper credentials rather than surfacing "missing key"
 // errors deep inside individual scraper calls at request time.
@@ -321,22 +321,11 @@ app.post('/api/search', searchLimiter, async (req, res) => {
       fn: async () => searchAsicExtract(companyName, abn, acn, await resolveDirectors(), process.env.CAPTCHA_API_KEY),
     },
     {
-      key: 'links',
-      label: 'Additional Database Links',
-      fn: () => Promise.resolve(generateLinks({ abn, acn, companyName, tradingName, directors })),
+      key: 'asicEnforceableUndertakings',
+      label: 'ASIC — Court Enforceable Undertakings Register',
+      fn: async () => searchAsicEnforceableUndertakings(companyName, await resolveDirectors()),
     },
   ];
-
-  // Deep check scrapers — only added when isDeepCheck: true
-  if (isDeepCheck) {
-    searches.push(
-      {
-        key: 'afsaNpii',
-        label: 'AFSA NPII — Director Personal Insolvency (Deep Check)',
-        fn: async () => searchAfsaNpii(await resolveDirectors()),
-      }
-    );
-  }
 
   await Promise.all(
     searches.map(async ({ key, label, fn }) => {
@@ -359,3 +348,4 @@ app.listen(PORT, () => console.log(`Know Your Builder server running on http://l
 startPaymentTimesRefresh();
 startAsicDpnDatasetRefresh();
 startVicBpcDatasetRefresh();
+startAsicEuDatasetRefresh();

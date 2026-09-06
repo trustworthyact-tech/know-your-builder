@@ -14,11 +14,9 @@ interface Props {
   title: string;
   icon: string;
   searchResults: SearchResult[];
-  /** If true, renders link-type results as tappable rows instead of ResultCards */
-  isLinkSection?: boolean;
 }
 
-export function ReportSection({ title, icon, searchResults, isLinkSection }: Props) {
+export function ReportSection({ title, icon, searchResults }: Props) {
   const [collapsed, setCollapsed] = useState(false);
 
   const allResults: ResultItem[] = searchResults.flatMap((sr) => sr.results || []);
@@ -75,38 +73,12 @@ export function ReportSection({ title, icon, searchResults, isLinkSection }: Pro
           )}
 
           {/* Results */}
-          {isLinkSection ? (
-            allResults.map((item, i) => (
-              <TouchableOpacity
-                key={i}
-                style={styles.linkRow}
-                onPress={() => item.url && Linking.openURL(item.url).catch(() => null)}
-                activeOpacity={0.7}
-              >
-                <View style={styles.linkRowLeft}>
-                  {item.jurisdiction && (
-                    <View style={styles.jBadge}>
-                      <Text style={styles.jBadgeText}>{item.jurisdiction}</Text>
-                    </View>
-                  )}
-                  <Text style={styles.linkTitle}>{item.title}</Text>
-                  {item.description && (
-                    <Text style={styles.linkDesc} numberOfLines={2}>
-                      {item.description}
-                    </Text>
-                  )}
-                </View>
-                <Text style={styles.linkArrow}>→</Text>
-              </TouchableOpacity>
-            ))
-          ) : (
-            hasResults
-              ? allResults.map((item, i) => <ResultCard key={i} item={item} />)
-              : <Text style={styles.noResults}>No records found in automated search</Text>
-          )}
+          {hasResults
+            ? allResults.map((item, i) => <ResultCard key={i} item={item} />)
+            : <Text style={styles.noResults}>No records found in automated search</Text>}
 
           {/* Direct source links */}
-          {!isLinkSection && directSources.length > 0 && (
+          {directSources.length > 0 && (
             <View style={styles.directLinks}>
               <Text style={styles.directLinksLabel}>Verify directly:</Text>
               {directSources.map((src, i) => (
@@ -176,26 +148,4 @@ const styles = StyleSheet.create({
   },
   directLinksLabel: { ...typography.labelSm, color: colors.textMuted, marginBottom: 6 },
   directLink: { ...typography.bodySm, color: colors.primaryLight, marginBottom: 4 },
-  // Link section styles
-  linkRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 12,
-    paddingHorizontal: 4,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.borderLight,
-  },
-  linkRowLeft: { flex: 1 },
-  jBadge: {
-    alignSelf: 'flex-start',
-    backgroundColor: colors.infoBg,
-    borderRadius: 4,
-    paddingHorizontal: 6,
-    paddingVertical: 1,
-    marginBottom: 4,
-  },
-  jBadgeText: { ...typography.labelSm, color: colors.info },
-  linkTitle: { ...typography.bodyMd, color: colors.primary, fontWeight: '600' },
-  linkDesc: { ...typography.bodyXs, color: colors.textMuted, marginTop: 2 },
-  linkArrow: { ...typography.heading3, color: colors.primaryLight, marginLeft: 10 },
 });

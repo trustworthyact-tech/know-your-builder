@@ -223,7 +223,7 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
   const waLicenceRegister = byKey('waLicenceRegister');
   const tasLicenceRegister = byKey('tasLicenceRegister');
   const asicExtract = byKey('asicExtract');
-  const afsaNpii = byKey('afsaNpii');
+  const asicEU = byKey('asicEnforceableUndertakings');
 
   // Entity card data
   const entityName =
@@ -265,9 +265,7 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
   })();
 
   // Stats
-  const totalHits = results
-    .filter((r) => r.key !== 'links')
-    .reduce((n, r) => n + (r.results?.length ?? 0), 0);
+  const totalHits = results.reduce((n, r) => n + (r.results?.length ?? 0), 0);
   const courtHits = courtResults.reduce((n, r) => n + (r.results?.length ?? 0), 0);
 
   // Per-section result sets
@@ -279,12 +277,14 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
   );
   const disqualifiedItems: ResultItem[] = asicDisqualified?.results ?? [];
   const asicExtractItems: ResultItem[] = asicExtract?.results ?? [];
+  const asicEUItems: ResultItem[] = asicEU?.results ?? [];
   const identityItems: ResultItem[] = [
     ...(abn?.results ?? []),
     ...asicCompanyItems,
     ...asicDirectorItems,
     ...disqualifiedItems,
     ...asicExtractItems,
+    ...asicEUItems,
   ];
   // The scraper's default url points at the general adjudication registry search page —
   // swap in a link straight to this decision's PDF where we have the filename. The proxy
@@ -297,11 +297,9 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
   });
   const insolvencyItems: ResultItem[] = asicInsolvency?.results ?? [];
   const atoDebtItems: ResultItem[] = atoDebt?.results ?? [];
-  const afsaNpiiItems: ResultItem[] = afsaNpii?.results ?? [];
   const financialItems: ResultItem[] = [
     ...insolvencyItems,
     ...atoDebtItems,
-    ...afsaNpiiItems,
     ...(paymentTimes?.results ?? []),
     ...(modernSlavery?.results ?? []),
   ];
@@ -355,6 +353,7 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
       asic?.status ?? 'done',
       asicDisqualified?.status ?? 'done',
       ...(asicExtract ? [asicExtract.status] : []),
+      asicEU?.status ?? 'done',
     ])
       ? 'unavailable'
       : 'clear'
@@ -383,7 +382,6 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
       atoDebt?.status ?? 'done',
       paymentTimes?.status ?? 'done',
       modernSlavery?.status ?? 'done',
-      ...(afsaNpii ? [afsaNpii.status] : []),
     ])
       ? 'unavailable'
       : 'clear'
@@ -578,19 +576,6 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
       }
     : null;
 
-  const afsaNpiiSearch: SearchResult | null = afsaNpii
-    ? {
-        key: 'afsaNpii',
-        label: 'AFSA NPII — Director Personal Insolvency (Deep Check)',
-        status: afsaNpii.status,
-        source: 'AFSA — National Personal Insolvency Index (Deep Check)',
-        jurisdiction: 'Federal',
-        category: 'financial',
-        searchUrl: afsaNpii.searchUrl,
-        summary: afsaNpii.summary,
-      }
-    : null;
-
   return (
     <main className="min-h-screen bg-background">
       {/* Sticky table of contents */}
@@ -718,7 +703,7 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
           id="s81"
           title="8.1 Identity & Corporate Structure"
           icon="🏢"
-          searchResults={[abn, asic, asicDisqualified, asicExtractSearch].filter(Boolean) as SearchResult[]}
+          searchResults={[abn, asic, asicDisqualified, asicEU, asicExtractSearch].filter(Boolean) as SearchResult[]}
           riskLevel={s81Risk}
           resultsOverride={identityItems}
           criticalBanner={
@@ -755,7 +740,7 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
           id="s83"
           title="8.3 Financial Risk Signals"
           icon="💳"
-          searchResults={[asicInsolvency, atoDebt, afsaNpiiSearch, paymentTimes, modernSlavery].filter(Boolean) as SearchResult[]}
+          searchResults={[asicInsolvency, atoDebt, paymentTimes, modernSlavery].filter(Boolean) as SearchResult[]}
           riskLevel={s83Risk}
           resultsOverride={financialItems}
           criticalBanner={

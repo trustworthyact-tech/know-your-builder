@@ -90,15 +90,6 @@ export function riskGrouper(findings: Record<string, SearchResult>): RiskGroupRe
       });
     }
 
-    const afsaNpii = resultsOf(findings, 'afsaNpii');
-    if (afsaNpii.length > 0) {
-      triggers.push({
-        scraperKey: 'afsaNpii',
-        finding: `${afsaNpii.length} director personal insolvency record(s) (deep check)`,
-        anchor: '#s81',
-      });
-    }
-
     // asicExtract: 2+ related entities deregistered (deep check)
     const asicExtractResults = resultsOf(findings, 'asicExtract');
     const deregisteredCount = asicExtractResults.filter(
@@ -380,6 +371,16 @@ export function riskGrouper(findings: Record<string, SearchResult>): RiskGroupRe
       triggers.push({
         scraperKey: 'asicDisqualified',
         finding: `${asicDisqualified.length} current director(s) found on the ASIC disqualified persons register`,
+        anchor: '#s81',
+      });
+    }
+
+    const asicEU = resultsOf(findings, 'asicEnforceableUndertakings');
+    if (asicEU.length > 0) {
+      severity = 'significant';
+      triggers.push({
+        scraperKey: 'asicEnforceableUndertakings',
+        finding: `${asicEU.length} ASIC court enforceable undertaking(s) found`,
         anchor: '#s81',
       });
     }
