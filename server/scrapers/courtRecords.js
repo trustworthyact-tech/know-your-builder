@@ -388,6 +388,11 @@ async function runJurisdictionSearch(companyName, directors, { fetchFn, jurisdic
           console.error(`[courtRecords:${jurisdiction}] fetch failed for term "${term}":`, err.message || err);
           return { results: [], failed: true, error: err };
         }
+        // Retrying instantly into the same rate-limit/WAF window that just rejected
+        // this request rarely helps (confirmed for ACT — see fetchActAndAcatTermResults)
+        // and can compound it. A short backoff costs little against the search's overall
+        // runtime and gives a transient block a moment to clear.
+        await new Promise((resolve) => setTimeout(resolve, 2_000));
       }
     }
   };
@@ -470,10 +475,30 @@ function searchNswCaselaw(companyName, directors = []) {
 // hiccup in just one of the two. Only throws if both sources fail, matching this function's
 // contract of "reject only when nothing could be fetched for this term".
 async function fetchActAndAcatTermResults(term) {
-  const [courtsResult, acatResult] = await Promise.allSettled([
-    fetchActTermResults(term),
-    fetchAcatTermResults(term),
-  ]);
+  // Sequential, not Promise.all/allSettled in parallel: courts.act.gov.au and
+  // acat.act.gov.au turned out to be the *same* backend (identical `x-slug:
+  // actssict-web` header, same Cloudflare zone, same session-cookie shape —
+  // confirmed live 2026-09-07) sitting behind a shared WAF/rate-limit. Firing both
+  // requests simultaneously — doubled again by fetchOne's retry — was enough burst
+  // volume against that one shared zone to start drawing a 403 that a single
+  // courts.act.gov.au request never had (confirmed live: this function 403'd on
+  // both sources from Railway's production IP the same day ACAT was added, despite
+  // both endpoints working fine individually and at low volume during development).
+  // Sequential halves the peak burst without materially slowing the search — both
+  // requests are fast individually.
+  let courtsResult;
+  try {
+    courtsResult = { status: 'fulfilled', value: await fetchActTermResults(term) };
+  } catch (err) {
+    courtsResult = { status: 'rejected', reason: err };
+  }
+
+  let acatResult;
+  try {
+    acatResult = { status: 'fulfilled', value: await fetchAcatTermResults(term) };
+  } catch (err) {
+    acatResult = { status: 'rejected', reason: err };
+  }
 
   if (courtsResult.status === 'rejected' && acatResult.status === 'rejected') {
     throw courtsResult.reason;
