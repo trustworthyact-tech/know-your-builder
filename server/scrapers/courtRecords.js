@@ -238,6 +238,49 @@ const fetchActTermResults = makeTermCache(async (term) => {
   return results;
 });
 
+// ACAT (ACT Civil and Administrative Tribunal) publishes its decisions on a completely
+// separate site/database from courts.act.gov.au — the search above never covers it, despite
+// JURISDICTION_SOURCES listing ACAT as an ACT source. ACAT is the tribunal that actually
+// hears most building disputes in the ACT (the ACT's equivalent of VCAT/QCAT), so this is a
+// real coverage gap, not a cosmetic one.
+//
+// Same Funnelback platform and result markup as fetchActTermResults above (li.search-result,
+// h3 a with a clean `title` attribute, .search-staff, .search-summary) — confirmed live
+// 2026-09-07 — but a different collection/profile, and critically a dedicated `meta_partyName`
+// field for precise party-name filtering rather than a generic full-text `query`.
+//
+// The friendly `/decisions2/search-decisions` path works with plain axios (confirmed 200,
+// no Cloudflare). Its own `/general/search` path (what the site's search form actually posts
+// to) returns a Cloudflare challenge to a plain request — use the former, not the latter.
+//
+// ACT Government web content is published under Creative Commons Attribution 4.0 by default
+// (act.gov.au/copyright) — no scraping/automated-access restriction, unlike JADE/AustLII/
+// Queensland Judgments.
+const fetchAcatTermResults = makeTermCache(async (term) => {
+  const searchUrl = `https://www.acat.act.gov.au/decisions2/search-decisions?meta_partyName=${encodeURIComponent(term)}`;
+  const { data } = await axios.get(searchUrl, {
+    timeout: 30_000,
+    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; know-your-builder/1.0)' },
+  });
+  const $ = cheerio.load(data);
+  const results = [];
+
+  $('li.search-result').each((_, el) => {
+    const link = $(el).find('h3 a').first();
+    const url = link.attr('title');
+    const title = link.text().trim().replace(/\s+/g, ' ');
+    if (!url || !title) return;
+
+    const member = $(el).find('.search-staff').first().text().trim();
+    const summary = $(el).find('.search-summary').first().text().trim().replace(/\s+/g, ' ');
+    const description = [member, summary].filter(Boolean).join(' — ').slice(0, 300);
+
+    results.push({ title, url, description: description || undefined, matchedTerm: term });
+  });
+
+  return results;
+});
+
 // Federal Court's dedicated judgments search (distinct from the general site search) —
 // behind a Cloudflare managed challenge across the whole fedcourt.gov.au estate, so this
 // goes through fetchWithBrowser rather than plain axios. Confirmed 2026-08-26: a solved
@@ -413,11 +456,34 @@ function searchNswCaselaw(companyName, directors = []) {
   });
 }
 
+// Combines the two independent ACT sources (courts.act.gov.au for Supreme/Magistrates Court,
+// acat.act.gov.au for ACAT). Uses allSettled rather than Promise.all so that one source
+// having a bad moment doesn't discard perfectly good results from the other — runJurisdictionSearch's
+// retry/failure tracking operates per-term, and a hard throw here would mark the whole term
+// failed (and, after both retries, drop even the successful source's results) over a transient
+// hiccup in just one of the two. Only throws if both sources fail, matching this function's
+// contract of "reject only when nothing could be fetched for this term".
+async function fetchActAndAcatTermResults(term) {
+  const [courtsResult, acatResult] = await Promise.allSettled([
+    fetchActTermResults(term),
+    fetchAcatTermResults(term),
+  ]);
+
+  if (courtsResult.status === 'rejected' && acatResult.status === 'rejected') {
+    throw courtsResult.reason;
+  }
+
+  return [
+    ...(courtsResult.status === 'fulfilled' ? courtsResult.value : []),
+    ...(acatResult.status === 'fulfilled' ? acatResult.value : []),
+  ];
+}
+
 function searchActJudgments(companyName, directors = []) {
   return runJurisdictionSearch(companyName, directors, {
-    fetchFn: fetchActTermResults,
+    fetchFn: fetchActAndAcatTermResults,
     jurisdiction: 'ACT',
-    source: 'ACT Courts',
+    source: 'ACT Courts & ACAT',
     sourcesKey: 'act',
     searchUrlFor: (term) => `https://www.courts.act.gov.au/judgment?query=${encodeURIComponent(term)}`,
   });

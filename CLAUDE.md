@@ -1010,6 +1010,59 @@ Flagged here as a separate, pre-existing gap worth its own task.
 
 ---
 
+### VIC/QLD direct-to-court investigation (dead end); ACAT added to ACT courts search (2026-09-07)
+
+Investigated whether QLD and VIC could get live, ToS-free court/tribunal coverage the same way
+federal/NSW/ACT/NT already do (a direct search against each court's own site, no AustLII/JADE
+aggregator involved) — following on from the JADE-vs-AustLII research above, since both turned out
+to have identical "no automated access without prior written permission" restrictions.
+
+**VIC — partial, real but narrow.** Supreme Court of Victoria hosts its own genuine judgment-
+summaries page (plain static HTML, real case titles + PDF links, no restrictive terms found) — but
+it's rolling 12-months-only (older entries are removed/archived per the page itself). VCAT (the
+tribunal that actually hears domestic/commercial building disputes — VIC's equivalent of QCAT) and
+County Court of Victoria both confirmed to **not** host their own decisions at all; both explicitly
+point to AustLII/JADE instead. Not built — a 12-month Supreme-Court-only scraper would miss the
+single most relevant VIC tribunal for this product, so this wasn't judged worth the effort yet.
+
+**QLD — dead end, no viable path.** The Queensland Courts government site and QCAT's own site both
+confirmed to not host their own decisions either — everything routes through
+`queenslandjudgments.com.au`, a joint venture between the ICLRQ and Supreme Court Library
+Queensland (SCLQ). Pulled their live Terms of Use directly: identical restriction to JADE/AustLII —
+"must not... use any robot, spider, screen scraper, data aggregation tool or other automatic
+process to monitor, copy or extract any Materials... without the prior written consent of both the
+ICLRQ and the SCLQ." No primary-government-source alternative exists for QLD the way VIC's Supreme
+Court provides one. QLD stays on the manual-link fallback; closing this gap needs the same
+written-permission conversation as JADE, not a scraper.
+
+**ACT — found and fixed a real, separate gap: ACAT was never actually searched.**
+`JURISDICTION_SOURCES.act` in `courtRecords.js` had listed "ACT Civil & Administrative Tribunal
+(ACAT)" as a covered source, but `searchActJudgments` only ever queried `courts.act.gov.au`
+(Supreme Court + Magistrates Court) — ACAT, the tribunal that actually hears most ACT building
+disputes (the ACT's equivalent of VCAT/QCAT), publishes its decisions on a **completely separate,
+self-hosted database** at `acat.act.gov.au/decisions2/search-decisions`, which was never being hit
+at all. Unlike VCAT/QCAT, this one is real and compliant: same Funnelback platform and result
+markup as the existing `courts.act.gov.au` search (so the existing parser logic ports directly),
+a dedicated `meta_partyName` field for precise party-name filtering, no Cloudflare block on this
+particular path (its `/general/search` endpoint does challenge a plain request — the
+`/decisions2/search-decisions` path doesn't), and ACT Government web content is published under
+Creative Commons Attribution 4.0 by default — no scraping restriction, unlike JADE/AustLII/
+Queensland Judgments.
+
+Added `fetchAcatTermResults` alongside the existing `fetchActTermResults` in `courtRecords.js`, and
+a new `fetchActAndAcatTermResults` combinator that queries both via `Promise.allSettled` and only
+throws if *both* fail — a hiccup in one source no longer discards good results from the other (a
+plain `Promise.all` would have let one flaky source erase the other's real hits after
+`runJurisdictionSearch`'s per-term retry logic gave up). `searchActJudgments` now uses the
+combinator; `source` label updated from `'ACT Courts'` to `'ACT Courts & ACAT'` for accuracy. No
+other files needed changes — this enriches the existing `courts_act` result key rather than adding
+a new one, so `server/index.js`, `SearchContent.tsx`, and `ReportContent.tsx` needed no wiring.
+Live-verified: a real ACT builder (Geocon Constructors) now surfaces 2 additional ACAT decisions
+previously invisible to the report, alongside its existing 5 Supreme Court results.
+`server/tests/test-court-records.js` (all 11 assertions) still passes unchanged.
+
+---
+
 ## Performance baseline (2026-05-21)
 
 10 sequential `POST /api/search` requests, entity "Multiplex", Express at `localhost:3001`.
