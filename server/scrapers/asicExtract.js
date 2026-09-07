@@ -51,7 +51,11 @@ async function searchViaDataApi(targetAcn, apiKey) {
           const status = co.status ?? co.companyStatus ?? '';
           resultItems.push({
             title: co.companyName ?? co.name ?? coAcn,
-            url: `${BASE}/RegistrySearch/faces/landing/orgDetails.jspx?searchType=OrgAndBusNm&orgKey=${coAcn}`,
+            // orgDetails.jspx requires live ADF view-state that a bare URL can't carry and
+            // returns a genuine ASIC 404 when visited cold — see the identical fix and
+            // live-verification note on buildDetailUrl in asic.js. panelSearch.jspx with the
+            // ACN as the query is the one link format that actually resolves.
+            url: `${BASE}/RegistrySearch/faces/landing/panelSearch.jspx?searchType=OrgAndBusNm&searchText=${coAcn}`,
             status,
             description: [role ? `Role: ${role}` : null, `Director: ${name}`]
               .filter(Boolean)

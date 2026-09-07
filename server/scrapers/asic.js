@@ -9,8 +9,20 @@ function buildSearchUrl(query) {
   return `${BASE}/RegistrySearch/faces/landing/panelSearch.jspx?searchType=OrgAndBusNm&searchText=${encodeURIComponent(query)}`;
 }
 
+// There is no working bookmarkable "detail page" URL on ASIC Connect — orgDetails.jspx
+// requires live ADF view-state (_afrLoop, Adf-Window-Id, etc.) that only exists mid-session;
+// a bare orgKey-only URL constructed after the fact returns a genuine ASIC 404 ("Sorry, we
+// could not find the page you're looking for"), confirmed live 2026-09-07 via Puppeteer —
+// not a bot-block, a real dead route. This was wrongly assumed to be "the direct record page"
+// in 37d1eb7 (2026-09-03), which was never actually click-tested fresh before merging.
+// Every result now links to buildSearchUrl(acn) instead: confirmed live to return a real 200
+// "Search Results" page, and for a 9-digit-ACN query specifically, ASIC Connect's own search
+// results page renders the full record inline (see the ACN-search branch in searchASIC below,
+// which already reads company detail straight off this same search-results HTML) — so this
+// isn't a downgrade to a generic search box, it's the one link format that actually resolves
+// to the real record for a user clicking it fresh, days after the report was generated.
 function buildDetailUrl(acn) {
-  return `${BASE}/RegistrySearch/faces/landing/orgDetails.jspx?searchType=OrgAndBusNm&orgKey=${acn.replace(/\s/g, '')}`;
+  return buildSearchUrl(acn.replace(/\s/g, ''));
 }
 
 // Locate the results table by its column headers rather than a fixed CSS class,
