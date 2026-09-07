@@ -1010,7 +1010,7 @@ Flagged here as a separate, pre-existing gap worth its own task.
 
 ---
 
-### VIC/QLD direct-to-court investigation (dead end); ACAT added to ACT courts search (2026-09-07)
+### VIC/QLD direct-to-court investigation (dead end); ACAT added to ACT courts search (2026-09-07) — broke in production same day, see incident report below
 
 Investigated whether QLD and VIC could get live, ToS-free court/tribunal coverage the same way
 federal/NSW/ACT/NT already do (a direct search against each court's own site, no AustLII/JADE
@@ -1060,6 +1060,57 @@ a new one, so `server/index.js`, `SearchContent.tsx`, and `ReportContent.tsx` ne
 Live-verified: a real ACT builder (Geocon Constructors) now surfaces 2 additional ACAT decisions
 previously invisible to the report, alongside its existing 5 Supreme Court results.
 `server/tests/test-court-records.js` (all 11 assertions) still passes unchanged.
+
+---
+
+### ACT court search broke in production the same day ACAT was added — root cause was NOT the ACAT change (2026-09-07)
+
+Reported same-day: ACT Courts & Tribunals returning `status: 'error'` / "Search failed" in
+production. Two fix attempts; the first was wrong. Recorded in full because the wrong-diagnosis
+path is itself the useful lesson here — a locally-clean reproduction plus a plausible-sounding
+mechanism (burst rate against a shared backend) isn't confirmation, and the fastest way to find out
+was direct access to the production container, not more local testing.
+
+**First hypothesis (wrong): burst rate-limit from the new ACAT addition.** `courts.act.gov.au` and
+`acat.act.gov.au` turned out to be the *same* backend (identical `x-slug: actssict-web` header,
+same Cloudflare zone, same session-cookie shape). Reasoned that firing both at once — doubled again
+by the existing per-term retry — was tripping a burst rate-limit that a single request never had.
+Shipped a fix (sequential fetch instead of `Promise.allSettled` in parallel, plus a 2s backoff
+before retrying) and a genuinely useful side-fix: `runJurisdictionSearch`'s `fetchOne` had no
+logging at all on the failure path, so the real underlying error was invisible for every
+jurisdiction, not just ACT — added `console.error` there. Deployed. **Still failed identically.**
+
+**Root cause, found via direct access to the production container**: registered an SSH key with
+`railway ssh keys add` and used `railway ssh` to run test code *from inside the actual Railway
+container* rather than reasoning from local reproductions that couldn't see what Railway's IP
+actually experiences. A single, isolated `courts.act.gov.au` request (no ACAT involved at all)
+returned a plain 403 from there — ruling out the burst-rate theory immediately, since there was no
+burst. Escalating to `fetchWithBrowser` (Puppeteer) got further — a real page loaded — but it was a
+genuine Cloudflare managed challenge page ("Just a moment...", `challenges.cloudflare.com` in the
+CSP), byte-for-byte identical whether given 25s or 55s to clear. Not a timing problem; a standing
+block on Railway's IP specifically. The identical request from a residential IP (my own machine)
+worked instantly throughout. This was very likely already broken before the ACAT work — the
+isolated `courts.act.gov.au` path is the original code, unchanged by that session — either
+Cloudflare's configuration on this zone tightened sometime after this scraper was last confirmed
+working (2026-08-26), or the heavy same-session testing against these exact URLs (from both a local
+machine and repeated Railway redeploys) tipped Railway's IP into a flagged state. Not resolved which.
+
+**Fix**: routed both fetchers through ScraperAPI (`http://api.scraperapi.com?api_key=...&url=...`),
+reviving the exact proxy pattern originally built for the now-retired `austlii.js`. Confirmed live
+via the same `railway ssh` access, both endpoints, before writing any code — cleared the challenge
+cleanly on both `courts.act.gov.au` and `acat.act.gov.au`. Falls back to a direct request when
+`SCRAPERAPI_KEY` isn't set (local dev). Worth noting why this is a legitimate fix and not the kind
+of thing declined for AustLII/JADE/Queensland Judgments above: those three have an explicit written
+policy prohibiting automated access; ACT Government's site has none found (content is CC-BY-4.0) —
+this is a generic Cloudflare bot-wall, the same technical category as Federal Court and NT Supreme
+Court, both already Cloudflare-gated and already legitimately handled elsewhere in this same file
+via Puppeteer. Live-verified end to end post-fix: a real production search for "Geocon" returned
+all 7 expected results (5 Supreme Court + 2 ACAT) with `status: 'done'`; Federal/NSW/NT and the
+QLD/VIC/WA/SA/TAS manual-fallback jurisdictions all confirmed unaffected in the same request.
+
+An SSH key (`railway-debug`) is now registered with the project's Railway account — direct
+`railway ssh` access into the production container is available for future debugging without
+needing to redeploy just to add a `console.log`.
 
 ---
 
