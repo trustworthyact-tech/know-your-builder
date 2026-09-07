@@ -381,7 +381,13 @@ async function runJurisdictionSearch(companyName, directors, { fetchFn, jurisdic
         const results = await fetchFn(term);
         return { results: results.filter((r) => titleMatchesTerm(r.title, term)), failed: false };
       } catch (err) {
-        if (attempt === 1) return { results: [], failed: true, error: err };
+        if (attempt === 1) {
+          // The allFailed/anyFailed paths below return a graceful, non-throwing result —
+          // without logging here, the actual cause (network error, HTTP status, selector
+          // mismatch) is invisible; only the generic "Search failed" summary reaches the user.
+          console.error(`[courtRecords:${jurisdiction}] fetch failed for term "${term}":`, err.message || err);
+          return { results: [], failed: true, error: err };
+        }
       }
     }
   };
