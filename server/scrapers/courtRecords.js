@@ -202,14 +202,28 @@ const fetchNswTermResults = makeTermCache(async (term) => {
   return results;
 });
 
-// ACT's own judgment search — https://www.courts.act.gov.au/judgment?query=<term>. Plain
-// axios/cheerio, no Cloudflare gate (confirmed 2026-08-26). The site's own banner warns
-// "search functions are currently being updated" — working as of this writing, but worth
-// checking that banner first if this scraper starts returning nothing.
+// ACT's own judgment search — https://www.courts.act.gov.au/judgment?query=<term>. Was
+// plain axios/cheerio with no Cloudflare gate when confirmed 2026-08-26, but by 2026-09-07
+// this zone was serving a genuine Cloudflare managed challenge ("Just a moment...") to
+// Railway's production IP specifically — confirmed live via SSH into the production
+// container: identical from plain axios and from a real headless browser given up to 55s
+// to clear it, while the exact same request worked instantly from a residential IP. Not a
+// timing issue, not fixable by waiting longer or retrying. Routed through ScraperAPI (same
+// api.scraperapi.com proxy pattern originally used for the now-retired austlii.js), which
+// cleared it cleanly in testing (confirmed live 2026-09-07). No known written policy against
+// automation on this site (unlike JADE/AustLII/Queensland Judgments, which explicitly
+// prohibit it) — this is a generic bot-wall, the same category as Federal Court/NT Supreme
+// Court, both already Cloudflare-gated and already legitimately handled elsewhere in this
+// file. Falls back to a direct request when SCRAPERAPI_KEY isn't set (e.g. local dev).
+function viaScraperApi(url) {
+  const key = process.env.SCRAPERAPI_KEY;
+  return key ? `http://api.scraperapi.com?api_key=${key}&url=${encodeURIComponent(url)}` : url;
+}
+
 const fetchActTermResults = makeTermCache(async (term) => {
   const searchUrl = `https://www.courts.act.gov.au/judgment?query=${encodeURIComponent(term)}`;
-  const { data } = await axios.get(searchUrl, {
-    timeout: 30_000,
+  const { data } = await axios.get(viaScraperApi(searchUrl), {
+    timeout: 45_000,
     headers: { 'User-Agent': 'Mozilla/5.0 (compatible; know-your-builder/1.0)' },
   });
   const $ = cheerio.load(data);
@@ -249,17 +263,20 @@ const fetchActTermResults = makeTermCache(async (term) => {
 // 2026-09-07 — but a different collection/profile, and critically a dedicated `meta_partyName`
 // field for precise party-name filtering rather than a generic full-text `query`.
 //
-// The friendly `/decisions2/search-decisions` path works with plain axios (confirmed 200,
-// no Cloudflare). Its own `/general/search` path (what the site's search form actually posts
-// to) returns a Cloudflare challenge to a plain request — use the former, not the latter.
+// The friendly `/decisions2/search-decisions` path worked with plain axios when confirmed
+// 2026-09-07 (200, no Cloudflare) — its own `/general/search` path (what the site's search
+// form actually posts to) returned a Cloudflare challenge to a plain request even then.
+// By later that same day, `/decisions2/search-decisions` itself was also being challenged
+// from Railway's production IP — see the identical situation and ScraperAPI fix documented
+// on fetchActTermResults above (same backend, same Cloudflare zone). Routed the same way.
 //
 // ACT Government web content is published under Creative Commons Attribution 4.0 by default
 // (act.gov.au/copyright) — no scraping/automated-access restriction, unlike JADE/AustLII/
 // Queensland Judgments.
 const fetchAcatTermResults = makeTermCache(async (term) => {
   const searchUrl = `https://www.acat.act.gov.au/decisions2/search-decisions?meta_partyName=${encodeURIComponent(term)}`;
-  const { data } = await axios.get(searchUrl, {
-    timeout: 30_000,
+  const { data } = await axios.get(viaScraperApi(searchUrl), {
+    timeout: 45_000,
     headers: { 'User-Agent': 'Mozilla/5.0 (compatible; know-your-builder/1.0)' },
   });
   const $ = cheerio.load(data);
@@ -476,16 +493,15 @@ function searchNswCaselaw(companyName, directors = []) {
 // contract of "reject only when nothing could be fetched for this term".
 async function fetchActAndAcatTermResults(term) {
   // Sequential, not Promise.all/allSettled in parallel: courts.act.gov.au and
-  // acat.act.gov.au turned out to be the *same* backend (identical `x-slug:
-  // actssict-web` header, same Cloudflare zone, same session-cookie shape —
-  // confirmed live 2026-09-07) sitting behind a shared WAF/rate-limit. Firing both
-  // requests simultaneously — doubled again by fetchOne's retry — was enough burst
-  // volume against that one shared zone to start drawing a 403 that a single
-  // courts.act.gov.au request never had (confirmed live: this function 403'd on
-  // both sources from Railway's production IP the same day ACAT was added, despite
-  // both endpoints working fine individually and at low volume during development).
-  // Sequential halves the peak burst without materially slowing the search — both
-  // requests are fast individually.
+  // acat.act.gov.au are the *same* backend (identical `x-slug: actssict-web` header,
+  // same Cloudflare zone, same session-cookie shape — confirmed live 2026-09-07).
+  // Originally sequenced this on the theory that firing both at once was tripping a
+  // burst rate-limit — live SSH testing into the production container same-day showed
+  // the real cause was a standing Cloudflare managed challenge on that zone against
+  // Railway's IP, unrelated to request pacing (now routed through ScraperAPI in both
+  // fetchers above, which clears it). Left sequential anyway now that ScraperAPI is in
+  // the loop — running two proxied requests in parallel needlessly risks the proxy
+  // pool's own concurrency limits for no real speed benefit.
   let courtsResult;
   try {
     courtsResult = { status: 'fulfilled', value: await fetchActTermResults(term) };
