@@ -405,6 +405,48 @@ render identically — a related but separate gap worth fixing alongside this on
   surface "check unavailable" as its own visible state distinct from "checked, found nothing" —
   raised earlier this session, not yet implemented.
 
+**Follow-up (2026-09-08): `resolveDirectors()` deprecated to a pass-through stub, not fixed.**
+Rather than leave director-dependent scrapers blocked behind ASIC's captcha-gated (and already
+confirmed non-functional) director lookup, `resolveDirectors()` (`server/index.js`) was changed to
+`[...new Set(directors ?? [])]` — request-supplied director names only, no ASIC involvement. This
+was a deliberate latency fix, not a correctness fix: because `resolveDirectors()` awaited
+`asicPromise` before returning, every one of its 13 callers (`asicDisqualified`, all 8
+`courts_*` jurisdictions via `resolveExtraSearchTerms()`, `qbcc`, `fwo`, `vicBpc`, `vicVbaLicence`,
+`waBuildingEnergy`, `nswFairTrading`, `ntBuildingPractitioners`, `actLicences`, `actDisciplinary`,
+`waLicenceRegister`, `tasLicenceRegister`, `asicExtract`, `asicEnforceableUndertakings`) sat
+serialized behind ASIC Connect's captcha-solve (33s–120s+ observed) for a lookup that was already
+reliably returning zero directors either way — pure latency with no offsetting benefit. Since
+`res.end()` only fires after `Promise.all()` over the full `searches` array resolves
+(`server/index.js`), and `asic`'s own entry is itself gated the same way, this also means the
+*overall* request no longer waits for the other 13 scrapers to queue up behind ASIC before
+starting — they now run concurrently with it instead of after it.
+
+`asic` (company search) and `asicExtract` (officer/charges extract) themselves were **not**
+removed from the `searches` array — they still run, still return whatever they return (company
+record when the live scrape works; nothing useful for directors today), they just no longer block
+anyone else. `asicExtract` specifically now receives only user-typed director names via
+`resolveDirectors()`, so its phoenix-detection (associated-companies-via-director) branch returns
+its honest "No directors identified for officer search" early-exit (`asicExtract.js:202-211`) for
+any search where the user didn't type a director name — which, per the finding above, is most of
+them; this was already effectively true in production before this change; the difference now is
+that it happens instantly instead of after a captcha solve.
+
+**Net effect on report completeness**: none, in practice — the director-dependent checks were
+already silently getting zero ASIC-sourced directors. **Net effect on latency**: removes up to two
+serialized captcha-solves (asic's own, plus asicExtract's second one downstream of it) from the
+critical path for every search.
+
+**Not yet done** (supersedes the "not yet done" list above, which is still accurate background):
+- The underlying ASIC director-extraction bug (ACN branch never calls `parseDirectors()`;
+  name-only search returns zero results) is still unfixed — this change only stopped it from
+  gating other scrapers, it didn't fix ASIC itself.
+- `resolveDirectors()` should regain a real ASIC-backed (or `ASIC_DATA_API_KEY`-backed) path once
+  that root cause is addressed — until then, this app has no automated director-discovery
+  mechanism at all beyond what a user types in by hand.
+- Decide whether `asic`/`asicExtract` are worth keeping as their own (now non-blocking, still
+  slow) rows given they currently contribute little beyond a company status/ACN lookup — not
+  decided one way or the other in this pass.
+
 ### asicDisqualified's DPN check still silently misses hits under real concurrent search load (2026-08-19) — SUPERSEDED (2026-08-19)
 
 **Superseded the same day**: rather than continue chasing reliability bugs in the live ASIC

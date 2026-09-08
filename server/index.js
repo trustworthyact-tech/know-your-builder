@@ -162,15 +162,14 @@ app.post('/api/search', searchLimiter, async (req, res) => {
     return [...new Set([...(abnResult.businessNames ?? []), ...(abnResult.tradingNames ?? [])])];
   }
 
-  // Returns the union of request-supplied directors and those discovered by ASIC.
-  // Safe to call concurrently — all callers await the same promise.
+  // Deprecated 2026-09-08 — no longer resolves directors via ASIC. Previously awaited
+  // asicPromise first, which serialized 13+ other scrapers behind ASIC Connect's
+  // captcha-gated flow for a lookup already confirmed broken (see "resolveDirectors()
+  // is currently starved" / its 2026-09-08 follow-up in CLAUDE.md's Incomplete work).
+  // Now a thin pass-through of whatever the searcher typed in manually. Re-adding an
+  // ASIC-backed path requires fixing asic.js's director extraction first — see CLAUDE.md.
   async function resolveDirectors() {
-    const asicResult = await asicPromise;
-    const asicDirectors = (asicResult.results ?? [])
-      .filter((r) => r.metadata?.Role === 'Director')
-      .map((r) => r.title)
-      .filter(Boolean);
-    return [...new Set([...(directors ?? []), ...asicDirectors])];
+    return [...new Set(directors ?? [])];
   }
 
   // Directors + ABR trading/business names, combined — for scrapers that treat their
