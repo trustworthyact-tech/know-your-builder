@@ -24,6 +24,11 @@ export type SearchStatus = 'idle' | 'searching' | 'done' | 'error';
 export type Category = 'identity' | 'financial' | 'payment' | 'license' | 'legal' | 'regulatory' | 'other';
 export type Jurisdiction = 'Federal' | 'QLD' | 'NSW' | 'VIC' | 'WA' | 'SA' | 'NT' | 'ACT' | 'TAS' | 'All';
 
+// WS0.2 (reliability plan) — additive completeness metadata. Not yet consumed by
+// riskGrouper/ReportContent; wiring these into the UI is WS0.5, a separate pass.
+export type Completeness = 'complete' | 'partial' | 'stale' | 'unavailable';
+export type DataSource = 'live' | 'cache' | 'manual';
+
 export interface SearchResult {
   key: string;
   label: string;
@@ -37,9 +42,13 @@ export interface SearchResult {
   enforcementResults?: ResultItem[];
   searchUrl?: string;
   adjudicationSearchUrl?: string;
+  acatSearchUrl?: string;
   summary?: string;
   error?: string;
   sources?: string[];
+  completeness?: Completeness;
+  dataSource?: DataSource;
+  asOf?: string;
 }
 
 export enum Persona {

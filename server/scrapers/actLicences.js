@@ -1,20 +1,22 @@
-const axios = require('axios');
+const { fetchActLicenceRecords, fetchActDisciplinaryRecords } = require('./actLicencesDataset');
 
 // ACT Access Canberra — List of Professionals (Socrata open-data API).
 // No auth required. Company names are stored in the `surname` field;
 // `given_names` is populated for individual practitioners.
 // Building-relevant occupations: Builder, Building Surveyor, Building Assessor.
 //
-// This file also queries a second, separate dataset on the same Socrata portal:
+// This file also covers a second, separate dataset on the same Socrata portal:
 // the Register of Disciplinary Actions (avib-prrz). Unlike the licence register
 // above, it stores both company and individual names in a single combined
 // `licensee_name` field (no surname/given_names split) and companies carry an
 // `a_c_n` field instead of an ABN.
+//
+// WS1 (2026-09-09, reliability plan activities 1.5/1.6): both datasets moved from
+// live per-query Socrata calls to bulk ingestion — see actLicencesDataset.js.
+// Matching now happens locally against the full cached row set (same shape as
+// vicBpc.js), which also removes the previous one-live-call-per-director-name cost.
 
-const RESOURCE_URL = 'https://data.act.gov.au/resource/de4w-gbt3.json';
 const PORTAL_URL = 'https://www.data.act.gov.au/Business-and-Industry/List-of-Professionals/de4w-gbt3';
-
-const DISCIPLINARY_RESOURCE_URL = 'https://data.act.gov.au/resource/avib-prrz.json';
 const DISCIPLINARY_PORTAL_URL = 'https://www.data.act.gov.au/Business-and-Industry/Register-Of-Disciplinary-Actions/avib-prrz';
 
 const BUILDING_OCCUPATIONS = new Set(['Builder', 'Building Surveyor', 'Building Assessor']);
@@ -28,41 +30,19 @@ function nameMatchesEntity(text, query) {
   const words = query
     .toLowerCase()
     .split(/\s+/)
+    // Strip punctuation from each token before building its \b-anchored regex. Found live
+    // 2026-09-09 while verifying resolveActAssociatedNames against "Geocon Constructors
+    // (ACT) Pty Ltd": a token that itself starts/ends with punctuation (e.g. "(act)") can
+    // never satisfy \b at that position, since \b requires a word/non-word transition and
+    // both the preceding space and the leading "(" are non-word — the match silently fails
+    // regardless of whether the name is genuinely present in the text. Stripping punctuation
+    // from the token (leaving the alphanumeric core, e.g. "act") lets \b anchor correctly
+    // against the real word-boundary that still exists around it in the target text.
+    .map((w) => w.replace(/[^a-z0-9]/g, ''))
     .filter((w) => (w.length > 3 || /^\d+$/.test(w)) && !/^(pty|ltd|limited|the|and|of|a)$/.test(w));
   if (words.length === 0) return false;
   const lower = text.toLowerCase();
   return words.every((w) => new RegExp(`\\b${escapeRegExp(w)}\\b`).test(lower));
-}
-
-// Escape single quotes for Socrata $where strings.
-function socrataEscape(s) {
-  return s.replace(/'/g, "''");
-}
-
-async function fetchByName(query) {
-  const { data } = await axios.get(RESOURCE_URL, {
-    params: {
-      '$where': `upper(surname) like upper('%${socrataEscape(query)}%')`,
-      '$limit': 50,
-    },
-    headers: { Accept: 'application/json' },
-    timeout: 20000,
-  });
-  return Array.isArray(data) ? data : [];
-}
-
-async function fetchByDirector(directorName) {
-  // Individual practitioners: surname = last name, given_names = first name(s).
-  // Search the combined field so "John Smith" matches surname=SMITH, given_names=JOHN.
-  const { data } = await axios.get(RESOURCE_URL, {
-    params: {
-      '$where': `upper(concat(given_names,' ',surname)) like upper('%${socrataEscape(directorName)}%')`,
-      '$limit': 20,
-    },
-    headers: { Accept: 'application/json' },
-    timeout: 20000,
-  });
-  return Array.isArray(data) ? data : [];
 }
 
 function toResultItem(hit, query) {
@@ -95,38 +75,81 @@ function toResultItem(hit, query) {
   };
 }
 
+// hit.nominees is a composite string like "NAME: licenceNumber-Occupation-Class", not a
+// clean name — strips the trailing licence-detail portion before use. Defensively splits on
+// ';' in case a firm has more than one partner/nominee — unverified against a multi-name
+// fixture (only ever confirmed one name per field live), so this is a precaution, not a
+// confirmed format.
+function parseNames(field) {
+  if (!field) return [];
+  return field
+    .split(';')
+    .map((segment) => segment.split(':')[0].trim())
+    .filter(Boolean);
+}
+
+// Partner / Nominee names for a company's ACT builder licence, straight from Access
+// Canberra's own register — reliability plan WS3: a free substitute for ASIC's own officer
+// data (DSP access paused until 2027, see CLAUDE.md's WS3 entries). Deliberately independent
+// of searchACTLicences below rather than a "Phase A/B" split: fetchActLicenceRecords() reads
+// an already-local dataset cache (WS1), not a live call, so calling it a second time here
+// costs a cache read, not a duplicate HTTP request — not worth the complexity a hoisted-
+// promise split would add. Fails open (returns []) on any error — director discovery is
+// best-effort and must never block resolveDirectors()'s other 12 consumers.
+async function resolveActAssociatedNames(companyName) {
+  const strippedName = (companyName || '').replace(/\s*(?:pty|proprietary)?\.?\s*(?:ltd|limited)\.?\s*$/i, '').trim();
+  if (!strippedName) return [];
+
+  let records;
+  try {
+    ({ records } = await fetchActLicenceRecords());
+  } catch {
+    return [];
+  }
+
+  const names = [];
+  for (const hit of records) {
+    if (!BUILDING_OCCUPATIONS.has(hit.occupation)) continue;
+    if (!nameMatchesEntity(hit.surname || '', strippedName)) continue;
+    for (const name of parseNames(hit.partners)) names.push({ name, role: 'Partner' });
+    for (const name of parseNames(hit.nominees)) names.push({ name, role: 'Nominee' });
+  }
+  return names;
+}
+
 async function searchACTLicences(companyName, abn, directors) {
+  // Strip "Pty Ltd" so partial-word matches work against the registered name.
+  const strippedName = companyName.replace(/\s*(?:pty|proprietary)?\.?\s*(?:ltd|limited)\.?\s*$/i, '').trim();
+  const queries = [strippedName, ...(directors || [])].filter(Boolean);
+
+  let records;
+  try {
+    ({ records } = await fetchActLicenceRecords());
+  } catch (err) {
+    return {
+      source: 'ACT Access Canberra — Builder Licence Register',
+      jurisdiction: 'ACT',
+      category: 'license',
+      status: 'error',
+      results: [],
+      searchUrl: PORTAL_URL,
+      error: 'Search failed',
+      summary: 'Could not reach the ACT licence register — try again or search manually',
+    };
+  }
+
   const allResults = [];
   const seen = new Set();
 
-  function addHits(hits, query) {
-    for (const hit of hits) {
+  for (const query of queries) {
+    for (const hit of records) {
       if (!BUILDING_OCCUPATIONS.has(hit.occupation)) continue;
-      const nameField = hit.given_names
-        ? `${hit.given_names} ${hit.surname}`
-        : hit.surname;
+      const nameField = hit.given_names ? `${hit.given_names} ${hit.surname}` : hit.surname;
       if (!nameMatchesEntity(nameField, query)) continue;
       const key = hit.cola_licence_number || `${hit.surname}|${hit.expiry_date}`;
       if (seen.has(key)) continue;
       seen.add(key);
       allResults.push(toResultItem(hit, query));
-    }
-  }
-
-  // Strip "Pty Ltd" so partial-word matches work against the registered name.
-  const strippedName = companyName.replace(/\s*(?:pty|proprietary)?\.?\s*(?:ltd|limited)\.?\s*$/i, '').trim();
-
-  try {
-    addHits(await fetchByName(strippedName), strippedName);
-  } catch {
-    // non-fatal
-  }
-
-  for (const director of (directors || []).filter(Boolean)) {
-    try {
-      addHits(await fetchByDirector(director), director);
-    } catch {
-      // non-fatal
     }
   }
 
@@ -144,45 +167,6 @@ async function searchACTLicences(companyName, abn, directors) {
 }
 
 // ── Register of Disciplinary Actions (avib-prrz) ────────────────────────────────
-
-async function fetchDisciplinaryByName(query, acnDigits) {
-  const clauses = [];
-  if (query) {
-    clauses.push(`upper(licensee_name) like upper('%${socrataEscape(query)}%')`);
-  }
-  if (acnDigits) {
-    // a_c_n is stored inconsistently ("607 387 208" vs "687010251"); this substring
-    // match catches the unspaced form. The spaced form is still caught downstream
-    // by the digit-stripped comparison in addHits, as long as the name clause above
-    // also matched the row.
-    clauses.push(`upper(a_c_n) like upper('%${acnDigits}%')`);
-  }
-  if (clauses.length === 0) return [];
-
-  const { data } = await axios.get(DISCIPLINARY_RESOURCE_URL, {
-    params: {
-      '$where': clauses.length > 1 ? `(${clauses.join(' or ')})` : clauses[0],
-      '$limit': 50,
-    },
-    headers: { Accept: 'application/json' },
-    timeout: 20000,
-  });
-  return Array.isArray(data) ? data : [];
-}
-
-async function fetchDisciplinaryByDirector(directorName) {
-  // licensee_name is a single combined field for both companies and individuals —
-  // no given_names/surname split to concat, unlike the licence register above.
-  const { data } = await axios.get(DISCIPLINARY_RESOURCE_URL, {
-    params: {
-      '$where': `upper(licensee_name) like upper('%${socrataEscape(directorName)}%')`,
-      '$limit': 20,
-    },
-    headers: { Accept: 'application/json' },
-    timeout: 20000,
-  });
-  return Array.isArray(data) ? data : [];
-}
 
 function toDisciplinaryResultItem(hit, query) {
   return {
@@ -205,9 +189,6 @@ function toDisciplinaryResultItem(hit, query) {
 }
 
 async function searchACTDisciplinary(companyName, abn, directors) {
-  const allResults = [];
-  const seen = new Set();
-
   // A company's ABN is its two check digits followed by its ACN — derive a
   // candidate ACN from either a bare 9-digit ACN or an 11-digit ABN so a match
   // against a_c_n is still possible if the registered name in this dataset
@@ -216,8 +197,31 @@ async function searchACTDisciplinary(companyName, abn, directors) {
   const acnDigits =
     abnDigits.length === 11 ? abnDigits.slice(2) : abnDigits.length === 9 ? abnDigits : '';
 
-  function addHits(hits, query) {
-    for (const hit of hits) {
+  // Strip "Pty Ltd" so partial-word matches work against the registered name.
+  const strippedName = (companyName || '').replace(/\s*(?:pty|proprietary)?\.?\s*(?:ltd|limited)\.?\s*$/i, '').trim();
+  const queries = [strippedName, ...(directors || [])].filter(Boolean);
+
+  let records;
+  try {
+    ({ records } = await fetchActDisciplinaryRecords());
+  } catch (err) {
+    return {
+      source: 'ACT Access Canberra — Register of Disciplinary Actions',
+      jurisdiction: 'ACT',
+      category: 'regulatory',
+      status: 'error',
+      results: [],
+      searchUrl: DISCIPLINARY_PORTAL_URL,
+      error: 'Search failed',
+      summary: 'Could not reach the ACT disciplinary register — try again or search manually',
+    };
+  }
+
+  const allResults = [];
+  const seen = new Set();
+
+  function addMatches(query) {
+    for (const hit of records) {
       if (!BUILDING_OCCUPATIONS.has(hit.occupation)) continue;
       const hitAcnDigits = (hit.a_c_n || '').replace(/\D/g, '');
       const acnMatches = Boolean(acnDigits) && hitAcnDigits === acnDigits;
@@ -229,23 +233,12 @@ async function searchACTDisciplinary(companyName, abn, directors) {
     }
   }
 
-  // Strip "Pty Ltd" so partial-word matches work against the registered name.
-  const strippedName = (companyName || '').replace(/\s*(?:pty|proprietary)?\.?\s*(?:ltd|limited)\.?\s*$/i, '').trim();
-
-  if (strippedName || acnDigits) {
-    try {
-      addHits(await fetchDisciplinaryByName(strippedName, acnDigits), strippedName);
-    } catch {
-      // non-fatal
-    }
-  }
-
-  for (const director of (directors || []).filter(Boolean)) {
-    try {
-      addHits(await fetchDisciplinaryByDirector(director), director);
-    } catch {
-      // non-fatal
-    }
+  // The ACN match is independent of any query string, so it needs to run at least
+  // once even if `queries` is empty (e.g. no director names and an unmatchable name).
+  if (queries.length > 0) {
+    for (const query of queries) addMatches(query);
+  } else if (acnDigits) {
+    addMatches('');
   }
 
   return {
@@ -261,4 +254,4 @@ async function searchACTDisciplinary(companyName, abn, directors) {
   };
 }
 
-module.exports = { searchACTLicences, searchACTDisciplinary };
+module.exports = { searchACTLicences, searchACTDisciplinary, resolveActAssociatedNames };

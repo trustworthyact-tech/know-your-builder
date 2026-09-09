@@ -8,7 +8,10 @@ const express = require('express');
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 const { searchABN, searchByName } = require('./scrapers/abn');
-const { searchCourtRecords } = require('./scrapers/courtRecords');
+const { searchCourtRecords, buildManualFallback } = require('./scrapers/courtRecords');
+const { getScraper } = require('./scrapers/manifest');
+const { runScraper, withTimeout } = require('./scrapers/runScraper');
+const scraperHealth = require('./scrapers/scraperHealth');
 const { searchPaymentTimes } = require('./scrapers/paymentTimes');
 const { searchModernSlavery } = require('./scrapers/modernSlavery');
 const { searchQBCC, getDecisionSignedUrl } = require('./scrapers/qbcc');
@@ -20,9 +23,9 @@ const { searchFWO } = require('./scrapers/fwo');
 const { searchVicBpc } = require('./scrapers/vicBpc');
 const { searchVicVbaLicence } = require('./scrapers/vicVbaLicence');
 const { searchWABuildingEnergy } = require('./scrapers/waBuildingEnergy');
-const { searchNSWFairTrading } = require('./scrapers/nswFairTrading');
+const { searchNSWFairTrading, fetchNswCompanyLookup } = require('./scrapers/nswFairTrading');
 const { searchNTBuildingPractitioners } = require('./scrapers/ntBuildingPractitioners');
-const { searchACTLicences, searchACTDisciplinary } = require('./scrapers/actLicences');
+const { searchACTLicences, searchACTDisciplinary, resolveActAssociatedNames } = require('./scrapers/actLicences');
 const { searchWALicenceRegister } = require('./scrapers/waLicenceRegister');
 const { searchTASLicenceRegister } = require('./scrapers/tasLicenceRegister');
 const { searchAsicExtract } = require('./scrapers/asicExtract');
@@ -31,6 +34,7 @@ const { startPaymentTimesRefresh } = require('./scrapers/paymentTimesRefresh');
 const { startAsicDpnDatasetRefresh } = require('./scrapers/asicDpnDatasetRefresh');
 const { startVicBpcDatasetRefresh } = require('./scrapers/vicBpcDatasetRefresh');
 const { startAsicEuDatasetRefresh } = require('./scrapers/asicEnforceableUndertakingsDatasetRefresh');
+const { startActLicencesDatasetRefresh } = require('./scrapers/actLicencesDatasetRefresh');
 
 // Fail fast on missing scraper credentials rather than surfacing "missing key"
 // errors deep inside individual scraper calls at request time.
@@ -146,6 +150,22 @@ app.post('/api/search', searchLimiter, async (req, res) => {
   const abnPromise  = searchABN(abn, companyName, acn);
   const asicPromise = searchASIC(companyName, abn, acn, process.env.CAPTCHA_API_KEY);
 
+  // WS3 (reliability plan) — director discovery via NSW/ACT's own licence registers, a free
+  // substitute for ASIC's own officer data (its DSP application path is paused until 2027 —
+  // see CLAUDE.md's WS3 entries; the ASIC-backed path resolveDirectors() used to attempt is
+  // still broken/unavailable, not just deprioritised). Hoisted once here, same pattern as
+  // abnPromise/asicPromise above, so every one of resolveDirectors()'s 13 consumers shares a
+  // single lookup instead of each triggering its own. NSW is a live HTTP call, so it's bounded
+  // by withTimeout and fails open (empty result, not a rejection) — a slow or down NSW
+  // register must never block the other 12 scrapers, which is exactly the class of problem
+  // the 2026-09-08 ASIC-dependency removal fixed for this same function; reintroducing an
+  // unbounded network dependency here would undo that fix. ACT reads an already-local dataset
+  // cache (WS1), so resolveActAssociatedNames only needs a fail-open catch, not a timeout.
+  const nswDirectorDiscoveryPromise = withTimeout(fetchNswCompanyLookup(companyName), 20_000).catch(
+    () => ({ items: [], associatedNames: [], seen: new Set() })
+  );
+  const actDirectorDiscoveryPromise = resolveActAssociatedNames(companyName).catch(() => []);
+
   // Returns the best available ABN: request-supplied first, then first ABN scraper result.
   // Safe to call concurrently — all callers await the same promise.
   async function resolveAbn() {
@@ -162,14 +182,30 @@ app.post('/api/search', searchLimiter, async (req, res) => {
     return [...new Set([...(abnResult.businessNames ?? []), ...(abnResult.tradingNames ?? [])])];
   }
 
-  // Deprecated 2026-09-08 — no longer resolves directors via ASIC. Previously awaited
-  // asicPromise first, which serialized 13+ other scrapers behind ASIC Connect's
-  // captcha-gated flow for a lookup already confirmed broken (see "resolveDirectors()
-  // is currently starved" / its 2026-09-08 follow-up in CLAUDE.md's Incomplete work).
-  // Now a thin pass-through of whatever the searcher typed in manually. Re-adding an
-  // ASIC-backed path requires fixing asic.js's director extraction first — see CLAUDE.md.
+  // Merges request-supplied director names with what NSW/ACT's own licence registers surface
+  // for this company (see nswDirectorDiscoveryPromise/actDirectorDiscoveryPromise above).
+  // Deliberately still a flat string[] — the 13 consumers of this function are unchanged by
+  // WS3, only what feeds them got richer. Source/role (Director vs Nominated Supervisor vs
+  // Partner vs Nominee — not all equally confident) is preserved separately in each
+  // discovering scraper's own result metadata (nswFairTrading.js, actLicences.js) rather than
+  // threaded through here, so a report can show provenance without a wider signature change.
+  //
+  // History: this was a pure ASIC pass-through until 2026-08-13, deprecated to a bare
+  // request-supplied-only stub on 2026-09-08 after ASIC Connect's director extraction was
+  // confirmed broken and was serializing 13+ scrapers behind its captcha-gated flow for a
+  // lookup that reliably returned nothing anyway (see CLAUDE.md's "resolveDirectors() is
+  // currently starved" entries). NSW/ACT licence data reopens automated discovery without
+  // reintroducing that dependency — see CLAUDE.md's WS3 entries for the full record.
   async function resolveDirectors() {
-    return [...new Set(directors ?? [])];
+    const [nswPrimary, actAssociated] = await Promise.all([
+      nswDirectorDiscoveryPromise,
+      actDirectorDiscoveryPromise,
+    ]);
+    const discovered = [
+      ...nswPrimary.associatedNames.map((a) => a.name),
+      ...actAssociated.map((a) => a.name),
+    ];
+    return [...new Set([...(directors ?? []), ...discovered])];
   }
 
   // Directors + ABR trading/business names, combined — for scrapers that treat their
@@ -180,6 +216,24 @@ app.post('/api/search', searchLimiter, async (req, res) => {
   async function resolveExtraSearchTerms() {
     const [directorNames, alternateNames] = await Promise.all([resolveDirectors(), resolveAlternateNames()]);
     return [...new Set([...directorNames, ...alternateNames])];
+  }
+
+  // WS3 (reliability plan) — marks a director-dependent result as completeness: 'partial'
+  // when resolveDirectors() found nothing at all (neither typed nor NSW/ACT-discovered) to
+  // search under, so a report can tell "checked the company name only" apart from "also
+  // searched under N director name(s)" instead of both rendering identically as a complete
+  // check. Never downgrades a result that already set its own more specific completeness
+  // (e.g. courtRecords.js's own 'unavailable'/'partial' from a failed/retried live search,
+  // or buildManualFallback's 'unavailable') — this only fills in the case that would
+  // otherwise default to 'complete' with no signal that director coverage was actually zero.
+  function markPartialIfNoDirectors(result, directorCount) {
+    if (directorCount > 0) return result;
+    if (result.completeness && result.completeness !== 'complete') return result;
+    return {
+      ...result,
+      completeness: 'partial',
+      summary: `${result.summary} (no director names available to search under)`,
+    };
   }
 
   const searches = [
@@ -207,7 +261,10 @@ app.post('/api/search', searchLimiter, async (req, res) => {
     {
       key: 'courts_federal',
       label: 'Federal Courts',
-      fn: async () => searchCourtRecords(companyName, await resolveExtraSearchTerms(), 'federal'),
+      fn: async () => {
+        const [dirs, terms] = await Promise.all([resolveDirectors(), resolveExtraSearchTerms()]);
+        return markPartialIfNoDirectors(await searchCourtRecords(companyName, terms, 'federal'), dirs.length);
+      },
     },
     {
       key: 'courts_qld',
@@ -217,7 +274,10 @@ app.post('/api/search', searchLimiter, async (req, res) => {
     {
       key: 'courts_nsw',
       label: 'NSW Courts & Tribunals',
-      fn: async () => searchCourtRecords(companyName, await resolveExtraSearchTerms(), 'nsw'),
+      fn: async () => {
+        const [dirs, terms] = await Promise.all([resolveDirectors(), resolveExtraSearchTerms()]);
+        return markPartialIfNoDirectors(await searchCourtRecords(companyName, terms, 'nsw'), dirs.length);
+      },
     },
     {
       key: 'courts_vic',
@@ -242,7 +302,10 @@ app.post('/api/search', searchLimiter, async (req, res) => {
     {
       key: 'courts_act',
       label: 'ACT Courts & Tribunals',
-      fn: async () => searchCourtRecords(companyName, await resolveExtraSearchTerms(), 'act'),
+      fn: async () => {
+        const [dirs, terms] = await Promise.all([resolveDirectors(), resolveExtraSearchTerms()]);
+        return markPartialIfNoDirectors(await searchCourtRecords(companyName, terms, 'act'), dirs.length);
+      },
     },
     {
       key: 'courts_tas',
@@ -287,7 +350,13 @@ app.post('/api/search', searchLimiter, async (req, res) => {
     {
       key: 'nswFairTrading',
       label: 'NSW Fair Trading — Contractor Licence Register',
-      fn: async () => searchNSWFairTrading(companyName, abn, await resolveDirectors()),
+      // Reuses nswDirectorDiscoveryPromise's already-fetched company-name query instead of
+      // re-running it — see fetchNswCompanyLookup's doc comment in nswFairTrading.js.
+      fn: async () => {
+        const dirs = await resolveDirectors();
+        const result = await searchNSWFairTrading(companyName, abn, dirs, await nswDirectorDiscoveryPromise);
+        return markPartialIfNoDirectors(result, dirs.length);
+      },
     },
     {
       key: 'ntBuildingPractitioners',
@@ -297,12 +366,18 @@ app.post('/api/search', searchLimiter, async (req, res) => {
     {
       key: 'actLicences',
       label: 'ACT Access Canberra — Builder Licence Register',
-      fn: async () => searchACTLicences(companyName, abn, await resolveDirectors()),
+      fn: async () => {
+        const dirs = await resolveDirectors();
+        return markPartialIfNoDirectors(await searchACTLicences(companyName, abn, dirs), dirs.length);
+      },
     },
     {
       key: 'actDisciplinary',
       label: 'ACT Access Canberra — Register of Disciplinary Actions',
-      fn: async () => searchACTDisciplinary(companyName, abn, await resolveDirectors()),
+      fn: async () => {
+        const dirs = await resolveDirectors();
+        return markPartialIfNoDirectors(await searchACTDisciplinary(companyName, abn, dirs), dirs.length);
+      },
     },
     {
       key: 'waLicenceRegister',
@@ -326,8 +401,42 @@ app.post('/api/search', searchLimiter, async (req, res) => {
     },
   ];
 
+  // WS2 (reliability plan) — these keys are routed through the shared timeout + circuit
+  // breaker wrapper (server/scrapers/runScraper.js) instead of the plain try/catch below.
+  // Deliberately an explicit allowlist rather than every key in `searches`: the other
+  // buckets (dataset/manual-link/CAPTCHA scrapers) haven't individually been verified
+  // against this wrapper yet — that's WS1/WS3/WS4.1's job, not this one's. Every key here
+  // has a matching entry in server/scrapers/manifest.js.
+  const RUN_SCRAPER_KEYS = new Set([
+    'nswFairTrading',
+    'courts_nsw',
+    'courts_federal',
+    'courts_act',
+    'asic',
+    'asicInsolvency',
+    'asicExtract',
+    'fwo',
+    'atoDebt',
+  ]);
+
   await Promise.all(
     searches.map(async ({ key, label, fn }) => {
+      if (RUN_SCRAPER_KEYS.has(key)) {
+        // ACT Courts is the one live check with a real manual-link fallback (see
+        // courtRecords.js's buildManualFallback) — on an open circuit, degrade to that
+        // instead of runScraper's generic "unavailable" message, so a homeowner always
+        // has a usable path for this jurisdiction (reliability plan Constraint 1).
+        // The half-open trial call (isOpen() false right after cooldown) is intentionally
+        // not intercepted here — it goes through runScraper like a normal call so recovery
+        // can actually be detected.
+        if (key === 'courts_act' && scraperHealth.isOpen(key)) {
+          send({ key, label, completeness: 'unavailable', ...buildManualFallback('act') });
+          return;
+        }
+        await runScraper(getScraper(key), fn, { send });
+        return;
+      }
+
       send({ key, label, status: 'searching' });
       try {
         const result = await fn();
@@ -348,3 +457,4 @@ startPaymentTimesRefresh();
 startAsicDpnDatasetRefresh();
 startVicBpcDatasetRefresh();
 startAsicEuDatasetRefresh();
+startActLicencesDatasetRefresh();

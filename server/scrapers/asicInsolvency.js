@@ -131,8 +131,6 @@ async function searchAsicInsolvency(companyName, abn, acn) {
     const html = await page.content();
     const $ = cheerio.load(html);
     results = parseResults($);
-  } catch {
-    // non-fatal
   } finally {
     await page.close().catch(() => {});
   }

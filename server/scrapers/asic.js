@@ -182,14 +182,31 @@ async function fetchFromDataApi(acn, apiKey, companyName) {
   return [companyItem, ...directorItems];
 }
 
-async function searchASIC(companyName, abn, acn, captchaApiKey) {
+// Injectable last params (_fetchAdfPageWithCaptcha, _fetchFromDataApi) — same pattern as
+// asicDpnMatch.js's _fetchDpnRows and CLAUDE.md's captcha-gated-check convention. Neither
+// underlying call is testable live in this environment: the CAPTCHA-gated ASIC Connect path
+// needs a real CAPTCHA_API_KEY, and the Data API path needs ASIC_DATA_API_KEY, which is
+// categorically unobtainable until ASIC's DSP applications reopen in 2027 (see CLAUDE.md's
+// WS3 entries) — not just "not yet configured". Added 2026-09-09 specifically so the
+// director-discovery fixes in this function (the ACN-branch parseDirectors() call and the
+// Data API fallback's merge-not-replace guard) have real, deterministic regression coverage
+// instead of staying permanently unverifiable — see test-asic-director-fallback.js.
+async function searchASIC(
+  companyName,
+  abn,
+  acn,
+  captchaApiKey,
+  _fetchAdfPageWithCaptcha = fetchAdfPageWithCaptcha,
+  _fetchFromDataApi = fetchFromDataApi
+) {
   const derivedAcn = (acn || '').replace(/\s/g, '') || abnToAcn(abn) || '';
   const query = derivedAcn || companyName || '';
   const searchUrl = buildSearchUrl(query);
   let results = [];
+  let primaryFetchFailed = false;
 
   try {
-    const searchHtml = await fetchAdfPageWithCaptcha(searchUrl, captchaApiKey);
+    const searchHtml = await _fetchAdfPageWithCaptcha(searchUrl, captchaApiKey);
     const $ = cheerio.load(searchHtml);
     const matches = parseSearchResults($);
 
@@ -215,7 +232,7 @@ async function searchASIC(companyName, abn, acn, captchaApiKey) {
       if (bestMatch.acn) {
         try {
           const detailUrl = buildDetailUrl(bestMatch.acn);
-          const detailHtml = await fetchAdfPageWithCaptcha(detailUrl, captchaApiKey);
+          const detailHtml = await _fetchAdfPageWithCaptcha(detailUrl, captchaApiKey);
           const $d = cheerio.load(detailHtml);
           const fields = parseCompanyDetail($d);
 
@@ -246,9 +263,17 @@ async function searchASIC(companyName, abn, acn, captchaApiKey) {
       // the search results page (ADF renders a single expanded result). The standard
       // list-format table that parseSearchResults expects is absent. Fall back to
       // parseCompanyDetail, which handles th/td row-per-field tables.
-      // Note: ASIC Connect no longer exposes a free-access officer/director listing —
-      // director info requires a paid "Roles and relationship extract" ($23 on ASIC).
-      // Directors are retrieved from ASIC_DATA_API_KEY fallback below if set.
+      // Director info may not be present on this rendering at all — ASIC Connect's free
+      // officer/director listing was removed at some point ("Roles and relationship
+      // extract" is now a paid $23 product) and it's unconfirmed whether that removal
+      // applies to this inline-detail rendering specifically (untestable here without a
+      // real CAPTCHA_API_KEY). parseDirectors() below was previously never even called on
+      // this branch at all (found via CLAUDE.md's "resolveDirectors() is currently
+      // starved" investigation) — operates on the already-loaded $ (this rendering *is*
+      // the detail page, per the comment above; no extra fetch needed), wrapped
+      // defensively since its markup here is unconfirmed to match the other branch's
+      // detailHtml-fetched $d closely enough. If it finds nothing, the director-aware
+      // Data API fallback below is what covers this case once ASIC_DATA_API_KEY is set.
       const fields = parseCompanyDetail($);
       const name = fields['Name'] || companyName || '';
       const status = fields['Status'] || '';
@@ -271,23 +296,48 @@ async function searchASIC(companyName, abn, acn, captchaApiKey) {
           },
         };
         results.push(companyItem);
+        try {
+          results.push(...parseDirectors($, buildDetailUrl(derivedAcn)));
+        } catch {
+          // non-fatal — this rendering's markup isn't confirmed to match parseDirectors()'s
+          // expectations; a failure here shouldn't lose the company record already found
+        }
       }
     }
   } catch {
     // non-fatal — fall through to Data API
+    primaryFetchFailed = true;
   }
 
-  // Data API fallback: used when ASIC Connect returns nothing (deregistered companies,
-  // missing CAPTCHA key, etc.). Requires ASIC_DATA_API_KEY and a known ACN.
-  if (results.length === 0) {
+  // Data API fallback: used when ASIC Connect returns nothing at all (deregistered
+  // companies, missing CAPTCHA key, etc.), or when it found a company but no directors —
+  // the ACN-branch above previously left this permanently unreachable in the latter case,
+  // since results.length was already 1 (company only) by the time this ran, so the
+  // director-missing case never triggered a fallback that could have supplied them.
+  // Requires ASIC_DATA_API_KEY and a known ACN either way.
+  const hasDirector = results.some((r) => r.metadata?.Role === 'Director');
+  if (results.length === 0 || !hasDirector) {
     const apiKey = process.env.ASIC_DATA_API_KEY;
     if (apiKey && derivedAcn) {
       try {
-        results = await fetchFromDataApi(derivedAcn, apiKey, companyName);
+        const dataApiResults = await _fetchFromDataApi(derivedAcn, apiKey, companyName);
+        if (results.length === 0) {
+          // Nothing from ASIC Connect at all — the Data API's own company record is all
+          // we have, take it in full.
+          results = dataApiResults;
+        } else {
+          // Already have a company record (likely better-sourced directly from ASIC
+          // Connect) — only add the director items we were missing, don't overwrite it.
+          results.push(...dataApiResults.filter((r) => r.metadata?.Role === 'Director'));
+        }
       } catch {
         // non-fatal
       }
     }
+  }
+
+  if (results.length === 0 && primaryFetchFailed) {
+    throw new Error('ASIC Connect search failed and no fallback data available');
   }
 
   const companyCount = results.filter((r) => r.metadata?.Role !== 'Director').length;

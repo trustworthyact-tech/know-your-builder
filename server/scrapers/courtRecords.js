@@ -74,14 +74,29 @@ const JURISDICTION_SOURCES = {
 // search available (checked 2026-08-25/26 — see CLAUDE.md's court-records investigation
 // notes for the reachability/ToS findings behind each of these). Used as the manual
 // "search this yourself" link surfaced via ReportSection's supplementalLinks prop.
-// federal/act/nt are no longer in this map — they moved to live searches (2026-08-26).
+// federal/nt are not in this map — they run live searches with no manual-fallback path.
+// act *did* move to a live search (2026-08-26) and normally has no need for this either —
+// but WS2.3 (reliability plan) added a call to buildManualFallback('act') for the case
+// where courts_act's circuit breaker is open, so it needs a real entry again for that one
+// degrade path (found missing — and silently producing a link-less fallback — via
+// server/tests/test-ws2-live-hardening.js).
 const MANUAL_SEARCH_URLS = {
   qld: 'https://www.courts.qld.gov.au/decisions',
   vic: 'https://courts.vic.gov.au/court-system/transcripts-and-judgments/judgments-decisions-and-orders',
   wa: 'https://www.supremecourt.wa.gov.au/D/decisions_and_publications.aspx',
   sa: 'https://www.courts.sa.gov.au/court-decisions/judgments/',
   tas: 'https://www.supremecourt.tas.gov.au/publications/decisions-of-the-court/judgments/',
+  act: 'https://www.courts.act.gov.au/judgment',
 };
+
+// ACAT (ACT Civil & Administrative Tribunal — the tribunal that actually hears most ACT
+// building disputes, per fetchAcatTermResults' own comment above) publishes decisions on a
+// completely separate, self-hosted database from courts.act.gov.au. The live search covers
+// both (fetchActAndAcatTermResults), but MANUAL_SEARCH_URLS only carries one URL per
+// jurisdiction — every "search manually" degrade path for ACT (both the allFailed branch
+// below and buildManualFallback('act')) needs this second link too, or ACAT — the more
+// building-relevant of the two — silently drops out exactly when a homeowner needs it most.
+const ACAT_MANUAL_SEARCH_URL = 'https://www.acat.act.gov.au/decisions2/search-decisions';
 
 // Words too generic to use as an entity-match signal in case titles.
 const COMMON_WORDS = new Set([
@@ -450,8 +465,10 @@ async function runJurisdictionSearch(companyName, directors, { fetchFn, jurisdic
       status: 'error',
       results: [],
       searchUrl: manualSearchUrl,
+      ...(sourcesKey === 'act' ? { acatSearchUrl: ACAT_MANUAL_SEARCH_URL } : {}),
       sources: JURISDICTION_SOURCES[sourcesKey],
       error: 'Search failed',
+      completeness: 'unavailable',
       summary: `Could not complete the ${jurisdiction} courts search after retrying — try again or search manually`,
     };
   }
@@ -467,6 +484,10 @@ async function runJurisdictionSearch(companyName, directors, { fetchFn, jurisdic
     results: unique,
     searchUrl: manualSearchUrl,
     sources: JURISDICTION_SOURCES[sourcesKey],
+    // WS0.2 contract — this function already tracks anyFailed/allFailed for its own retry
+    // logic (see above); surface the partial case explicitly rather than letting a generic
+    // default paper over "some name variants couldn't be checked" as a plain "complete".
+    completeness: anyFailed ? 'partial' : 'complete',
     summary:
       (unique.length > 0
         ? `Found ${unique.length} case(s) in ${jurisdiction} courts and tribunals`
@@ -572,8 +593,10 @@ function buildManualFallback(jurisdiction) {
     status: 'error',
     results: [],
     searchUrl: MANUAL_SEARCH_URLS[jurisdiction],
+    ...(jurisdiction === 'act' ? { acatSearchUrl: ACAT_MANUAL_SEARCH_URL } : {}),
     sources: JURISDICTION_SOURCES[jurisdiction] || [],
     error: 'No automated source',
+    completeness: 'unavailable',
     summary: `No automated full-text search available for ${jLabel} courts — search manually`,
   };
 }

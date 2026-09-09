@@ -337,12 +337,27 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
   // surfaced here as supplemental "check manually" links instead of silently disappearing.
   const courtManualLinks: ResultItem[] = courtResults
     .filter((r) => r.status === 'error' && r.searchUrl)
-    .map((r) => ({
-      title: `Search ${r.jurisdiction ?? r.key} courts manually`,
-      url: r.searchUrl as string,
-      description: r.summary,
-      jurisdiction: r.jurisdiction,
-    }));
+    .flatMap((r) => [
+      {
+        title: `Search ${r.jurisdiction ?? r.key} courts manually`,
+        url: r.searchUrl as string,
+        description: r.summary,
+        jurisdiction: r.jurisdiction,
+      },
+      // ACAT is a separate, self-hosted database from courts.act.gov.au (see
+      // server/scrapers/courtRecords.js's ACAT_MANUAL_SEARCH_URL comment) — one manual
+      // link can't cover both, so courts_act carries a second URL when it's degraded.
+      ...(r.acatSearchUrl
+        ? [
+            {
+              title: 'Search ACAT (ACT Civil & Administrative Tribunal) manually',
+              url: r.acatSearchUrl,
+              description: r.summary,
+              jurisdiction: r.jurisdiction,
+            },
+          ]
+        : []),
+    ]);
 
   // Section risk levels — derived from risk groups, falling back to scraper-status baseline
   const s81Risk = deriveRiskLevel(

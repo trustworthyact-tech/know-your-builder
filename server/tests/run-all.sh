@@ -77,13 +77,19 @@ run_test "qbcc-adjudication"   "server/tests/test-qbcc-adjudication.js" &
 # Section 8.5 — Courts, Enforcement & Disciplinary
 run_test "court-records"        "server/tests/test-court-records.js" &
 run_test "fwo"                  "server/tests/test-fwo.js" &
+# WS2 (reliability plan) — runScraper wiring + honest-failure/completeness contract for the
+# 9 keys index.js now routes through server/scrapers/runScraper.js.
+run_test "ws2-live-hardening"   "server/tests/test-ws2-live-hardening.js" &
+# WS3 (reliability plan) — director discovery via NSW/ACT's own licence registers.
+run_test "ws3-director-discovery" "server/tests/test-ws3-director-discovery.js" &
+run_test "asic-director-fallback" "server/tests/test-asic-director-fallback.js" &
 
 wait
 echo ""
 
 # Print output for any failed tests
 OVERALL=0
-for label in vicbpc wa-building asic-eu qbcc-excluded qbcc-licensee nsw-fairtrading vic-vba-licence wa-be-licence act-licence tas-cbos-licence act-licences act-disciplinary nsw-fairtrading-scraper nt-building-practitioners wa-licence-register vic-vba-licence-scraper asic-insolvency ato-debt payment-times modern-slavery qbcc-adjudication court-records fwo; do
+for label in vicbpc wa-building asic-eu qbcc-excluded qbcc-licensee nsw-fairtrading vic-vba-licence wa-be-licence act-licence tas-cbos-licence act-licences act-disciplinary nsw-fairtrading-scraper nt-building-practitioners wa-licence-register vic-vba-licence-scraper asic-insolvency ato-debt payment-times modern-slavery qbcc-adjudication court-records fwo ws2-live-hardening ws3-director-discovery asic-director-fallback; do
   exit_code=$(cat "$LOG_DIR/${label}.exit" 2>/dev/null || echo 1)
   if [ "$exit_code" != "0" ]; then
     OVERALL=1
@@ -97,7 +103,7 @@ done
 
 # Always print full output for all tests (verbose mode)
 if [ "${VERBOSE:-}" = "1" ]; then
-  for label in vicbpc wa-building asic-eu qbcc-excluded qbcc-licensee nsw-fairtrading vic-vba-licence wa-be-licence act-licence tas-cbos-licence act-licences act-disciplinary nsw-fairtrading-scraper nt-building-practitioners wa-licence-register vic-vba-licence-scraper asic-insolvency ato-debt payment-times modern-slavery qbcc-adjudication court-records fwo; do
+  for label in vicbpc wa-building asic-eu qbcc-excluded qbcc-licensee nsw-fairtrading vic-vba-licence wa-be-licence act-licence tas-cbos-licence act-licences act-disciplinary nsw-fairtrading-scraper nt-building-practitioners wa-licence-register vic-vba-licence-scraper asic-insolvency ato-debt payment-times modern-slavery qbcc-adjudication court-records fwo ws2-live-hardening ws3-director-discovery asic-director-fallback; do
     echo "──────────────────────────────────────────────────────────"
     echo "  Output: $label"
     echo "──────────────────────────────────────────────────────────"

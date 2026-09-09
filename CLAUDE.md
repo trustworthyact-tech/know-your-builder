@@ -199,6 +199,100 @@ redundant download.
 
 ## Incomplete work
 
+### Reliability plan — WS0 foundations + WS1 ingestion landed (2026-09-09); Modern Slavery bulk ingestion investigated and deferred
+
+Following the Know Your Builder Reliability Plan (search-reliability hardening for the
+NSW+ACT MVP): **WS0 (foundations)** and **WS1 (ingestion)** are largely done.
+
+**WS0** added `server/scrapers/manifest.js` (all 29 scraper keys classified by
+jurisdiction/bucket/timeout/breaker, cross-checked against `index.js`'s `searches` array
+and web's `INITIAL_SEARCHES` by a test — closes the "must stay in sync" gap this file
+already flagged), `server/scrapers/datasetStore.js` (Postgres-backed generic
+`dataset_snapshot`/`register_record` store, `server/db/schema.sql`, with a disk-JSON
+fallback for local dev/DB outages — `server/scrapers/db.js`), and
+`server/scrapers/runScraper.js`/`scraperHealth.js` (hard timeout + circuit breaker —
+open → half-open → closed — the direct fix for the still-open "requests hung 1000+
+seconds" class of incident documented elsewhere in this file). All additive — nothing in
+the live `/api/search` route changed. Proven via two pilot migrations
+(`asicDpnDataset.js` onto `datasetStore.js`; `nswFairTrading.js` through `runScraper.js`),
+which doubled as WS1 activities 1.1 and (part of) 2.1.
+
+**WS1** moved the remaining bulk-backed checks off live-per-request behavior:
+- **`asicEnforceableUndertakingsDataset.js`** — same migration as `asicDpnDataset.js`,
+  onto `datasetStore.js`. `asicEnforceableUndertakings.js` (the consumer) needed no
+  changes.
+- **`paymentTimes.js`** — the bigger one: previously re-parsed the entire 24MB XLSX
+  (ZIP/shared-strings/header-discovery/row-scan across 4 sheets) on *every search
+  request*. New `parseAllRows()` runs that parse once per refresh cycle
+  (`paymentTimesRefresh.js`, still 8h) instead; `searchPaymentTimes()` now just queries
+  `datasetStore`. Added a header-column validation gate (`datasetStore.recordIngestionFailure()`,
+  new) that refuses to promote an ingestion if the name/ABN column can't be found in the
+  header row — the direct regression fix for the historical Section 8.3 silent
+  column-shift bug (see the "Payment Times dropdown fixed" entry below) — a bad parse now
+  fails loudly and keeps serving the last good snapshot, rather than silently ingesting
+  empty/misaligned data. Covered by a new `paymentTimes.test.js` including a test that
+  reproduces the historical bug shape directly.
+- **`actLicences.js`** — both ACT Socrata datasets (`de4w-gbt3`, 32,001 rows;
+  `avib-prrz`, 377 rows — both confirmed via Socrata's own count endpoint) moved from
+  live per-query calls (one per director name) to bulk ingestion
+  (`actLicencesDataset.js`, 24h refresh) with local matching, mirroring `vicBpc.js`'s
+  existing fetch-once-match-locally shape. Removes the previous one-live-call-per-director
+  cost entirely.
+- **ABN (1.7)**: deliberately untouched. Wrapping it in the breaker only makes sense as
+  part of the full manifest-driven orchestrator cutover (WS4.1) — doing it in isolation
+  now would mean touching `index.js`'s route for one entry while everything else stays
+  inline.
+
+All four migrations live-verified against real fixtures (the same ones used throughout
+this file's incident history — Veronica Roberts/DPN, Universal Property Group/NSW licence
+85273C, ADVANTAGE CARPENTRY/ACT licence, KEGGINS INDUSTRIAL/ACT disciplinary, BHP/payment
+times) via `server/tests/run-all.sh`, plus a clean server boot with dummy keys confirming
+every refresh cycle (including the two new ones) completes successfully against live data.
+
+**Modern Slavery Statements (activity 1.4) — investigated, staying live for now.**
+Unlike the other three, `modernSlavery.js` had zero caching (pure live per-query scrape)
+going in. Investigated whether a genuine bulk export exists, driving the register with
+Puppeteer (the same technique that resolved the VIC BPC rebrand and QBCC's Aura endpoint
+elsewhere in this file):
+
+- The register's own "Download list" button (`<button name="csv">` in a GET search form)
+  does produce a real, richer CSV (`IDX, PeriodStart, PeriodEnd, Type, ABN, ACN, ARBN,
+  IncludedEntities, IndustrySectors, Link, RelatedStatements` — more fields than the
+  live-scraped HTML captures today) — but **only for a non-empty query**; an empty query
+  (`q=`, "browse everything") returns the ordinary HTML page instead, confirmed twice.
+- Initially looked like a single broad term could substitute for a true bulk export:
+  `q=pty` reported matching all 18,236 statements in the register (equal to the blank
+  query's total) — but this term-frequency search is **not a substring match** (`q=a`
+  matched only 202 of 18,236; `q=the` only 2,051), so this isn't reliable in general, only
+  incidentally for `"pty"`.
+- Critically, **that 18,236-statement CSV never actually downloads** — the `csv=`
+  response for the full "pty" query came back as a normal `text/html` page (85KB), not a
+  CSV; the export silently degrades to HTML above some threshold. Narrowing that
+  threshold gave a non-monotonic result (a 170-statement query succeeded, a 174-statement
+  query failed, a 249-statement query succeeded) — either the limit is based on something
+  other than row count (byte size of the free-text fields varies a lot per statement), or
+  the shared Puppeteer instance had degraded from sustained use during this investigation
+  (it did throw a `ConnectionClosedError` at the end — the same browser-instability class
+  already documented elsewhere in this file). Either way, not a limit precise enough to
+  build a reliable partitioning strategy on, and there's no true offset/pagination on this
+  endpoint to fall back to — only relevance-ranked search terms.
+
+**Decided**: not pursuing bulk ingestion for Modern Slavery in this pass.
+`modernSlavery.js` stays exactly as it is — live per-query scrape, no caching — same
+treatment as ABN: wrapped in the breaker only, at WS4.1's cutover. Revisit if a cleaner
+mechanism surfaces (a real paginated bulk endpoint, or a precisely-characterized CSV row
+cap with a verified-complete partitioning strategy) — the risk of an unreliable
+alphabet/term sweep silently missing entities isn't worth trading against a check that
+already works live today, just without a cache.
+
+**Not yet done**: WS0.5 (completeness state in `riskGrouper`/UI), WS0.6 (generic
+ingestion-runner/scheduler — `recordIngestionFailure` above is scoped narrowly to payment
+times, not a general validate-before-promote mechanism), WS0.7/0.8 (health check
+extension, reliability dashboard), WS2 (live-path hardening for the remaining live
+scrapers), WS3 (director-discovery correctness — see `resolveDirectors()` entries
+elsewhere in this file), WS4 (manifest-driven orchestrator cutover, fault injection, load
+test).
+
 ### Phase 7c — asicExtract: historical directors + charges register
 
 `asicExtract.js` currently returns companies that *current* directors are associated with (phoenix detection). Missing:
@@ -446,6 +540,181 @@ critical path for every search.
 - Decide whether `asic`/`asicExtract` are worth keeping as their own (now non-blocking, still
   slow) rows given they currently contribute little beyond a company status/ACN lookup — not
   decided one way or the other in this pass.
+
+**Why this specifically matters — phoenix detection is currently non-functional for any search
+without manually-typed director names.** `asicExtract`'s whole purpose (see "Phase 7c" above) is
+phoenix detection: surfacing *other* companies a target entity's directors are/were associated
+with, which is the core signal for "this builder folded and reopened under a new name to dodge
+liabilities" — arguably the single highest-value check this product offers a homeowner, and one a
+manual search-yourself workflow can't easily replicate (a homeowner doesn't know a director's name
+to go look them up in the first place; discovering it *is* the point of the check). With
+`resolveDirectors()` now a pure pass-through and ASIC director extraction still broken, this check
+only ever fires if the searcher already happens to know and type in a director's name — for the
+typical homeowner search-by-company-name-or-ABN case, phoenixing risk is currently invisible in
+every report, silently. This makes fixing ASIC's director-extraction bug (or standing up the
+`ASIC_DATA_API_KEY` path from Phase 7c) higher priority than its "one bullet on a long list" framing
+above suggests — it's not a minor data-completeness gap, it's the phoenix-detection feature being
+effectively off by default.
+
+**Follow-up (2026-09-09, reliability plan WS3): `resolveDirectors()` regains automated
+discovery — via NSW/ACT's own licence registers, not ASIC.** Checked ASIC's own API access
+page directly before attempting the `ASIC_DATA_API_KEY`/Phase 7c path above: ASIC's Company
+Register DSP applications (`EDGE`, the API that carries officer/director data) are **paused,
+reopening in 2027** — confirmed via ASIC's own APIs page, not just cost/access friction. The
+API itself is free; there is currently no way to get credentialed for it at all, regardless of
+budget. `data.gov.au`'s bulk ASIC datasets don't include an officer register either (12
+datasets confirmed via the CKAN Action API — companies, business names, licensee/adviser/
+auditor/liquidator/banned-persons registers, no officers — same finding as the ASIC
+Enforceable Undertakings investigation above). So the already-built `fetchFromDataApi`
+(`asic.js`) / `searchViaDataApi` (`asicExtract.js`) Data API branches — which do already exist
+in code, contrary to Phase 7c's "to complete" framing above, that framing is now stale — stay
+dormant until 2027; not worth further investment now.
+
+Found a different free source instead, while investigating: **NSW Fair Trading's own
+per-licence details endpoint already returns real director names, unprompted.** The endpoint
+`nswFairTrading.js` was already calling for compliance data (`.../search/details/{type}/{id}`)
+also returns `componentData.associatedRoles` — for Universal Property Group Pty Limited /
+licence 85273C, a `"Director"` role (Bhart Bhushan) and a `"Nominated Supervisor"` role (Raj
+Mohan), both live-confirmed 2026-09-09. This was being fetched and silently discarded.
+**ACT's licence dataset (`de4w-gbt3`) has the same shape** — `partners`/`nominees` fields,
+already extracted into `actLicences.js`'s own result `metadata` (`Partners`/`Nominees`) but
+never fed back into director resolution. Live-confirmed for Geocon Constructors (ACT) Pty Ltd
+/ licence 2013583: partner "NIKOLAOS GEORGALIS", nominee "DAMON GREGORY SMITH" (ACT's
+`nominees` field is a composite string, `"NAME: licenceNumber-Occupation-Class"` — needs
+parsing before use, not a clean name on its own).
+
+This matters beyond just filling in a list: `asicExtract.js`'s phoenix-detection
+(`fetchDirectorCompanies`) already works via a *live, CAPTCHA-gated search by director name*
+against ASIC Connect — that path was never blocked by the DSP pause above, only by having no
+name to search with. NSW/ACT licence data answers exactly that, for exactly the population
+this product's audience is (licensed builders), without waiting for 2027 at all.
+
+**Wiring, and why it isn't a one-line change** (see the architecture diagram from this
+session's design discussion, not reproduced here): `resolveDirectors()`'s existing 13
+consumers include `nswFairTrading`'s and `actLicences`'s own `searches[]` entries, which
+already take `resolveDirectors()`'s output as an *input* (for per-director enrichment
+queries) — so `resolveDirectors()` calling into those same functions to *discover* names
+would be circular. Fixed by splitting `nswFairTrading.js`'s company-name lookup out into
+`fetchNswCompanyLookup()` ("Phase A" — no director input, this is what discovers names) from
+the existing full `searchNSWFairTrading()` ("Phase B" — still does per-director enrichment,
+now optionally reuses Phase A's result instead of re-querying). `index.js` hoists
+`fetchNswCompanyLookup(companyName)` once (same "shared promise" pattern as `abnPromise`/
+`asicPromise`), wrapped in `runScraper.js`'s `withTimeout` (20s) with a `.catch()` that fails
+open to an empty result — NSW is a live HTTP call, and letting it hang or reject unguarded
+would reintroduce the exact "one slow upstream serializes 13 scrapers behind it" regression
+the 2026-09-08 ASIC-dependency removal above fixed for this same function. ACT didn't need the
+same phase-split: `fetchActLicenceRecords()` reads an already-local WS1 dataset cache, so
+`resolveActAssociatedNames()` (`actLicences.js`) just queries it independently — a second cache
+read, not a second HTTP call, so the added complexity of a hoisted/reused promise wasn't
+justified there; it's still wrapped in a fail-open catch for defense in depth.
+`resolveDirectors()`'s own contract is unchanged (`Promise<string[]>`) — merges request-typed
+names with both discovered sets, deduped; role/confidence (Director vs Nominated Supervisor
+vs Partner vs Nominee — not all equally certain) is preserved in each discovering scraper's own
+result `metadata` rather than threaded through the flat list, so a report can show provenance
+without a wider signature change across all 13 consumers.
+
+**A real, pre-existing, currently-live bug found and fixed along the way**: `nameMatchesEntity`
+(duplicated per-file per this codebase's convention — fixed here in `nswFairTrading.js` and
+`actLicences.js` only, not swept across the other 10+ files that also duplicate it) tokenizes a
+query into words and wraps each in a `\b...\b`-anchored regex. A token that itself starts or
+ends with punctuation (e.g. `"(ACT)"`, from "Geocon Constructors (ACT) Pty Ltd") can never
+satisfy `\b` at that position — `\b` requires a word/non-word transition, and both the
+preceding space and the leading `(` are non-word, so there's no transition there regardless of
+whether the name is genuinely present. This silently broke matching for any company name
+containing a parenthetical — not rare in Australian company names (state-subsidiary suffixes,
+trading-name clarifications) — for every function using this duplicated helper, not just the
+one this session touched. Fixed by stripping non-alphanumeric characters from each token before
+building its regex (verified live: fixes the parenthetical case, preserves the existing match,
+introduces no false positive). **Not swept to the other files sharing this duplicated
+function** (`courtRecords.js`, `vicBpc.js`, and others per the file-local-duplication
+convention) — flagged here, not fixed, since it was outside this change's scope.
+
+Live-verified end to end via a real `/api/search` request for Universal Property Group Pty
+Limited: `nswFairTrading`'s own result now carries `metadata.Director`/
+`metadata.NominatedSupervisor`, and — the actual point of this change — its per-director
+enrichment loop surfaced two *additional* licences (Raj Mohan's own contractor licence, Raja
+Mohan Kamineni's qualified-supervisor certificate) that were invisible before, and
+`asicDisqualified`'s own search fired against `Bhart Bhushan` (`searchUrl` shows
+`searchText=Bhart%20Bhushan`, summary "2 director(s) checked") — a name it never would have
+seen previously, since no director was typed in by the searcher. New regression test:
+`server/tests/test-ws3-director-discovery.js`, in `run-all.sh`.
+
+**Not yet done**:
+- Only covers NSW and ACT (this session's MVP scope) — the other 7 jurisdictions' director-
+  dependent scrapers still see nothing unless a name is typed in or discovered via these two.
+- ASIC's own DSP-gated officer data is still inaccessible until 2027 regardless of this fix —
+  `fetchFromDataApi`/`searchViaDataApi` stay dormant; revisit when applications reopen.
+- `partners`/`nominees` (ACT) and NSW's `associatedRoles` have only been verified against a
+  single-name fixture each — whether either field can hold multiple people, and how they'd be
+  delimited if so, is unconfirmed (the parser defensively splits on `;` as a precaution, not a
+  confirmed format).
+- Confidence tiering stops at "recorded in metadata" — nothing currently treats a `Director`-
+  sourced name differently from a `Nominee`-sourced one when it's actually used to drive a
+  search (e.g. `asicDisqualified`), beyond what each scraper's own name-matching already does
+  for any name, typed or discovered.
+- The nameMatchesEntity punctuation bug is confirmed present, not fixed, in every other file
+  duplicating this helper.
+
+**Follow-up (2026-09-09, same day): the two `asic.js` bugs fixed; a `completeness: 'partial'`
+signal added for zero-director searches; a manual-link idea recorded, not built.**
+
+Two bugs `asic.js` (documented above and in the earlier "`resolveDirectors()` is currently
+starved" entry) fixed, so the dormant `ASIC_DATA_API_KEY` path is actually correct and ready
+for whenever ASIC's DSP applications reopen in 2027, not just present but broken:
+- The ACN-search branch (`asic.js`, the `else if (derivedAcn)` branch) now calls
+  `parseDirectors($, buildDetailUrl(derivedAcn))` on the already-loaded page (this rendering
+  *is* the detail page, per the branch's own existing comment — no extra fetch), wrapped in a
+  try/catch so a markup mismatch can't lose the company record already found. Previously never
+  called here at all.
+- The Data API fallback's guard changed from `results.length === 0` to `results.length === 0 ||
+  !hasDirector` — previously, once the ACN branch pushed a company item (`results.length` = 1),
+  the fallback that could have supplied directors was permanently unreachable for that request,
+  regardless of whether `ASIC_DATA_API_KEY` was set. Also changed from replacing `results`
+  outright to merging: when a company record already exists, only the Data API's *director*
+  items are appended, so a better-sourced ASIC-Connect company record isn't overwritten by a
+  Data-API one just because directors were missing.
+- Both changes compose: if the newly-added `parseDirectors()` call does find directors,
+  `hasDirector` is true and the Data API fallback correctly doesn't fire at all.
+
+Neither fix could be verified live when first made — the CAPTCHA-gated ASIC Connect path needs
+a real `CAPTCHA_API_KEY`, and the Data API path needs `ASIC_DATA_API_KEY`, categorically
+unobtainable until 2027 regardless of budget (see above). Rather than leave that permanently
+unverified, `searchASIC()` gained two injectable trailing params
+(`_fetchAdfPageWithCaptcha`/`_fetchFromDataApi`, defaulting to the real implementations) — same
+pattern as `asicDpnMatch.js`'s `_fetchDpnRows` and this file's captcha-gated-check convention.
+`parseDirectors()` itself needed no such change — it only operates on an already-loaded cheerio
+object, no network call, so it was already unit-testable once the branch that calls it existed.
+New test `server/tests/test-asic-director-fallback.js` (4 pilots, all passing, in `run-all.sh`)
+exercises both fixes deterministically with synthetic HTML/mocked Data API responses: a
+director found via the ACN branch (Data API correctly skipped), no director table present (no
+throw, company record survives), the merge case (company already found, Data API supplies only
+the missing director, doesn't overwrite the company record), and the original
+`results.length === 0` full-replace behavior (confirmed unchanged). This is real, durable,
+re-runnable verification of the code's *logic* — it cannot and does not prove what ASIC
+Connect's actual live markup contains today, which stays genuinely unknowable without a real
+`CAPTCHA_API_KEY`, same as before.
+
+**`completeness: 'partial'` now distinguishes "checked the company name only" from "also
+searched under N director name(s)"** for the four MVP director-dependent consumers named in
+the original WS3.3 scope (`nswFairTrading`, `actLicences`, `actDisciplinary`) plus the three
+WS2-wrapped court searches (`courts_nsw`, `courts_federal`, `courts_act`) — `index.js`'s new
+`markPartialIfNoDirectors(result, directorCount)` wraps each of their `fn`s: if
+`resolveDirectors()` returned zero names (neither typed nor NSW/ACT-discovered), the result's
+`completeness` is set to `'partial'` and `(no director names available to search under)` is
+appended to its summary — unless the result already carries a more specific non-`'complete'`
+value of its own (`courtRecords.js`'s own `'unavailable'`/`'partial'` from a failed/retried live
+search, or `buildManualFallback`'s `'unavailable'`), which is never downgraded. Live-verified
+end to end, both directions: a real NSW-licensed fixture (Universal Property Group Pty
+Limited) keeps `completeness: 'complete'` across all six keys (directors were discovered); a
+fictitious unlicensed entity shows `'partial'` with the caveat text on all five keys that
+completed within the test window, and `courts_act` correctly kept its own `'unavailable'`
+(a live ScraperAPI 401 in this sandbox) rather than being overwritten to `'partial'`.
+
+**Recorded, not built: a manual link to ASIC's paid "Roles and relationship extract" ($23)**
+as a `supplementalLinks`-style fallback (same pattern as `courtRecords.js`'s manual-fallback
+links for jurisdictions with no automated search) for entities where director discovery found
+nothing automated — lets a motivated user close the gap themselves for one specific company.
+Minor relative to the two items above; not implemented this pass.
 
 ### asicDisqualified's DPN check still silently misses hits under real concurrent search load (2026-08-19) — SUPERSEDED (2026-08-19)
 
