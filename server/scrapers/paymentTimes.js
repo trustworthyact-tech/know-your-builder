@@ -6,6 +6,15 @@ const fs    = require('fs');
 const os    = require('os');
 const path  = require('path');
 const { getBrowser } = require('./browser');
+const { queryDataset } = require('./datasetStore');
+
+// WS1 migration (2026-09-09, reliability plan activity 1.3): searchPaymentTimes() no
+// longer re-parses the whole workbook on every request — parsing now happens once per
+// refresh cycle (parseAllRows, called from paymentTimesRefresh.js) and is written to
+// datasetStore.js; search just queries it. The raw-XLSX-buffer cache below (CACHE_PATH)
+// is unchanged and still exists — it's the download-survives-a-WAF-failure layer,
+// separate from the parsed-dataset layer.
+const DATASET_KEY = 'payment_times';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -236,54 +245,93 @@ async function fetchRegisterBuffer() {
   }
 }
 
-// ── Search logic ─────────────────────────────────────────────────────────────
+// ── Ingestion-time parsing (WS1: runs once per refresh cycle, not per search) ────
+
+// Find the first column whose lowercase header text satisfies ALL hints. Each
+// argument is tried in order; the first match wins. An argument can be a string
+// (single hint) or array of strings (all must match).
+function discover(headerMap, ...alternatives) {
+  for (const alt of alternatives) {
+    const hints = Array.isArray(alt) ? alt : [alt];
+    const entry = Object.entries(headerMap).find(([, text]) =>
+      hints.every(h => text.includes(h))
+    );
+    if (entry) return entry[0];
+  }
+  return null;
+}
+
+// Parses one sheet's header row (row 2) to discover column positions dynamically.
+// Falls back to known-good hardcoded letters (verified against the register as of
+// 2026-07) for any field discovery misses. `issues` only records a fallback on the
+// name/ABN columns specifically — the two fields matching depends on — since a
+// fallback on a cosmetic column (e.g. standard terms) doesn't risk the silent
+// empty-metadata failure mode this gate exists to catch (see the historical Section
+// 8.3 bug in CLAUDE.md).
+function discoverColumns(sheetXml, strings) {
+  const fallback = {
+    nameCol: 'B', abnCol: 'C', acnCol: 'D', typeCol: 'E',
+    startCol: 'F', endCol: 'G', stdTermsCol: 'M',
+    avgDaysCol: 'U', within30Col: 'Y', days3160Col: 'Z', over60Col: 'AA',
+  };
+
+  const headerRowMatch = sheetXml.match(/<row r="2"[^>]*>([\s\S]*?)<\/row>/);
+  const hdrMap = {};
+  if (headerRowMatch) {
+    const hdrRe = /<c r="([A-Z]+)\d+"(?:\s[^>]*t="([^"]*)")?[^>]*>(?:<v>(.*?)<\/v>)?/g;
+    let hm;
+    while ((hm = hdrRe.exec(headerRowMatch[1])) !== null) {
+      const col = hm[1], t = hm[2] || 'n', v = hm[3];
+      if (v !== undefined && v !== null && v !== '') {
+        hdrMap[col] = (t === 's' ? (strings[parseInt(v, 10)] || '') : v).toLowerCase();
+      }
+    }
+  }
+
+  const issues = [];
+  if (Object.keys(hdrMap).length === 0) {
+    issues.push('no header row (row 2) found — cannot verify column positions');
+    return { ...fallback, issues };
+  }
+
+  const nameCol = discover(hdrMap, 'business name', 'entity name', ['reporting', 'entity']);
+  const abnCol  = discover(hdrMap, 'abn');
+  if (!nameCol) issues.push(`name column not found in header row (would fall back to ${fallback.nameCol})`);
+  if (!abnCol)  issues.push(`ABN column not found in header row (would fall back to ${fallback.abnCol})`);
+
+  return {
+    nameCol:     nameCol || fallback.nameCol,
+    abnCol:      abnCol  || fallback.abnCol,
+    acnCol:      discover(hdrMap, 'acn')                                           || fallback.acnCol,
+    typeCol:     discover(hdrMap, 'type')                                          || fallback.typeCol,
+    startCol:    discover(hdrMap, ['period', 'start'], 'start')                   || fallback.startCol,
+    endCol:      discover(hdrMap, ['period', 'end'], 'end')                       || fallback.endCol,
+    stdTermsCol: discover(hdrMap, ['common', 'term'], ['standard', 'term'])       || fallback.stdTermsCol,
+    avgDaysCol:  discover(hdrMap, ['average', 'day'], 'average')                  || fallback.avgDaysCol,
+    within30Col: discover(hdrMap, '30')                                           || fallback.within30Col,
+    days3160Col: discover(hdrMap, ['31', '60'], '31')                            || fallback.days3160Col,
+    over60Col:   discover(hdrMap, ['more', '60'], ['over', '60'], ['after', '60']) || fallback.over60Col,
+    issues,
+  };
+}
 
 /**
- * Search the PTRR Excel workbook for rows matching the query.
+ * Parses every row across all 4 searched sheets, unconditionally (no per-query
+ * quick-check skip — that optimization existed only to make request-time search
+ * fast; ingestion wants the full dataset regardless).
  *
- * Strategy:
- *  1. Parse sharedStrings.xml to build a string array.
- *  2. Find all shared-string indices whose value contains the query.
- *  3. For each sheet, parse the header row (row 2) to discover column positions
- *     dynamically — falls back to known-good hardcoded letters if parsing fails.
- *  4. Find rows where the name column has a matching index (or ABN column matches).
- *  5. Deduplicate by name+ABN and return the most recent report per entity.
+ * Returns { rows, headerIssues }. `headerIssues` is non-empty only when a sheet's
+ * name/ABN column couldn't be found in its header row — callers should treat that
+ * as a reason NOT to promote this ingestion (see paymentTimesRefresh.js), rather
+ * than silently ingesting data against possibly-wrong hardcoded column letters.
  */
-function searchWorkbook(buf, query, abn) {
-  const queryLower = query ? query.toLowerCase() : '';
-  const abnClean   = abn ? abn.replace(/\s/g, '') : '';
-
-  // 1. Parse shared strings
-  const ssXml   = extractZipEntry(buf, 'xl/sharedStrings.xml').toString('utf8');
+function parseAllRows(buf) {
+  const ssXml = extractZipEntry(buf, 'xl/sharedStrings.xml').toString('utf8');
   const strings = parseSharedStrings(ssXml);
 
-  // 2. Find matching string indices (by name or ABN)
-  const matchingNameIndices = new Set();
-  const matchingAbnIndices  = new Set();
-  strings.forEach((s, i) => {
-    if (queryLower && s.toLowerCase().includes(queryLower)) matchingNameIndices.add(i);
-    if (abnClean && s.replace(/\s/g, '') === abnClean) matchingAbnIndices.add(i);
-  });
-
-  if (matchingNameIndices.size === 0 && matchingAbnIndices.size === 0) return [];
-
-  // 3. Search each sheet
-  const seen = new Map(); // key: "name|abn" → best result
   const cellRe = /<c r="([A-Z]+)\d+" (?:[^>]*t="([^"]*)")?[^>]*>(?:<v>(.*?)<\/v>)?/g;
-
-  // Helper: find the first column whose lowercase header text satisfies ALL hints.
-  // Each argument is tried in order; the first match wins.
-  // An argument can be a string (single hint) or array of strings (all must match).
-  function discover(headerMap, ...alternatives) {
-    for (const alt of alternatives) {
-      const hints = Array.isArray(alt) ? alt : [alt];
-      const entry = Object.entries(headerMap).find(([, text]) =>
-        hints.every(h => text.includes(h))
-      );
-      if (entry) return entry[0];
-    }
-    return null;
-  }
+  const seen = new Map(); // key: "name|abn" → best row
+  const headerIssues = [];
 
   for (const sheetFile of SHEETS_TO_SEARCH) {
     let sheetXml;
@@ -293,91 +341,35 @@ function searchWorkbook(buf, query, abn) {
       continue;
     }
 
-    // Hardcoded fallback column letters (verified against register as of 2026-07)
-    let nameCol     = 'B',  abnCol      = 'C',  acnCol      = 'D',  typeCol     = 'E',
-        startCol    = 'F',  endCol      = 'G',  stdTermsCol = 'M',
-        avgDaysCol  = 'U',  within30Col = 'Y',  days3160Col = 'Z',  over60Col   = 'AA';
-
-    // Discover columns from header row (row 2)
-    const headerRowMatch = sheetXml.match(/<row r="2"[^>]*>([\s\S]*?)<\/row>/);
-    if (headerRowMatch) {
-      const hdrXml = headerRowMatch[1];
-      const hdrMap = {};
-      const hdrRe  = /<c r="([A-Z]+)\d+"(?:\s[^>]*t="([^"]*)")?[^>]*>(?:<v>(.*?)<\/v>)?/g;
-      let hm;
-      while ((hm = hdrRe.exec(hdrXml)) !== null) {
-        const col = hm[1], t = hm[2] || 'n', v = hm[3];
-        if (v !== undefined && v !== null && v !== '') {
-          hdrMap[col] = (t === 's' ? (strings[parseInt(v, 10)] || '') : v).toLowerCase();
-        }
-      }
-
-      if (Object.keys(hdrMap).length > 0) {
-        nameCol     = discover(hdrMap, 'business name', 'entity name', ['reporting', 'entity']) || nameCol;
-        abnCol      = discover(hdrMap, 'abn')                                                   || abnCol;
-        acnCol      = discover(hdrMap, 'acn')                                                   || acnCol;
-        typeCol     = discover(hdrMap, 'type')                                                   || typeCol;
-        startCol    = discover(hdrMap, ['period', 'start'], 'start')                            || startCol;
-        endCol      = discover(hdrMap, ['period', 'end'], 'end')                                || endCol;
-        stdTermsCol = discover(hdrMap, ['common', 'term'], ['standard', 'term'])                || stdTermsCol;
-        avgDaysCol  = discover(hdrMap, ['average', 'day'], 'average')                           || avgDaysCol;
-        within30Col = discover(hdrMap, '30')                                                     || within30Col;
-        days3160Col = discover(hdrMap, ['31', '60'], '31')                                      || days3160Col;
-        over60Col   = discover(hdrMap, ['more', '60'], ['over', '60'], ['after', '60'])         || over60Col;
-      }
+    const cols = discoverColumns(sheetXml, strings);
+    if (cols.issues.length > 0) {
+      headerIssues.push(...cols.issues.map((issue) => `${sheetFile}: ${issue}`));
     }
-
-    // Build quick-check regexes using discovered column letters.
-    // Allow optional style/other attributes before t="s" (some register versions include s="N").
-    const nameQuickRe = new RegExp(`<c r="${nameCol}\\d+"[^>]*t="s"[^>]*><v>(\\d+)<\\/v><\\/c>`);
-    const abnQuickRe  = new RegExp(`<c r="${abnCol}\\d+"[^>]*t="s"[^>]*><v>(\\d+)<\\/v><\\/c>`);
-    const abnNumRe    = new RegExp(`<c r="${abnCol}\\d+"[^>]*><v>(\\d+)<\\/v><\\/c>`);
+    const {
+      nameCol, abnCol, acnCol, typeCol, startCol, endCol,
+      stdTermsCol, avgDaysCol, within30Col, days3160Col, over60Col,
+    } = cols;
 
     const rowRe = /<row r="(\d+)"[^>]*>([\s\S]*?)<\/row>/g;
     let rm;
     while ((rm = rowRe.exec(sheetXml)) !== null) {
-      const rowNum  = parseInt(rm[1], 10);
+      const rowNum = parseInt(rm[1], 10);
       if (rowNum <= 2) continue; // rows 1+2 are description + header
 
-      const rowXml = rm[2];
-
-      // Quick check: does this row contain any of our matching indices?
-      const bMatch = rowXml.match(nameQuickRe);
-      const cMatch = rowXml.match(abnQuickRe);
-      const cNum   = rowXml.match(abnNumRe);
-
-      const bIdx = bMatch ? parseInt(bMatch[1], 10) : -1;
-      const cIdx = cMatch ? parseInt(cMatch[1], 10) : -1;
-      const cVal = cNum ? cNum[1] : '';
-
-      const nameHit = bIdx >= 0 && matchingNameIndices.has(bIdx);
-      const abnHit  = (cIdx >= 0 && matchingAbnIndices.has(cIdx)) ||
-                      (abnClean && cVal === abnClean);
-
-      if (!nameHit && !abnHit) continue;
-
-      // Parse all columns for this row
       const cells = {};
       cellRe.lastIndex = 0;
       let cm;
-      while ((cm = cellRe.exec(rowXml)) !== null) {
+      while ((cm = cellRe.exec(rm[2])) !== null) {
         const col = cm[1], t = cm[2] || 'n', v = cm[3];
         if (v === undefined || v === null || v === '') { cells[col] = ''; continue; }
         cells[col] = t === 's' ? (strings[parseInt(v, 10)] || '') : v;
       }
 
-      const name      = cells[nameCol]     || '';
-      const entityAbn = cells[abnCol]      || '';
-      const entityAcn = cells[acnCol]      || '';
-      const type      = cells[typeCol]     || '';
-      const start     = excelDateToISO(cells[startCol]);
-      const end       = excelDateToISO(cells[endCol]);
-      const avgDays   = cells[avgDaysCol]  || '';
-      const within30  = cells[within30Col] || '';
-      const days3160  = cells[days3160Col] || '';
-      const over60    = cells[over60Col]   || '';
-      const stdTerms  = cells[stdTermsCol] || '';
+      const name = cells[nameCol] || '';
+      if (!name) continue; // a genuinely blank row isn't a real entity record
 
+      const entityAbn = cells[abnCol] || '';
+      const end = excelDateToISO(cells[endCol]);
       const dedupKey = `${name.toLowerCase()}|${entityAbn}`;
 
       // Keep the row with the latest period end date
@@ -386,33 +378,47 @@ function searchWorkbook(buf, query, abn) {
         seen.set(dedupKey, {
           name,
           abn: entityAbn,
-          acn: entityAcn,
-          type,
-          periodStart: start,
+          acn: cells[acnCol] || '',
+          type: cells[typeCol] || '',
+          periodStart: excelDateToISO(cells[startCol]),
           periodEnd: end,
-          avgDays,
-          within30,
-          days3160,
-          over60,
-          stdTerms,
+          avgDays: cells[avgDaysCol] || '',
+          within30: cells[within30Col] || '',
+          days3160: cells[days3160Col] || '',
+          over60: cells[over60Col] || '',
+          stdTerms: cells[stdTermsCol] || '',
         });
       }
     }
   }
 
-  return [...seen.values()];
+  return { rows: [...seen.values()], headerIssues };
 }
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
+// Same substring/exact-ABN matching semantics as the old per-request searchWorkbook
+// (a plain substring match on entity name, OR an exact ABN match) — applied locally
+// here rather than relying solely on datasetStore's server-side filtering, since the
+// disk-fallback path (DB unconfigured or unreachable) returns every row unfiltered.
+function matchesQuery(row, queryLower, abnClean) {
+  const nameMatch = Boolean(queryLower) && row.name && row.name.toLowerCase().includes(queryLower);
+  const abnMatch = Boolean(abnClean) && row.abn && row.abn.replace(/\s/g, '') === abnClean;
+  return nameMatch || abnMatch;
+}
+
 async function searchPaymentTimes(companyName, abn, acn) {
   const query = companyName || '';
+  const queryLower = query.toLowerCase();
   const abnClean = abn ? abn.replace(/\s/g, '') : '';
   const searchUrl = `https://register.paymenttimes.gov.au/dashboard.html`;
 
-  let buf, stale, cachedAt;
+  let queryResult;
   try {
-    ({ buffer: buf, stale, cachedAt } = await fetchRegisterBuffer());
+    // 24h SLA — generous relative to the 8h refresh cadence, so `stale` only fires
+    // if the background ingestion has genuinely been stuck, not on every ordinary
+    // request between refreshes.
+    queryResult = await queryDataset(DATASET_KEY, { abn: abnClean || undefined, name: query || undefined, slaMs: 24 * 60 * 60 * 1000 });
   } catch (err) {
     return {
       source: 'Payment Times Reporting Register',
@@ -420,25 +426,26 @@ async function searchPaymentTimes(companyName, abn, acn) {
       category: 'payment',
       results: [],
       searchUrl,
-      summary: `Could not download register: ${err.message}`,
+      summary: `Could not read register data: ${err.message}`,
     };
   }
 
-  let rows;
-  try {
-    rows = searchWorkbook(buf, query, abnClean);
-  } catch (err) {
+  const { rows: allRows, stale, empty } = queryResult;
+
+  if (empty) {
     return {
       source: 'Payment Times Reporting Register',
       jurisdiction: 'Federal',
       category: 'payment',
       results: [],
       searchUrl,
-      summary: `Could not parse register: ${err.message}`,
+      summary: 'Payment Times register data is not yet available — try again shortly',
     };
   }
 
-  const results = rows.map(r => {
+  const matchedRows = (allRows || []).filter((r) => matchesQuery(r, queryLower, abnClean));
+
+  const results = matchedRows.map(r => {
     const metadata = {};
     if (r.abn)       metadata['ABN'] = r.abn;
     if (r.acn)       metadata['ACN/ARBN'] = r.acn;
@@ -473,9 +480,9 @@ async function searchPaymentTimes(companyName, abn, acn) {
     results,
     searchUrl,
     summary: stale
-      ? `Live register download failed — showing cached data from ${cachedAt.toDateString()}. ${baseSummary}`
+      ? `Register data may be a few hours old — background refresh has not completed recently. ${baseSummary}`
       : baseSummary,
   };
 }
 
-module.exports = { searchPaymentTimes, fetchRegisterBuffer };
+module.exports = { searchPaymentTimes, fetchRegisterBuffer, parseAllRows, DATASET_KEY };

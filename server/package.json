@@ -5,7 +5,7 @@
   "scripts": {
     "start": "node --env-file=.env index.js",
     "dev": "nodemon --env-file=.env index.js",
-    "test": "node --test scrapers/captcha.test.js scrapers/asicDisqualified.test.js scrapers/asic.test.js scrapers/asicDpnDataset.test.js scrapers/asicDpnMatch.test.js"
+    "test": "node --test scrapers/captcha.test.js scrapers/asicDisqualified.test.js scrapers/asic.test.js scrapers/asicDpnDataset.test.js scrapers/asicDpnMatch.test.js scrapers/manifest.test.js scrapers/datasetStore.test.js scrapers/runScraper.test.js scrapers/asicEnforceableUndertakingsDataset.test.js scrapers/paymentTimes.test.js scrapers/actLicencesDataset.test.js"
   },
   "dependencies": {
     "axios": "^1.7.9",
@@ -14,6 +14,7 @@
     "dotenv": "^16.4.5",
     "express": "^4.21.2",
     "express-rate-limit": "^8.6.0",
+    "pg": "^8.23.0",
     "puppeteer": "^25.0.4",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2"

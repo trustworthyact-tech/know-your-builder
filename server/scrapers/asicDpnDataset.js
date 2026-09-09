@@ -1,9 +1,7 @@
 'use strict';
 
 const axios = require('axios');
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
+const { replaceDatasetRecords, queryDataset } = require('./datasetStore');
 
 // Resolves to the current CSV via the CKAN Action API rather than predicting a
 // filename. Confirmed live (2026-08-19): the filename changes monthly only
@@ -17,15 +15,13 @@ const path = require('path');
 const RESOURCE_SHOW_URL =
   'https://data.gov.au/data/api/3/action/resource_show?id=741da9e3-7e0c-458e-830c-c518698e1788';
 
-// ASIC_DPN_CACHE_DIR points at a Railway persistent Volume when set, so a successful
-// download survives a redeploy instead of being wiped with the rest of os.tmpdir().
-// Falls back to os.tmpdir() for local dev, where no volume is mounted. Mirrors
-// paymentTimes.js's PTRR_CACHE_DIR pattern exactly.
-const CACHE_DIR = (() => {
-  const dir = process.env.ASIC_DPN_CACHE_DIR;
-  return dir && fs.existsSync(dir) ? dir : os.tmpdir();
-})();
-const CACHE_PATH = path.join(CACHE_DIR, 'asic_dpn_register.csv');
+// WS0 pilot migration (2026-09-08, reliability plan WS1.1 pulled forward): storage
+// moved from a raw CSV file on a Railway volume to datasetStore.js (Postgres, with a
+// disk-JSON fallback baked into that module — see server/scrapers/datasetStore.js).
+// The CSV fetch-and-parse logic below is unchanged; only where parsed rows are
+// written/read has changed. asicDpnMatch.js needs no changes — this keeps the exact
+// same { rows, stale, cachedAt } contract.
+const DATASET_KEY = 'asic_dpn';
 
 const HEADERS = {
   'User-Agent':
@@ -86,18 +82,17 @@ function parseCsv(buffer) {
 }
 
 // ── Cache management ─────────────────────────────────────────────────────────
-// Mirrors paymentTimes.js's readCachedBuffer exactly.
+// Reads back through datasetStore.js rather than a local file directly — that module
+// already handles the Postgres-vs-disk-fallback split. `stale: true` here means
+// specifically "the live fetch failed, this is a previously-ingested copy" — a
+// fetch-time-scoped meaning distinct from datasetStore's own generic SLA-based
+// `stale` flag (not used here; that flag only activates when a caller passes
+// `slaMs`, which this module deliberately doesn't).
 
 async function readCachedRows() {
-  try {
-    const [buffer, stat] = await Promise.all([
-      fs.promises.readFile(CACHE_PATH),
-      fs.promises.stat(CACHE_PATH),
-    ]);
-    return { rows: parseCsv(buffer), stale: true, cachedAt: stat.mtime };
-  } catch {
-    return null;
-  }
+  const cached = await queryDataset(DATASET_KEY);
+  if (!cached.rows || cached.rows.length === 0) return null;
+  return { rows: cached.rows, stale: true, cachedAt: cached.fetchedAt };
 }
 
 // ── Fetch ────────────────────────────────────────────────────────────────────
@@ -106,9 +101,9 @@ async function readCachedRows() {
  * Downloads and parses the current ASIC Banned and Disqualified Persons register.
  *
  * Returns { rows, stale, cachedAt }. `stale` is true when the live fetch failed
- * and a previously-cached copy was returned instead (`cachedAt` is that copy's
- * mtime) — callers should surface this to the user rather than presenting it as
- * fresh data. Throws only when the live fetch fails AND no cached copy exists.
+ * and a previously-ingested copy was returned instead (`cachedAt` is that copy's
+ * fetch time) — callers should surface this to the user rather than presenting it
+ * as fresh data. Throws only when the live fetch fails AND no ingested copy exists.
  *
  * _axios is injectable so tests can simulate API/download failures and stale
  * fallback without touching the network — same pattern as captcha.js's _http.
@@ -119,7 +114,7 @@ async function doFetchDpnRows(_axios = axios) {
     const { data } = await _axios.get(RESOURCE_SHOW_URL, { headers: HEADERS, timeout: 10_000 });
     url = data?.result?.url;
   } catch {
-    // fallback: if the API call fails, try the cache
+    // fallback: if the API call fails, try the ingested copy
   }
 
   if (!url) {
@@ -142,12 +137,15 @@ async function doFetchDpnRows(_axios = axios) {
     throw err;
   }
 
+  const rows = parseCsv(buffer);
+  const fetchedAt = new Date();
   try {
-    await fs.promises.writeFile(CACHE_PATH, buffer);
+    await replaceDatasetRecords(DATASET_KEY, rows.map((payload) => ({ payload })), { sourceUrl: url });
   } catch {
-    // Cache write failure is non-fatal
+    // Ingestion write failure is non-fatal — this fetch's rows are still returned
+    // fresh to the caller; the next refresh cycle gets another chance to persist.
   }
-  return { rows: parseCsv(buffer), stale: false, cachedAt: new Date() };
+  return { rows, stale: false, cachedAt: fetchedAt };
 }
 
 // Concurrent /api/search requests hitting a cold cache would otherwise each trigger
@@ -166,4 +164,4 @@ async function fetchDpnRows(_axios = axios) {
   }
 }
 
-module.exports = { fetchDpnRows, parseCsv, parseCsvLine, CACHE_PATH };
+module.exports = { fetchDpnRows, parseCsv, parseCsvLine, DATASET_KEY };

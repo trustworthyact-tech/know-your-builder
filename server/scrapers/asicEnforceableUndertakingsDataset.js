@@ -2,9 +2,7 @@
 
 const axios = require('axios');
 const cheerio = require('cheerio');
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
+const { replaceDatasetRecords, queryDataset } = require('./datasetStore');
 
 // ASIC's Court Enforceable Undertakings register has no bulk/open-data API — confirmed
 // by querying data.gov.au's CKAN Action API directly for ASIC's organization
@@ -27,14 +25,12 @@ const HEADERS = {
     '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
 };
 
-// ASIC_EU_CACHE_DIR points at a Railway persistent Volume when set, so a successful
-// fetch survives a redeploy instead of being wiped with the rest of os.tmpdir(). Falls
-// back to os.tmpdir() for local dev. Mirrors vicBpcDataset.js's VBA_BPC_CACHE_DIR pattern.
-const CACHE_DIR = (() => {
-  const dir = process.env.ASIC_EU_CACHE_DIR;
-  return dir && fs.existsSync(dir) ? dir : os.tmpdir();
-})();
-const CACHE_PATH = path.join(CACHE_DIR, 'asic_enforceable_undertakings.json');
+// WS1 migration (2026-09-09, reliability plan activity 1.2): storage moved from a raw
+// JSON file on a Railway volume to datasetStore.js (Postgres, with a disk-JSON fallback
+// baked into that module — see server/scrapers/datasetStore.js). Same migration already
+// proven on asicDpnDataset.js in WS0. The fetch-and-parse logic below is unchanged; only
+// where parsed records are written/read has changed.
+const DATASET_KEY = 'asic_eu';
 
 // Recent rows wrap the party name in its own <p>. Older rows (pre-~2011) have no <p> at
 // all — just bare text nodes separated by <br>, followed directly by the media-release
@@ -91,15 +87,9 @@ function parseRecords(html) {
 }
 
 async function readCachedRecords() {
-  try {
-    const [buffer, stat] = await Promise.all([
-      fs.promises.readFile(CACHE_PATH, 'utf8'),
-      fs.promises.stat(CACHE_PATH),
-    ]);
-    return { records: JSON.parse(buffer), stale: true, cachedAt: stat.mtime };
-  } catch {
-    return null;
-  }
+  const cached = await queryDataset(DATASET_KEY);
+  if (!cached.rows || cached.rows.length === 0) return null;
+  return { records: cached.rows, stale: true, cachedAt: cached.fetchedAt };
 }
 
 /**
@@ -128,9 +118,10 @@ async function doFetchAsicEuRecords(_axios = axios) {
   const records = parseRecords(html);
 
   try {
-    await fs.promises.writeFile(CACHE_PATH, JSON.stringify(records));
+    await replaceDatasetRecords(DATASET_KEY, records.map((payload) => ({ payload })), { sourceUrl: REGISTER_URL });
   } catch {
-    // Cache write failure is non-fatal
+    // Ingestion write failure is non-fatal — this fetch's records are still returned
+    // fresh to the caller; the next refresh cycle gets another chance to persist.
   }
   return { records, stale: false, cachedAt: new Date() };
 }
@@ -150,4 +141,4 @@ async function fetchAsicEuRecords(_axios = axios) {
   }
 }
 
-module.exports = { fetchAsicEuRecords, parseRecords, CACHE_PATH, REGISTER_URL };
+module.exports = { fetchAsicEuRecords, parseRecords, DATASET_KEY, REGISTER_URL };

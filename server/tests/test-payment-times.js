@@ -7,15 +7,20 @@
  *   The test confirms the register is reachable via update.js, then calls the
  *   full scraper and checks that a known large entity comes back.
  *
- *   The PTRR was migrated from paymenttimes.gov.au (API) to
- *   register.paymenttimes.gov.au (Excel download). The scraper downloads the
- *   register Excel and searches it locally.
+ *   WS1 (reliability plan, 2026-09-09) decoupled searching from live fetching:
+ *   parseAllRows() now runs once per ingestion cycle (paymentTimesRefresh.js) and
+ *   writes to datasetStore.js; searchPaymentTimes() only reads from there. This test
+ *   runs one ingestion cycle directly (Step 2b) before searching, mirroring what the
+ *   background refresh does in production every 8h.
  *
  *   Two-layer comparison isolates failures:
  *     • Step 1 FAIL: register.paymenttimes.gov.au is down or update.js changed
  *       → The download URL structure changed; inspect update.js manually
+ *     • Step 2b FAIL: ingestion cycle threw, or logged a header-validation failure
+ *       → The Excel structure changed (sheet column mapping) — see parseAllRows /
+ *         discoverColumns in paymentTimes.js
  *     • Step 3 FAIL: 0 results from scraper
- *       → The Excel structure changed, or the entity is no longer a reporter
+ *       → The entity is no longer a reporter, or ingestion silently found nothing
  *     • Step 4 FAIL: fixture name not found in results
  *       → Field name mapping changed in the Excel column definitions
  *
@@ -38,6 +43,7 @@
 const path  = require('path');
 const axios = require('axios');
 const { searchPaymentTimes, fetchRegisterBuffer } = require(path.join(__dirname, '../scrapers/paymentTimes'));
+const { refreshOnce } = require(path.join(__dirname, '../scrapers/paymentTimesRefresh'));
 const { pass, fail, step, warn, dump, header, summary } = require('./lib/helpers');
 
 const UPDATE_JS_URL = 'https://register.paymenttimes.gov.au/files/js/update.js';
@@ -141,9 +147,25 @@ function sigWords(name) {
   pass('Step 2', `Test fixture: "${fixtureName}"`);
   passed++;
 
+  // ── Step 2b: Ingest — WS1 decoupled search from live fetch entirely, so
+  // searchPaymentTimes() now only reads whatever paymentTimesRefresh.js's cycle has
+  // already ingested. Run that cycle once directly here rather than starting its
+  // interval, mirroring what production does in the background every 8h.
+  step('Step 2b: Running one ingestion cycle (refreshOnce) so there is data to search...');
+  step('  (First run downloads + parses the register Excel — allow 30–120 s; subsequent runs use cache)');
+  try {
+    await refreshOnce();
+  } catch (e) {
+    fail('Step 2b', `refreshOnce() threw an exception: ${e.message}`, e.stack);
+    failed++;
+    summary(passed, failed);
+    process.exit(1);
+  }
+  pass('Step 2b', 'Ingestion cycle completed');
+  passed++;
+
   // ── Step 3: Call searchPaymentTimes; assert >= 1 result ───────────────────────
   step(`Step 3: Calling searchPaymentTimes("${fixtureName}", "", "")...`);
-  step('  (First run downloads the register Excel — allow 30–120 s; subsequent runs use cache)');
 
   let result;
   try {
@@ -285,23 +307,23 @@ function sigWords(name) {
     pass('Step 6', `Stale fallback returned buffer from ${staleResult.cachedAt.toISOString()}, stale=true`);
     passed++;
 
-    // Confirm the caveat sentence actually reaches searchPaymentTimes()'s summary.
-    axios.get = async () => { throw Object.assign(new Error('simulated'), { response: { status: 406 } }); };
-    let staleSearch;
-    try {
-      staleSearch = await searchPaymentTimes(fixtureName, '', '');
-    } finally {
-      axios.get = realAxiosGet;
-    }
-    if (!/showing cached data from/i.test(staleSearch.summary)) {
+    // WS1: searchPaymentTimes() no longer calls axios/fetchRegisterBuffer at all —
+    // it only reads datasetStore.js, which Step 2b already ingested fresh data into.
+    // So the meaningful post-migration check here is that a search right after a
+    // fresh ingestion reports as fresh (no "may be a few hours old" caveat), not that
+    // stubbing axios affects it (it structurally can't anymore — that's the point of
+    // decoupling search from live fetch).
+    const freshSearch = await searchPaymentTimes(fixtureName, '', '');
+    if (/may be a few hours old/i.test(freshSearch.summary)) {
       fail(
         'Step 6',
-        `searchPaymentTimes()'s summary did not include the stale-data caveat.\n` +
-        `Got: "${staleSearch.summary}"`
+        `searchPaymentTimes()'s summary reported stale data immediately after a fresh ` +
+        `ingestion (Step 2b).\nGot: "${freshSearch.summary}"\n` +
+        'Check queryDataset()\'s slaMs comparison in searchPaymentTimes (paymentTimes.js).'
       );
       failed++;
     } else {
-      pass('Step 6', `searchPaymentTimes() summary correctly surfaces the caveat: "${staleSearch.summary}"`);
+      pass('Step 6', `searchPaymentTimes() correctly reports fresh data right after ingestion: "${freshSearch.summary}"`);
       passed++;
     }
   }
