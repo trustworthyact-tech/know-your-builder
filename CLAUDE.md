@@ -293,6 +293,60 @@ scrapers), WS3 (director-discovery correctness — see `resolveDirectors()` entr
 elsewhere in this file), WS4 (manifest-driven orchestrator cutover, fault injection, load
 test).
 
+**Follow-up (2026-09-10, reliability plan WS4.1): orchestrator cutover landed for the
+16 MVP-scope keys.** Full activity plan in `WS4_IMPLEMENTATION_PLAN.md` (repo root) —
+this entry is the execution record for its 4.1 activity. The per-request search pipeline
+was extracted out of `index.js`'s inline `app.post('/api/search', ...)` handler into
+`server/searchOrchestrator.js`'s `runSearchRequest({ abn, acn, companyName, tradingName,
+directors }, { send })` — `index.js`'s route handler is now just request validation +
+NDJSON headers + one call into this function. This was already flagged as WS4.1's job by
+`test-ws2-live-hardening.js`'s own doc comment (the courts_act manual-fallback branch
+"lives inline in index.js's route handler, which isn't yet extracted into a
+directly-callable function"); the extraction also means fault-injection tests (WS4.2) can
+call `runSearchRequest` directly with a fake `send` collector, no live HTTP server needed.
+
+`manifest.js` gained an `mvpScope: true/false` flag per entry — the 16 keys the source
+reliability-plan document scoped the MVP to (`abn`, `asic`, `asicDisqualified`,
+`asicInsolvency`, `atoDebt`, `courts_federal`, `courts_nsw`, `courts_act`, `paymentTimes`,
+`modernSlavery`, `fwo`, `nswFairTrading`, `actLicences`, `actDisciplinary`, `asicExtract`,
+`asicEnforceableUndertakings`) are `true`; the other 13 (QLD/VIC/WA/SA/TAS/NT court
+jurisdictions, `qbcc`, `vicBpc`, `vicVbaLicence`, `waBuildingEnergy`,
+`ntBuildingPractitioners`, `waLicenceRegister`, `tasLicenceRegister` — all built after the
+reliability plan document was drafted) are `false`. This flag, not a second hand-maintained
+Set, is now what decides which keys `runSearchRequest` routes through `runScraper()`'s
+timeout + circuit breaker; the other 13 stay on the pre-existing plain try/catch, unchanged
+— a deliberate scope decision (recorded when this activity was planned), not a coverage
+regression. `abn` was added to the breaker-wrapped set here, closing the gap WS1.7 above
+explicitly deferred to this cutover. The old `RUN_SCRAPER_KEYS` Set that had to be
+hand-kept in sync with `manifest.js` is gone.
+
+Verified: all 29 manifest keys have a matching invocation closure (scripted cross-check,
+zero missing/orphaned); `node --check` on all three touched/new files; the three existing
+WS0/WS2/WS3 regression tests (`test-ws0-pilot.js`, `test-ws2-live-hardening.js`,
+`test-ws3-director-discovery.js`) pass unmodified; and a live smoke run of
+`runSearchRequest` against the Universal Property Group fixture confirmed the mvp/non-mvp
+split runs concurrently with no uncaught exception, and that the newly-wrapped keys
+degrade to `completeness: 'unavailable'` on their manifest-declared timeout exactly as
+`asicDisqualified`/`asicInsolvency`/`atoDebt`/`fwo`/`nswFairTrading`/`actLicences`/
+`actDisciplinary`/`courts_federal`/`courts_act` all did in that run (10s/20s/45s per their
+bucket, matching `manifest.js`).
+
+That same smoke run surfaced two pre-existing, environment-specific issues — not
+regressions from this change, not fixed here: `qbcc` and `waLicenceRegister` (both
+non-mvp-scope, both CAPTCHA-adjacent, both already on the unwrapped plain try/catch path
+before and after this change) never reached a terminal state within a 55s window in this
+sandbox, most likely because no `CAPTCHA_API_KEY` is configured here; and `vicVbaLicence`
+threw a TLS certificate mismatch against `discover.data.vic.gov.au`
+(`sni-missing-or-domain-unknown.help.section.io` in the cert's altnames) that looks like
+this sandbox's own network egress path, not a real site-side break — worth a real-network
+re-check before reading either as a genuine incident.
+
+**Not yet done**: extending `mvpScope`/the breaker to the other 13 keys ("WS4.1b"); WS4.2
+(fault injection tests against the new `runSearchRequest` entry point), WS4.3 (blocked on
+WS0.5 — completeness states aren't visually distinct in the report UI yet, see
+`WS4_IMPLEMENTATION_PLAN.md`'s "Open dependency" section), WS4.4 (concurrency/load test),
+WS4.5 (runbook), WS4.6 (expansion proof, candidate already selected — see the plan doc).
+
 ### Phase 7c — asicExtract: historical directors + charges register
 
 `asicExtract.js` currently returns companies that *current* directors are associated with (phoenix detection). Missing:
