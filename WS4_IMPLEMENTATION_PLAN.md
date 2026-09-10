@@ -339,6 +339,18 @@ available levers:
 describe any tool (dashboard, reset endpoint) that doesn't actually exist yet — each gap is
 named as a gap, not glossed over.
 
+**Done (2026-09-10):** `RUNBOOK.md` written at the repo root — six sections (is the site up,
+is a specific check broken, resetting a breaker, forcing a re-ingest, the server won't
+respond at all, spotting drift), each literal numbered steps, plus an explicit "what's
+genuinely missing" section so it doesn't quietly imply a dashboard/reset endpoint/history
+exists. The re-ingest claim ("restarting forces an immediate re-pull") was verified against
+all four `*Refresh.js` files' actual code this session (WS0–3 audit), not assumed. The
+Railway restart step leads with `railway redeploy` (CLI) since that's the one this project's
+own history (`CLAUDE.md`'s incident entries) already shows working, with a dashboard-based
+fallback flagged as approximate since Railway's UI wording isn't something this session could
+verify directly. `CLAUDE.md`'s own "Checking scraper health" section trimmed to a brief
+technical pointer at this file, to avoid the same steps drifting out of sync in two places.
+
 ---
 
 ## 4.6 — Expansion proof
@@ -391,6 +403,6 @@ run; pass/fail against the ≤1-day, manifest-plus-one-file bar stated plainly e
 | 4.2 Fault injection | 4–5 dd | **Done (2026-09-10)** — caught and fixed a real process-crashing bug on its first run, see `CLAUDE.md`'s WS4.2 follow-up entry |
 | 4.3 Degradation UX review | 2 dd (+ founder time) | **Prep delivered (2026-09-10)** — [walkthrough published](https://claude.ai/code/artifact/00399edb-10f7-4015-81bc-f92e459f2f60), awaiting founder sign-off |
 | 4.4 Concurrency & load test | 2–3 dd | **Local pass done (2026-09-10)** — see `CLAUDE.md`'s WS4.4 entry; real-deploy re-run against staging with real credentials still needed for the signal this activity actually wants |
-| 4.5 Runbook | 2 dd | Not started — descoped to what exists (no 0.8 dashboard yet) |
+| 4.5 Runbook | 2 dd | **Done (2026-09-10)** — `RUNBOOK.md` at repo root, descoped to what exists (no 0.8 dashboard yet) |
 | 4.6 Expansion proof | 1 dd | Not started — candidate selected, not yet run |
 | **Total** | **14–18 dd** | |
