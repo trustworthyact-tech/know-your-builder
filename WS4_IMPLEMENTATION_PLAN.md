@@ -175,6 +175,15 @@ read clearly, does it alarm without cause" question.
 hasn't landed by the time this activity comes up, descope to the backend-only NDJSON check
 described there instead of a visual walkthrough, and revisit.
 
+**Prep delivered (2026-09-10):** WS0.5 landed, so the walkthrough is real UI, not a
+backend-only fallback. Published as an Artifact — [Coverage Signal Review](https://claude.ai/code/artifact/00399edb-10f7-4015-81bc-f92e459f2f60)
+— four exhibits (clean-but-incomplete, finding + incomplete coverage together, dual badges
+on one section, an unavailable check in context), each a real Puppeteer render of the actual
+`ReportSection`/`RiskSummaryPanel`/`CompletenessBadge` components against synthetic
+sessionStorage data (not mockups), with four specific yes/no questions for sign-off.
+**Status: awaiting founder review** — this activity is not "done" until that sign-off
+happens; Claude's role stops at prep, per the note below.
+
 **Founder-owned:** the actual sign-off that Stale/Partial/Unavailable read clearly to a
 homeowner and don't create false alarm. Not something to mark "done" without that explicit
 confirmation.
@@ -314,7 +323,7 @@ run; pass/fail against the ≤1-day, manifest-plus-one-file bar stated plainly e
 |---|---|---|
 | 4.1 Orchestrator cutover (16 MVP-scope keys) | 3–4 dd | **Done (2026-09-10)** — see `CLAUDE.md`'s WS4.1 follow-up entry for the execution record |
 | 4.2 Fault injection | 4–5 dd | **Done (2026-09-10)** — caught and fixed a real process-crashing bug on its first run, see `CLAUDE.md`'s WS4.2 follow-up entry |
-| 4.3 Degradation UX review | 2 dd (+ founder time) | Not started — blocked on WS0.5 (not in this plan) |
+| 4.3 Degradation UX review | 2 dd (+ founder time) | **Prep delivered (2026-09-10)** — [walkthrough published](https://claude.ai/code/artifact/00399edb-10f7-4015-81bc-f92e459f2f60), awaiting founder sign-off |
 | 4.4 Concurrency & load test | 2–3 dd | Not started — blocked on 4.1 |
 | 4.5 Runbook | 2 dd | Not started — descoped to what exists (no 0.8 dashboard yet) |
 | 4.6 Expansion proof | 1 dd | Not started — candidate selected, not yet run |
