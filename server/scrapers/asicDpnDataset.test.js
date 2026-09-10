@@ -4,6 +4,13 @@ const fs = require('fs');
 const { fetchDpnRows, parseCsv, parseCsvLine, DATASET_KEY } = require('./asicDpnDataset');
 const { replaceDatasetRecords, diskCachePath } = require('./datasetStore');
 
+// SAMPLE_CSV below is deliberately a 3-row illustrative fixture, well under the real
+// module's MIN_SANE_ROW_COUNT (100) sanity floor — every test in this file that isn't
+// specifically exercising that floor passes 0 here to opt out of it, since it's testing
+// unrelated fetch/fallback behavior, not the row-count guard itself (see the dedicated
+// "row-count sanity guard" tests below for that).
+const NO_ROW_FLOOR = 0;
+
 const SAMPLE_CSV =
   '﻿' +
   'REGISTER_NAME,BD_PER_NAME,BD_PER_TYPE,BD_PER_DOC_NUM,BD_PER_START_DT,BD_PER_END_DT,BD_PER_ADD_LOCAL,BD_PER_ADD_STATE,BD_PER_ADD_PCODE,BD_PER_ADD_COUNTRY,BD_PER_COMMENTS\n' +
@@ -73,7 +80,7 @@ test('fetchDpnRows — fresh download succeeds, ingests via datasetStore, stale:
         return { data: Buffer.from(SAMPLE_CSV, 'utf8') };
       },
     };
-    const result = await fetchDpnRows(fakeAxios);
+    const result = await fetchDpnRows(fakeAxios, NO_ROW_FLOOR);
     assert.equal(result.stale, false);
     assert.equal(result.rows.length, 3);
     assert.ok(fs.existsSync(diskCachePath(DATASET_KEY)), 'ingestion should leave a readable cached copy');
@@ -128,4 +135,43 @@ test('fetchDpnRows — resource_show succeeds but download fails and nothing ing
     },
   };
   await assert.rejects(() => fetchDpnRows(fakeAxios), /download failed/);
+});
+
+// -------------------------------------------------------------------
+// Row-count sanity guard (WS4 reliability-plan audit, 2026-09-10) — a parse that comes
+// back implausibly small (a source format change, not a genuine register size) must
+// never be promoted, and must never be handed back to the caller as if it were real
+// either — both would reproduce the historical Payment Times silent-column-shift bug,
+// here against the Disqualified Persons register.
+// -------------------------------------------------------------------
+
+test('fetchDpnRows — parse below the row-count floor falls back to the existing cache, does not overwrite it', async () => {
+  clearCache();
+  try {
+    await seedCache(); // 3 known-good rows already ingested
+    const fakeAxios = {
+      get: async (url) => {
+        if (url.includes('resource_show')) return { data: { result: { url: 'https://example.test/bd_per.csv' } } };
+        // Simulates a source format change: the "fresh" download parses to 1 row,
+        // below any real floor — but a genuine format break, not a network failure.
+        return { data: Buffer.from(SAMPLE_CSV.split('\n').slice(0, 2).join('\n'), 'utf8') };
+      },
+    };
+    const result = await fetchDpnRows(fakeAxios, 3);
+    assert.equal(result.stale, true, 'should fall back to the cache, not present the under-parsed rows as fresh');
+    assert.equal(result.rows.length, 3, 'the cache still holds the 3 known-good rows — nothing was overwritten');
+  } finally {
+    clearCache();
+  }
+});
+
+test('fetchDpnRows — parse below the row-count floor with no existing cache throws (never returns the bad rows)', async () => {
+  clearCache();
+  const fakeAxios = {
+    get: async (url) => {
+      if (url.includes('resource_show')) return { data: { result: { url: 'https://example.test/bd_per.csv' } } };
+      return { data: Buffer.from(SAMPLE_CSV.split('\n').slice(0, 2).join('\n'), 'utf8') };
+    },
+  };
+  await assert.rejects(() => fetchDpnRows(fakeAxios, 3), /parsed only \d+ row\(s\)/);
 });

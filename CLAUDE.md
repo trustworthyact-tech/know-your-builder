@@ -432,6 +432,108 @@ Added to `run-all.sh`.
 **Not yet done**: WS4.3, WS4.4, WS4.5, WS0.8, WS4.6 (unchanged from the list above — WS4.2
 is now the completed item).
 
+**Follow-up (2026-09-10, reliability plan audit): went back through WS0–WS3 against the
+actual code rather than trusting this log's own "done" markers, per a direct user
+request. Two real, fixable gaps found and fixed; the rest of the "not yet done" list above
+confirmed still accurate.**
+
+**Bug 1 — `manifest.js`'s `modernSlavery` entry had the wrong shape, and was actively
+enforcing it.** The entry claimed `bucket: 1, sourceType: 'bulk-dataset', timeoutMs:
+10_000` — but `modernSlavery.js` is, and always was, a plain live `axios`+`cheerio`
+scrape; bulk ingestion for this register was investigated and explicitly declined (see
+this same section's earlier "Modern Slavery bulk ingestion investigated and deferred").
+Since WS4.1 made `modernSlavery` `mvpScope: true`, this wrong metadata was live —
+enforcing a 10-second timeout (meant for a local dataset lookup) against a real HTTP
+fetch that should get the standard 20-second live-call budget like every other bucket-2
+entry. **Fixed**: corrected to `bucket: 2, sourceType: 'live-scrape', cadence: null,
+timeoutMs: 20_000`.
+
+**Bug 2 — 4 of 5 dataset refresh jobs had zero validate-before-promote protection**,
+meaning the exact historical Payment Times silent-column-shift bug (this file's own
+"Section 8.3 — Payment Times dropdown fixed" entry) was still fully reproducible against
+`asicDpnDataset.js` (**the Disqualified Persons Register**), `asicEnforceableUndertakingsDataset.js`,
+`actLicencesDataset.js` (both its licence and disciplinary datasets), and `vicBpcDataset.js`
+— only `paymentTimes.js`/`paymentTimesRefresh.js` had ever gotten this protection (WS1.3).
+Confirmed by reading each file: `replaceDatasetRecords()` (`datasetStore.js`) unconditionally
+writes whatever row count it's given, including zero, with no caller-side guard — and
+`vicBpcDataset.js` (which predates/bypasses `datasetStore.js` entirely, using its own disk
+cache) had the identical unconditional-write shape. A source-side markup/API change could
+silently wipe any of these five to empty, and — this is the part that matters — every future
+search would render that as a normal, confident "checked, found nothing" with no alarm
+anywhere. For the Disqualified Persons Register specifically, that's the same class of
+false-clean this whole reliability plan exists to prevent, just relocated from a live scrape
+to a cache-ingestion path.
+
+**Fixed**: each of the five now has its own row-count sanity floor (`asicDpnDataset.js`:
+100, `asicEnforceableUndertakingsDataset.js`: 50, `actLicencesDataset.js`: 5,000 for
+licences / 30 for disciplinary — the two Socrata datasets differ by two orders of
+magnitude (32,001 vs. 377 rows, per WS1.5/1.6's own live-confirmed counts), so they don't
+share one constant — `vicBpcDataset.js`: 100). A fetch landing below its floor is treated
+exactly like a fetch *failure*: not promoted (the existing good cache/rows stay live), a
+loud `console.error`, `recordIngestionFailure()` called where `datasetStore.js` backs the
+dataset (all but `vicBpcDataset.js`, which has no equivalent — flagged, not fixed, since
+migrating it onto `datasetStore.js` is a separate, larger piece of work), and — the part
+the original Payment Times fix didn't need to handle, since that one only gates the
+background refresh cycle — **the current request also falls back to the last known-good
+cached copy rather than receiving the bad under-parsed rows directly**, since these four
+modules (unlike `paymentTimes.js`) serve their `fetch*()` function directly to both the
+live search path and the refresh job. Every floor is an injectable parameter (`_minRows`,
+mirroring this codebase's established `_axios`/`_http` injectable-dependency convention)
+so real unit tests could exercise the guard without needing a 100+ or 5,000+-row fixture.
+
+Added regression tests for all five: new cases in `asicDpnDataset.test.js` (2),
+`asicEnforceableUndertakingsDataset.test.js` (2), `actLicencesDataset.test.js` (3, one per
+dataset plus the "independent floors" case) — each verifying both "falls back to cache
+without overwriting it" and "throws rather than returning bad data when no cache exists
+at all." `vicBpcDataset.js` had **no test file at all before this fix** (confirmed by
+search) — added `vicBpcDataset.test.js` from scratch (5 tests), which also required
+adding an injectable `_fetchAllPages` param (mirroring the same convention) so its
+Puppeteer-driven fetch is unit-testable without a real browser. All new tests wired into
+`npm test`'s script list in `server/package.json` (which didn't include
+`vicBpcDataset.test.js` before) and pass alongside the full existing suite (103/103).
+
+**A third, unrelated regression caught while re-running the full suite**: `npm test` (not
+just the shell-based `run-all.sh`/`test-ws*.js` files this session had been running) had
+one failing test — `manifest.test.js`'s "manifest keys match server/index.js searches
+array exactly" — because WS4.1 (earlier this session) removed `index.js`'s `searches`
+array entirely, moving invocation closures into `searchOrchestrator.js`'s `invocations`
+map. This is a real gap in WS4.1's own verification at the time (only the shell-style
+`test-ws*.js` files were run, not the project's actual `npm test`) — caught here, not at
+the time. Fixed: `manifest.test.js`'s extraction logic now reads
+`searchOrchestrator.js`'s `invocations` map (a different object shape — bare-identifier
+keys, not `{ key: '...' }` entries — needed its own regex) instead of the no-longer-
+existing `index.js` block. **Lesson for future sessions doing structural refactors in
+`server/`: run `npm test` from `server/`, not just `run-all.sh`/the individual
+`test-ws*.js` files — they cover different, non-overlapping test files.**
+
+**WS0/1/2/3 status re-confirmed by this audit, beyond the two bugs above**:
+- 0.1–0.4: confirmed correctly built (only the two bugs above were latent problems within
+  otherwise-correct code, not evidence 0.1–0.4 themselves are wrong).
+- 0.3 (ingestion DB): the Postgres + disk-fallback pattern in `datasetStore.js`/`db.js` is
+  correctly built and degrades gracefully; **not independently verified from this session
+  whether `DATABASE_URL` is actually set in the real Railway production environment** —
+  that needs a live check outside this sandbox, not a code read.
+- 0.5, 0.8: still not done, as already documented above (WS0.5 is scheduled next, per user
+  decision, before WS4.3 resumes).
+- 0.6: **still not the generic manifest-driven ingestion-runner the source plan specified**
+  — what exists after this fix is five separately-tuned row-count floors, proportionate to
+  closing the most acute version of the gap (a silent full-empty wipe), not the fuller
+  "row-count delta history + shape validation + not-an-error-page detection" the original
+  WS0.6 activity called for. Worth revisiting as its own activity if a source starts
+  failing in a way a flat floor doesn't catch (e.g. a shape change that still produces a
+  plausible-looking row count).
+- 0.7: still not manifest-driven (`run-all.sh` is a hand-maintained parallel list); the 6
+  legacy-test failures flagged in the "QBCC and VBA/BPC licence checks fixed" entry below
+  (`wa-be-licence`, `act-licence`, `tas-cbos-licence`, `asic-insolvency`, `modern-slavery`,
+  `fwo`) were not re-investigated in this pass — still open.
+- WS1 (ingestion): confirmed essentially complete (the gap was 0.6's missing validation
+  around it, now partly closed above, not the migrations themselves).
+- WS2 (live hardening): confirmed all 6 sub-activities (2.1–2.6) map exactly to the 9 keys
+  wrapped before this session — genuinely complete, independent of the WS4.2 crash bug
+  found in how that wrapping was used.
+- WS3 (directors): confirmed complete for its explicitly-stated NSW/ACT-only scope: no new
+  gaps found beyond what its own "Not yet done" list already says.
+
 ### Phase 7c — asicExtract: historical directors + charges register
 
 `asicExtract.js` currently returns companies that *current* directors are associated with (phoenix detection). Missing:

@@ -1,7 +1,18 @@
 'use strict';
 
 const axios = require('axios');
-const { replaceDatasetRecords, queryDataset } = require('./datasetStore');
+const { replaceDatasetRecords, queryDataset, recordIngestionFailure } = require('./datasetStore');
+
+// A minimum sane row count for this register — found during the WS4 reliability-plan
+// audit (2026-09-10): before this, a parse that silently produced 0 rows (a header/
+// format change on ASIC's end, the exact failure class that broke Payment Times'
+// Section 8.3 — see CLAUDE.md) would have been promoted straight into datasetStore,
+// silently wiping the Disqualified Persons cache to empty and making every future
+// search show a false "clean" with no alarm. The real register has run in the
+// thousands of active entries for years; 100 is a floor far below any plausible
+// legitimate value, chosen only to catch "parsed basically nothing," not to police
+// the register's actual size.
+const MIN_SANE_ROW_COUNT = 100;
 
 // Resolves to the current CSV via the CKAN Action API rather than predicting a
 // filename. Confirmed live (2026-08-19): the filename changes monthly only
@@ -107,8 +118,11 @@ async function readCachedRows() {
  *
  * _axios is injectable so tests can simulate API/download failures and stale
  * fallback without touching the network — same pattern as captcha.js's _http.
+ * _minRows is injectable so tests can exercise the row-count sanity guard (below)
+ * without needing a 100-row fixture, and so the guard's threshold isn't hardcoded
+ * into every call site.
  */
-async function doFetchDpnRows(_axios = axios) {
+async function doFetchDpnRows(_axios = axios, _minRows = MIN_SANE_ROW_COUNT) {
   let url;
   try {
     const { data } = await _axios.get(RESOURCE_SHOW_URL, { headers: HEADERS, timeout: 10_000 });
@@ -138,6 +152,20 @@ async function doFetchDpnRows(_axios = axios) {
   }
 
   const rows = parseCsv(buffer);
+
+  if (rows.length < _minRows) {
+    // Treat an implausibly small parse exactly like a fetch failure: don't promote it
+    // (the existing good cache stays live and queryable), record why, and fall back to
+    // returning the last known-good rows to *this* caller too — returning the freshly
+    // (under-)parsed rows here would present the same false "clean" result immediately,
+    // even though nothing got persisted.
+    console.error(`[asicDpnDataset] parsed only ${rows.length} row(s) from ${url} (expected ${_minRows}+) — refusing to promote, likely a source format change`);
+    await recordIngestionFailure(DATASET_KEY, `parsed only ${rows.length} row(s) from ${url}, below the ${_minRows} sanity floor`);
+    const cached = await readCachedRows();
+    if (cached) return cached;
+    throw new Error(`ASIC DPN: parsed only ${rows.length} row(s) and no prior cache to fall back to`);
+  }
+
   const fetchedAt = new Date();
   try {
     await replaceDatasetRecords(DATASET_KEY, rows.map((payload) => ({ payload })), { sourceUrl: url });
@@ -154,9 +182,9 @@ async function doFetchDpnRows(_axios = axios) {
 // austlii.js's pendingFetches).
 let inFlightFetch = null;
 
-async function fetchDpnRows(_axios = axios) {
+async function fetchDpnRows(_axios = axios, _minRows = MIN_SANE_ROW_COUNT) {
   if (inFlightFetch) return inFlightFetch;
-  inFlightFetch = doFetchDpnRows(_axios);
+  inFlightFetch = doFetchDpnRows(_axios, _minRows);
   try {
     return await inFlightFetch;
   } finally {
@@ -164,4 +192,4 @@ async function fetchDpnRows(_axios = axios) {
   }
 }
 
-module.exports = { fetchDpnRows, parseCsv, parseCsvLine, DATASET_KEY };
+module.exports = { fetchDpnRows, parseCsv, parseCsvLine, DATASET_KEY, MIN_SANE_ROW_COUNT };

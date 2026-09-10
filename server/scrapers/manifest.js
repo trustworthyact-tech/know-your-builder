@@ -44,7 +44,15 @@ const SCRAPERS = [
   { key: 'courts_act', label: 'ACT Courts & Tribunals', jurisdiction: 'act', bucket: 2, sourceType: 'live-fulltext-search-proxy', cadence: null, timeoutMs: 45_000, mvpScope: true },
   { key: 'courts_tas', label: 'TAS Courts & Tribunals', jurisdiction: 'tas', bucket: 3, sourceType: 'manual-link', cadence: null, timeoutMs: 10_000, mvpScope: false },
   { key: 'paymentTimes', label: 'Payment Times Reporting Register', jurisdiction: 'national', bucket: 1, sourceType: 'bulk-dataset', cadence: '8h', timeoutMs: 10_000, mvpScope: true },
-  { key: 'modernSlavery', label: 'Modern Slavery Statements Register', jurisdiction: 'national', bucket: 1, sourceType: 'bulk-dataset', cadence: '24h', timeoutMs: 10_000, mvpScope: true },
+  // bucket 2 / live-scrape / 20s, NOT bucket 1 — modernSlavery.js is a plain live axios+cheerio
+  // scrape (see CLAUDE.md's WS1.4 entry: bulk ingestion for this register was investigated and
+  // explicitly decided against — "modernSlavery.js stays exactly as it is — live per-query
+  // scrape, no caching"). This entry previously claimed bucket 1/bulk-dataset/10s, which doesn't
+  // match the real code — found during the WS4 reliability-plan audit (2026-09-10): with
+  // mvpScope:true routing this through runScraper(), the wrong 10s timeout (meant for a local
+  // dataset lookup) was being enforced against a real live HTTP fetch, which needs the
+  // live-call default of 20s like every other bucket-2 entry.
+  { key: 'modernSlavery', label: 'Modern Slavery Statements Register', jurisdiction: 'national', bucket: 2, sourceType: 'live-scrape', cadence: null, timeoutMs: 20_000, mvpScope: true },
   { key: 'qbcc', label: 'QBCC — Licence Register', jurisdiction: 'qld', bucket: 2, sourceType: 'live-api', cadence: null, timeoutMs: 20_000, mvpScope: false },
   { key: 'fwo', label: 'Fair Work Ombudsman — Enforcement Outcomes', jurisdiction: 'national', bucket: 2, sourceType: 'live-scrape', cadence: null, timeoutMs: 20_000, mvpScope: true },
   { key: 'vicBpc', label: 'VIC Building Authority — Disciplinary Register', jurisdiction: 'vic', bucket: 1, sourceType: 'bulk-dataset', cadence: '24h', timeoutMs: 10_000, mvpScope: false },

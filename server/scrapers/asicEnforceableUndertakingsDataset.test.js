@@ -64,7 +64,10 @@ test('fetchAsicEuRecords — fresh fetch succeeds, ingests via datasetStore, sta
   clearCache();
   try {
     const fakeAxios = { get: async () => ({ data: SAMPLE_HTML }) };
-    const result = await fetchAsicEuRecords(fakeAxios);
+    // SAMPLE_HTML is a 2-record illustrative fixture, well under the real module's
+    // MIN_SANE_ROW_COUNT (50) — pass 0 here to opt out of that guard, which is tested
+    // separately below.
+    const result = await fetchAsicEuRecords(fakeAxios, 0);
     assert.equal(result.stale, false);
     assert.equal(result.records.length, 2);
     assert.ok(fs.existsSync(diskCachePath(DATASET_KEY)));
@@ -90,4 +93,28 @@ test('fetchAsicEuRecords — live fetch fails and nothing has ever been ingested
   clearCache();
   const fakeAxios = { get: async () => { throw new Error('network down'); } };
   await assert.rejects(() => fetchAsicEuRecords(fakeAxios), /network down/);
+});
+
+// -------------------------------------------------------------------
+// Row-count sanity guard (WS4 reliability-plan audit, 2026-09-10) — mirrors
+// asicDpnDataset.js's guard and its tests; see that file for the full rationale.
+// -------------------------------------------------------------------
+
+test('fetchAsicEuRecords — parse below the row-count floor falls back to the existing cache, does not overwrite it', async () => {
+  clearCache();
+  try {
+    await seedCache(); // 2 known-good records already ingested
+    const fakeAxios = { get: async () => ({ data: '<table class="asic-table"><tbody></tbody></table>' }) };
+    const result = await fetchAsicEuRecords(fakeAxios, 1);
+    assert.equal(result.stale, true, 'should fall back to the cache, not present the under-parsed records as fresh');
+    assert.equal(result.records.length, 2, 'the cache still holds the 2 known-good records — nothing was overwritten');
+  } finally {
+    clearCache();
+  }
+});
+
+test('fetchAsicEuRecords — parse below the row-count floor with no existing cache throws (never returns the bad records)', async () => {
+  clearCache();
+  const fakeAxios = { get: async () => ({ data: '<table class="asic-table"><tbody></tbody></table>' }) };
+  await assert.rejects(() => fetchAsicEuRecords(fakeAxios, 1), /parsed only \d+ record\(s\)/);
 });

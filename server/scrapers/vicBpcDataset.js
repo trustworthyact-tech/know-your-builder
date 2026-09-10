@@ -34,6 +34,17 @@ const CACHE_DIR = (() => {
 })();
 const CACHE_PATH = path.join(CACHE_DIR, 'vba_bpc_disciplinary.json');
 
+// WS4 reliability-plan audit (2026-09-10) — same rationale as the identical guard in
+// asicDpnDataset.js/asicEnforceableUndertakingsDataset.js/actLicencesDataset.js: the
+// register holds ~943 records (per the comment above); 100 is a generous floor meant
+// only to catch "the API's response shape changed and this came back nearly empty," not
+// to police the register's actual size. This file predates/bypasses datasetStore.js
+// (its own bespoke disk cache, not the Postgres-backed store — a separate, pre-existing
+// architectural inconsistency not addressed in this pass), so there's no
+// recordIngestionFailure-equivalent to call here; a loud console.error is the closest
+// available signal until/unless this file is migrated onto datasetStore.js.
+const MIN_SANE_ROW_COUNT = 100;
+
 async function readCachedRecords() {
   try {
     const [buffer, stat] = await Promise.all([
@@ -93,15 +104,29 @@ async function fetchAllPagesViaBrowser() {
   }
 }
 
-async function doFetchVbaBpcRecords() {
+// _fetchAllPages is injectable (defaults to the real Puppeteer-driven
+// fetchAllPagesViaBrowser above) so the row-count sanity guard below is unit-testable
+// without a real browser — same pattern as this codebase's other _axios/_http-injectable
+// captcha-gated/live-fetch functions.
+async function doFetchVbaBpcRecords(_minRows = MIN_SANE_ROW_COUNT, _fetchAllPages = fetchAllPagesViaBrowser) {
   let records;
   try {
-    const result = await fetchAllPagesViaBrowser();
+    const result = await _fetchAllPages();
     records = result.records;
   } catch (err) {
     const cached = await readCachedRecords();
     if (cached) return cached;
     throw err;
+  }
+
+  if (records.length < _minRows) {
+    // Same "treat an implausibly small fetch like a failure" guard as the other three
+    // dataset modules — don't overwrite the cache, fall back to the last known-good copy
+    // for this caller too.
+    console.error(`[vicBpcDataset] fetched only ${records.length} record(s) (expected ${_minRows}+) — refusing to overwrite the cache, likely an API response shape change`);
+    const cached = await readCachedRecords();
+    if (cached) return cached;
+    throw new Error(`VIC BPC: fetched only ${records.length} record(s) and no prior cache to fall back to`);
   }
 
   try {
@@ -126,9 +151,9 @@ let inFlightFetch = null;
  * mtime) — callers should surface this to the user rather than presenting it as
  * fresh data. Throws only when the live fetch fails AND no cached copy exists.
  */
-async function fetchVbaBpcRecords() {
+async function fetchVbaBpcRecords(_minRows = MIN_SANE_ROW_COUNT, _fetchAllPages = fetchAllPagesViaBrowser) {
   if (inFlightFetch) return inFlightFetch;
-  inFlightFetch = doFetchVbaBpcRecords();
+  inFlightFetch = doFetchVbaBpcRecords(_minRows, _fetchAllPages);
   try {
     return await inFlightFetch;
   } finally {
@@ -136,4 +161,4 @@ async function fetchVbaBpcRecords() {
   }
 }
 
-module.exports = { fetchVbaBpcRecords, CACHE_PATH, REGISTER_PAGE_URL, API_URL };
+module.exports = { fetchVbaBpcRecords, CACHE_PATH, REGISTER_PAGE_URL, API_URL, MIN_SANE_ROW_COUNT };
