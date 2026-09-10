@@ -309,7 +309,7 @@ run; pass/fail against the ≤1-day, manifest-plus-one-file bar stated plainly e
 | Activity | Source estimate | Status |
 |---|---|---|
 | 4.1 Orchestrator cutover (16 MVP-scope keys) | 3–4 dd | **Done (2026-09-10)** — see `CLAUDE.md`'s WS4.1 follow-up entry for the execution record |
-| 4.2 Fault injection | 4–5 dd | Not started — unblocked now that `runSearchRequest` exists |
+| 4.2 Fault injection | 4–5 dd | **Done (2026-09-10)** — caught and fixed a real process-crashing bug on its first run, see `CLAUDE.md`'s WS4.2 follow-up entry |
 | 4.3 Degradation UX review | 2 dd (+ founder time) | Not started — blocked on WS0.5 (not in this plan) |
 | 4.4 Concurrency & load test | 2–3 dd | Not started — blocked on 4.1 |
 | 4.5 Runbook | 2 dd | Not started — descoped to what exists (no 0.8 dashboard yet) |

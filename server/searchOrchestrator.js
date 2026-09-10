@@ -42,9 +42,21 @@ const { searchAsicEnforceableUndertakings } = require('./scrapers/asicEnforceabl
  * resolves, exactly as the inline handler did before this extraction.
  */
 async function runSearchRequest({ abn, acn, companyName, tradingName, directors }, { send }) {
-  // Shared promises so scrapers can reuse results without duplicate HTTP calls
+  // Shared promises so scrapers can reuse results without duplicate HTTP calls. Both fire
+  // eagerly and unconditionally, before either key's circuit-breaker state is checked —
+  // when a breaker is open, runScraper() returns early and never calls invocations.abn()/
+  // invocations.asic() (never awaits these), so nothing would otherwise ever attach a
+  // rejection handler to them. Found live by WS4.2's fault-injection test: forcing asic's
+  // breaker open and running a real request crashed the whole Node process on the
+  // resulting unhandled rejection — a real, pre-existing bug (asic was already
+  // runScraper-wrapped before WS4.1's cutover), not something this refactor introduced.
+  // The no-op .catch() below only registers an additional listener — it doesn't change
+  // what `await abnPromise`/`await asicPromise` resolves to for runScraper's own try/catch
+  // elsewhere, since every .then/.catch/await attaches independently to the same promise.
   const abnPromise = searchABN(abn, companyName, acn);
+  abnPromise.catch(() => {});
   const asicPromise = searchASIC(companyName, abn, acn, process.env.CAPTCHA_API_KEY);
+  asicPromise.catch(() => {});
 
   // WS3 (reliability plan) — director discovery via NSW/ACT's own licence registers, a free
   // substitute for ASIC's own officer data (its DSP application path is paused until 2027 —

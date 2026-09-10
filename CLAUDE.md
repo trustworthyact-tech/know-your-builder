@@ -382,15 +382,55 @@ no persisted history, no UI — a stand-in for WS0.8, not WS0.8 itself. Covered 
 `server/tests/test-admin-scraper-health.js` (6 pilots, pure function, no network — added to
 `run-all.sh`).
 
-**Not yet done**: extending `mvpScope`/the breaker to the other 13 keys ("WS4.1b"); WS4.2
-(fault injection tests against the
-new `runSearchRequest` entry point), WS4.3 (blocked on WS0.5 — completeness states aren't
-visually distinct in the report UI yet, see `WS4_IMPLEMENTATION_PLAN.md`'s "Open
-dependency" section), WS4.4 (concurrency/load test), WS4.5 (the *real* runbook — this
-stopgap's usage notes live in CLAUDE.md for now, a proper `RUNBOOK.md` is still open),
-WS0.8 (the real dashboard — persisted history, 7-day success rate, an actual UI, not raw
-JSON behind a curl command), WS4.6 (expansion proof, candidate already selected — see the
-plan doc).
+**Not yet done**: extending `mvpScope`/the breaker to the other 13 keys ("WS4.1b"); WS4.3
+(blocked on WS0.5 — completeness states aren't visually distinct in the report UI yet, see
+`WS4_IMPLEMENTATION_PLAN.md`'s "Open dependency" section), WS4.4 (concurrency/load test),
+WS4.5 (the *real* runbook — this stopgap's usage notes live in CLAUDE.md for now, a proper
+`RUNBOOK.md` is still open), WS0.8 (the real dashboard — persisted history, 7-day success
+rate, an actual UI, not raw JSON behind a curl command), WS4.6 (expansion proof, candidate
+already selected — see the plan doc).
+
+**Follow-up (2026-09-10, reliability plan WS4.2): fault injection landed, and it caught a
+real, pre-existing process-crashing bug on its first run.** New
+`server/tests/test-ws4-fault-injection.js`, run against the real `runSearchRequest()` entry
+point (not individual scrapers in isolation — those are already covered elsewhere).
+Section A forces every one of the 16 `mvpScope` keys' circuit breakers open before calling
+`runSearchRequest`, so `runScraper()`'s `isOpen()` check short-circuits before any real
+fetch — fast (~3s) and network-independent — then asserts the one invariant this whole
+reliability plan exists to guarantee: no key ever reports `completeness: 'complete'` or a
+"done" status while its circuit is open (49 assertions, all passing), plus a dedicated
+check that `courts_act` specifically degrades to `buildManualFallback('act')` (both the
+courts.act.gov.au and ACAT links present) rather than the generic message. Section B runs
+the real pipeline once, live, against a fictitious entity, bounded to a 50s window, and
+treats its outcome as informational (`warn`, not `fail`) rather than a hard assertion — see
+the file's own header for why a live-network section shouldn't fail the suite over
+sandbox/site flakiness unrelated to the code.
+
+**The crash, found on Section A's very first run**: `searchOrchestrator.js` creates
+`abnPromise`/`asicPromise` eagerly and unconditionally at the top of `runSearchRequest`,
+before either key's breaker state is checked. When a breaker is open, `runScraper()`
+returns early and never calls `invocations.abn()`/`invocations.asic()` — meaning nothing
+ever `await`s or attaches a `.catch()` to that already-in-flight promise. When it later
+rejected (a real `ASIC Connect search failed and no fallback data available` error, live,
+in this sandbox with no `CAPTCHA_API_KEY` configured), Node treated it as an unhandled
+rejection and **crashed the entire process**. This is not something WS4.1's extraction
+introduced — `asic` was already one of the 9 keys routed through `runScraper()` before
+WS4.1 (see the WS2 entries above), so this exact crash was already reachable in production
+any time ASIC Connect's circuit tripped from real failures, which per this file's own
+extensive ASIC-unreliability history is plausible. It was simply never triggered by a real
+request before now, or was triggered and looked like an unrelated process restart.
+
+**Fixed**: `abnPromise.catch(() => {})` / `asicPromise.catch(() => {})` — a no-op listener
+attached immediately alongside the original promise. This does not change what
+`invocations.abn()`/`invocations.asic()` resolve/reject to for `runScraper()`'s own
+try/catch (every `.then`/`.catch`/`await` attaches independently to the same promise); it
+only guarantees at least one handler exists so Node never treats the rejection as
+unhandled. Re-ran the full Section A matrix (all 16 keys forced open simultaneously) and
+the existing WS0/WS2/WS3/admin-health regression tests after the fix — all pass, no crash.
+Added to `run-all.sh`.
+
+**Not yet done**: WS4.3, WS4.4, WS4.5, WS0.8, WS4.6 (unchanged from the list above — WS4.2
+is now the completed item).
 
 ### Phase 7c — asicExtract: historical directors + charges register
 

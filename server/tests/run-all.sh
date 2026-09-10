@@ -85,6 +85,10 @@ run_test "ws3-director-discovery" "server/tests/test-ws3-director-discovery.js" 
 run_test "asic-director-fallback" "server/tests/test-asic-director-fallback.js" &
 # Scraper-health stopgap (reliability plan) — GET /api/admin/scraper-health, the stopgap dashboard read.
 run_test "admin-scraper-health"   "server/tests/test-admin-scraper-health.js" &
+# WS4.2 (reliability plan) — end-to-end + fault injection against the real runSearchRequest()
+# entry point. Section B waits up to ~50s (live network, informational) so this is the
+# slowest test in the suite — still safe to run alongside everything else here.
+run_test "ws4-fault-injection"    "server/tests/test-ws4-fault-injection.js" &
 
 wait
 echo ""
