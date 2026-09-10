@@ -10,6 +10,8 @@ const rateLimit = require('express-rate-limit');
 const { searchByName } = require('./scrapers/abn');
 const { getDecisionSignedUrl } = require('./scrapers/qbcc');
 const { runSearchRequest } = require('./searchOrchestrator');
+const { SCRAPERS } = require('./scrapers/manifest');
+const scraperHealth = require('./scrapers/scraperHealth');
 const { startPaymentTimesRefresh } = require('./scrapers/paymentTimesRefresh');
 const { startAsicDpnDatasetRefresh } = require('./scrapers/asicDpnDatasetRefresh');
 const { startVicBpcDatasetRefresh } = require('./scrapers/vicBpcDatasetRefresh');
@@ -69,6 +71,26 @@ function validateSearchFields({ abn, acn, companyName, tradingName, directors })
 }
 
 app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
+
+// Scraper-health stopgap (reliability plan) — the real WS0.8 dashboard (persisted history, 7-day
+// success rate, UI) isn't built yet; this is a minimal read of the in-memory circuit
+// breaker state (server/scrapers/scraperHealth.js) so the founders have *some* visibility
+// today. Fails closed: with no ADMIN_HEALTH_KEY set, the endpoint refuses to serve rather
+// than being silently open. Not a general admin auth system — just enough gate that this
+// isn't public. See WS4_IMPLEMENTATION_PLAN.md's 4.5 (runbook) for how to use it.
+app.get('/api/admin/scraper-health', (req, res) => {
+  const configuredKey = process.env.ADMIN_HEALTH_KEY;
+  if (!configuredKey) {
+    return res.status(503).json({
+      error: 'ADMIN_HEALTH_KEY is not set in server/.env — this endpoint is disabled until it is.',
+    });
+  }
+  if (req.get('x-admin-key') !== configuredKey) {
+    return res.status(401).json({ error: 'Missing or incorrect x-admin-key header.' });
+  }
+
+  res.json(scraperHealth.buildHealthReport(SCRAPERS));
+});
 
 // Redirects to a freshly-signed URL for a QBCC adjudication decision PDF.
 // The signed URL itself expires 120s after issue, so it can't be stored in a

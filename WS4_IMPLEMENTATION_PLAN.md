@@ -222,6 +222,15 @@ var, not code) with the measurement that justified it recorded here or in `CLAUD
 dashboard) is not built yet either — there is currently no UI to "hand off." This activity is
 scoped down accordingly to what actually exists today.
 
+**Update (2026-09-10):** a minimal stopgap now exists ahead of this activity —
+`GET /api/admin/scraper-health` (auth via `x-admin-key` header / `ADMIN_HEALTH_KEY` env var),
+backed by `scraperHealth.js`'s new `buildHealthReport()`. It's raw JSON behind a `curl`
+command, not a UI, and has no persisted history (in-memory, resets on restart) — see
+`CLAUDE.md`'s "Checking scraper health" section for the literal usage steps. This activity
+(4.5) should still happen for the real thing (a page, not JSON) and for WS0.8's persisted
+7-day success rate — the stopgap exists only because "how do we check if this is working"
+came up before 4.5 was scheduled.
+
 Given this user's own stored preference for founder-facing docs (**always literal,
 click-by-click instructions, never high-level advice** — see `feedback_stepbystep_wp_elementor`
 in memory), write `RUNBOOK.md` at the repo root in that style, covering only real, currently-

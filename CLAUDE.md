@@ -24,6 +24,34 @@ cd web && npx tsc --noEmit  # web
 
 No test suite or linter configured.
 
+## Checking scraper health (stopgap, reliability plan)
+
+There is **no visual dashboard yet** (that's WS0.8, not built — see `WS4_IMPLEMENTATION_PLAN.md`).
+Until it exists, this is the only way to check whether the 16 MVP-scope scrapers (the ones
+routed through the circuit breaker — see `mvpScope` in `server/scrapers/manifest.js`) are
+healthy or tripped:
+
+1. In `server/.env`, add a line: `ADMIN_HEALTH_KEY=` followed by any password-like string you
+   make up (e.g. `ADMIN_HEALTH_KEY=kyb-health-2026`). Restart the server (`cd server && node
+   index.js`) after adding it — env vars are only read at startup.
+2. In a browser or with `curl`, open:
+   `http://localhost:3001/api/admin/scraper-health` — on Railway, use the production URL
+   instead of `localhost:3001`.
+3. You'll get a permission error unless you send the key as a header. From a terminal:
+   `curl -H "x-admin-key: kyb-health-2026" http://localhost:3001/api/admin/scraper-health`
+   (swap in whatever value you set in step 1). A browser can't easily send a custom header, so
+   `curl` (or a REST client like Postman/Insomnia) is the practical way to check this today.
+4. The response lists all 29 scrapers. Each one has a `status`: `"healthy"` (working normally),
+   `"degraded"` (some recent failures, not yet tripped), `"open"` (circuit breaker has tripped —
+   this scraper is currently being skipped and shown as "Temporarily unavailable" to users), or
+   `"no-data"` (hasn't run since the server last restarted — this is normal right after a
+   restart, not a problem by itself). Only the 16 `mvpScope: true` rows ever show anything but
+   `"no-data"` — the other 13 aren't wired into this yet (see `WS4_IMPLEMENTATION_PLAN.md`).
+
+This state is **in-memory only and resets on every restart** — it is not a history, just "what
+happened since the process last started." The real WS0.8 dashboard (persisted history, 7-day
+success rate, an actual page instead of raw JSON) is still future work.
+
 ## Architecture
 
 ```
@@ -341,11 +369,28 @@ threw a TLS certificate mismatch against `discover.data.vic.gov.au`
 this sandbox's own network egress path, not a real site-side break — worth a real-network
 re-check before reading either as a genuine incident.
 
+**Follow-up (2026-09-10, same day): minimal scraper-health stopgap added, since WS0.8's
+real dashboard doesn't exist and the user asked how to actually check whether any of this
+is working in production.** `scraperHealth.js` gained timestamp tracking
+(`lastSuccessAt`/`lastFailureAt`/`lastOpenedAt`, previously untracked) and a pure
+`buildHealthReport(scrapers)` function; `index.js` gained `GET /api/admin/scraper-health`,
+gated behind an `x-admin-key` header checked against a new `ADMIN_HEALTH_KEY` env var
+(fails closed — 503 if that env var isn't set, not silently open). See this file's new
+"Checking scraper health" section (under "Type checking") for the literal steps to use it.
+Deliberately thin: reads the same in-memory `Map` the breaker already keeps, no new store,
+no persisted history, no UI — a stand-in for WS0.8, not WS0.8 itself. Covered by
+`server/tests/test-admin-scraper-health.js` (6 pilots, pure function, no network — added to
+`run-all.sh`).
+
 **Not yet done**: extending `mvpScope`/the breaker to the other 13 keys ("WS4.1b"); WS4.2
-(fault injection tests against the new `runSearchRequest` entry point), WS4.3 (blocked on
-WS0.5 — completeness states aren't visually distinct in the report UI yet, see
-`WS4_IMPLEMENTATION_PLAN.md`'s "Open dependency" section), WS4.4 (concurrency/load test),
-WS4.5 (runbook), WS4.6 (expansion proof, candidate already selected — see the plan doc).
+(fault injection tests against the
+new `runSearchRequest` entry point), WS4.3 (blocked on WS0.5 — completeness states aren't
+visually distinct in the report UI yet, see `WS4_IMPLEMENTATION_PLAN.md`'s "Open
+dependency" section), WS4.4 (concurrency/load test), WS4.5 (the *real* runbook — this
+stopgap's usage notes live in CLAUDE.md for now, a proper `RUNBOOK.md` is still open),
+WS0.8 (the real dashboard — persisted history, 7-day success rate, an actual UI, not raw
+JSON behind a curl command), WS4.6 (expansion proof, candidate already selected — see the
+plan doc).
 
 ### Phase 7c — asicExtract: historical directors + charges register
 

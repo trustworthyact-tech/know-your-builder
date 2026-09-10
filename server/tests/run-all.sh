@@ -83,6 +83,8 @@ run_test "ws2-live-hardening"   "server/tests/test-ws2-live-hardening.js" &
 # WS3 (reliability plan) — director discovery via NSW/ACT's own licence registers.
 run_test "ws3-director-discovery" "server/tests/test-ws3-director-discovery.js" &
 run_test "asic-director-fallback" "server/tests/test-asic-director-fallback.js" &
+# Scraper-health stopgap (reliability plan) — GET /api/admin/scraper-health, the stopgap dashboard read.
+run_test "admin-scraper-health"   "server/tests/test-admin-scraper-health.js" &
 
 wait
 echo ""
