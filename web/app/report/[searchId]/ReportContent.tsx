@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { BuilderInput, SearchResult, ResultItem, SearchStatus, RiskGroupResult } from '@/src/types';
 import { ReportSection } from '@/components/ReportSection';
 import { RiskBadge, RiskLevel } from '@/components/RiskBadge';
+import { worstCompleteness } from '@/components/CompletenessBadge';
 import { RiskSummaryPanel } from '@/components/RiskSummaryPanel';
 import { ProjectTimeline } from '@/components/ProjectTimeline';
 import { riskGrouper } from '@/lib/riskGrouper';
@@ -423,6 +424,8 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
     category: 'license',
     searchUrl: qbcc?.searchUrl,
     results: [...(qbcc?.licenceResults ?? []), ...qbccEnforcementItems],
+    completeness: qbcc?.completeness,
+    asOf: qbcc?.asOf,
     summary:
       (qbcc?.licenceResults?.length ?? 0) > 0 || qbccEnforcementItems.length > 0
         ? `${qbcc?.licenceResults?.length ?? 0} QBCC licence record(s) and ${qbccEnforcementItems.length} enforcement outcome(s) found`
@@ -437,6 +440,8 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
     jurisdiction: 'QLD',
     category: 'payment',
     searchUrl: qbcc?.adjudicationSearchUrl,
+    completeness: qbcc?.completeness,
+    asOf: qbcc?.asOf,
     summary:
       adjItems.length > 0
         ? `${adjItems.length} adjudication decision(s) found`
@@ -452,6 +457,10 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
     status: courtResults.some((r) => r.status === 'done') ? 'done' : 'error',
     source: 'NSW Caselaw and other official court sources',
     searchUrl: results.find((r) => r.key === 'courts_nsw')?.searchUrl,
+    // Aggregated across every courts_* jurisdiction — the worst completeness among them
+    // (e.g. courts_act's circuit open while courts_nsw succeeds) so this synthetic
+    // rollup can't silently read as fully-checked when part of it wasn't.
+    completeness: worstCompleteness(courtResults.map((r) => r.completeness)) ?? 'complete',
     summary:
       courtHits > 0
         ? `${courtHits} decision(s) found across ${courtJurisdictionsFound} jurisdiction(s)`
@@ -466,6 +475,8 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
     jurisdiction: 'Federal',
     category: 'payment',
     searchUrl: fwo?.searchUrl,
+    completeness: fwo?.completeness,
+    asOf: fwo?.asOf,
     summary: fwo?.summary ?? 'No Fair Work Ombudsman enforcement outcomes found',
   };
 
@@ -478,6 +489,8 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
     category: 'regulatory',
     searchUrl: vicBpc?.searchUrl,
     results: vicBpc?.results ?? [],
+    completeness: vicBpc?.completeness,
+    asOf: vicBpc?.asOf,
     summary: vicBpc?.summary ?? 'No VBA disciplinary proceedings found',
   };
 
@@ -490,6 +503,8 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
     category: 'license',
     searchUrl: vicVbaLicence?.searchUrl,
     results: vicVbaLicence?.results ?? [],
+    completeness: vicVbaLicence?.completeness,
+    asOf: vicVbaLicence?.asOf,
     summary: vicVbaLicence?.summary ?? 'No VBA licence records found for this entity',
   };
 
@@ -502,6 +517,8 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
     category: 'regulatory',
     searchUrl: waBuildingEnergy?.searchUrl,
     results: waBuildingEnergy?.results ?? [],
+    completeness: waBuildingEnergy?.completeness,
+    asOf: waBuildingEnergy?.asOf,
     summary: waBuildingEnergy?.summary ?? 'No WA Building and Energy enforcement actions found',
   };
 
@@ -514,6 +531,8 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
     category: 'license',
     searchUrl: nswFairTrading?.searchUrl,
     results: nswFairTrading?.results ?? [],
+    completeness: nswFairTrading?.completeness,
+    asOf: nswFairTrading?.asOf,
     summary: nswFairTrading?.summary ?? 'No NSW contractor licence records found',
   };
 
@@ -526,6 +545,8 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
     category: 'license',
     searchUrl: ntBuildingPractitioners?.searchUrl,
     results: ntBuildingPractitioners?.results ?? [],
+    completeness: ntBuildingPractitioners?.completeness,
+    asOf: ntBuildingPractitioners?.asOf,
     summary: ntBuildingPractitioners?.summary ?? 'No NT building practitioner licence records found',
   };
 
@@ -538,6 +559,8 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
     category: 'license',
     searchUrl: actLicences?.searchUrl,
     results: actLicences?.results ?? [],
+    completeness: actLicences?.completeness,
+    asOf: actLicences?.asOf,
     summary: actLicences?.summary ?? 'No ACT builder licence records found',
   };
 
@@ -550,6 +573,8 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
     category: 'regulatory',
     searchUrl: actDisciplinary?.searchUrl,
     results: actDisciplinary?.results ?? [],
+    completeness: actDisciplinary?.completeness,
+    asOf: actDisciplinary?.asOf,
     summary: actDisciplinary?.summary ?? 'No ACT disciplinary actions found',
   };
 
@@ -562,6 +587,8 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
     category: 'license',
     searchUrl: waLicenceRegister?.searchUrl,
     results: waLicenceRegister?.results ?? [],
+    completeness: waLicenceRegister?.completeness,
+    asOf: waLicenceRegister?.asOf,
     summary: waLicenceRegister?.summary ?? 'No WA building licence records found',
   };
 
@@ -574,6 +601,8 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
     category: 'license',
     searchUrl: tasLicenceRegister?.searchUrl,
     results: tasLicenceRegister?.results ?? [],
+    completeness: tasLicenceRegister?.completeness,
+    asOf: tasLicenceRegister?.asOf,
     summary: tasLicenceRegister?.summary ?? 'No TAS building licence records found',
   };
 
@@ -587,6 +616,8 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
         jurisdiction: 'Federal',
         category: 'identity',
         searchUrl: asicExtract.searchUrl,
+        completeness: asicExtract.completeness,
+        asOf: asicExtract.asOf,
         summary: asicExtract.summary,
       }
     : null;
@@ -711,7 +742,7 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
         </div>
 
         {/* Risk Summary panel */}
-        <RiskSummaryPanel groups={riskGroups} />
+        <RiskSummaryPanel groups={riskGroups} searchResults={results ?? []} />
 
         {/* 8.1 Identity & Corporate Structure */}
         <ReportSection

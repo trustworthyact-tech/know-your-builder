@@ -1,9 +1,23 @@
 'use client';
 
-import { RiskGroupResult } from '@/src/types';
+import { RiskGroupResult, SearchResult } from '@/src/types';
 
 interface Props {
   groups: RiskGroupResult[];
+  searchResults: SearchResult[];
+}
+
+// WS0.5 (reliability plan) — this panel's "No significant findings" banner is the single
+// most prominent, first-read element of the report, and the one place the plan's own
+// framing ("a falsely-clean report is worse than an honest 'could not check'") matters
+// most: a report with several unavailable/partial checks and zero triggers would
+// otherwise show the exact same confident green checkmark as a report that was genuinely
+// fully verified. This computes an honest count so that distinction is visible here, not
+// just on the individual section badges further down the page.
+function countIncomplete(searchResults: SearchResult[]): number {
+  return searchResults.filter(
+    (sr) => sr.completeness === 'partial' || sr.completeness === 'stale' || sr.completeness === 'unavailable'
+  ).length;
 }
 
 const SEVERITY_CONFIG = {
@@ -21,7 +35,9 @@ const SEVERITY_CONFIG = {
   },
 } as const;
 
-export function RiskSummaryPanel({ groups }: Props) {
+export function RiskSummaryPanel({ groups, searchResults }: Props) {
+  const incompleteCount = countIncomplete(searchResults);
+
   if (groups.length === 0) {
     return (
       <div className="bg-surface rounded-2xl border border-border shadow-sm p-5 mb-6">
@@ -35,6 +51,16 @@ export function RiskSummaryPanel({ groups }: Props) {
             No significant findings — automated checks returned no material risk signals.
           </p>
         </div>
+        {incompleteCount > 0 && (
+          <div className="flex items-center gap-3 bg-info-bg rounded-xl px-4 py-3 border border-info/30 mt-3">
+            <span className="text-info font-bold text-lg shrink-0" aria-hidden="true">◐</span>
+            <p className="text-sm text-info">
+              {incompleteCount} check{incompleteCount !== 1 ? 's' : ''} could not be fully completed — this is
+              not confirmation those areas are clear, only that nothing was found in what could be checked. See
+              the coverage badges in the sections below for which ones.
+            </p>
+          </div>
+        )}
         <p className="text-xs text-text-muted mt-3 leading-relaxed">
           Review the sections below and the additional databases listed in section 8.6 before making any final decision.
         </p>
@@ -51,6 +77,16 @@ export function RiskSummaryPanel({ groups }: Props) {
           {groups.length} risk area{groups.length !== 1 ? 's' : ''} flagged
         </span>
       </div>
+
+      {incompleteCount > 0 && (
+        <div className="flex items-center gap-3 bg-info-bg rounded-xl px-4 py-3 border border-info/30 mb-4">
+          <span className="text-info font-bold text-lg shrink-0" aria-hidden="true">◐</span>
+          <p className="text-xs text-info">
+            {incompleteCount} other check{incompleteCount !== 1 ? 's' : ''} could not be fully completed —
+            see the coverage badges in the sections below for which ones.
+          </p>
+        </div>
+      )}
 
       <div className="space-y-3">
         {groups.map((group) => {

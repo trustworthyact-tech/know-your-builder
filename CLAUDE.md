@@ -534,6 +534,73 @@ existing `index.js` block. **Lesson for future sessions doing structural refacto
 - WS3 (directors): confirmed complete for its explicitly-stated NSW/ACT-only scope: no new
   gaps found beyond what its own "Not yet done" list already says.
 
+### WS0.5 — completeness states landed in the report UI (2026-09-10)
+
+Per the source reliability-plan document's own framing, this was called "the highest-value
+trust fix in the plan" and had been passed over three sessions in a row (see the WS4.2
+audit entry above) in favour of active correctness bugs. Landed as its own pass, unblocking
+WS4.3.
+
+**New `web/components/CompletenessBadge.tsx`** — a small pill badge (`partial` / `stale` /
+`unavailable`), deliberately separate from `RiskBadge`'s own `unavailable` level rather than
+overloading it: risk severity and check completeness are orthogonal (a section can carry a
+confirmed significant finding from the checks that *did* run while a different check in that
+same section is only partially covered — collapsing both into one badge would lose whichever
+one didn't "win"). Exports `worstCompleteness()`, a small precedence helper
+(`unavailable > stale > partial`, missing/undefined treated as `complete` — matches
+`validateResult.js`'s own default) reused in three places below.
+
+**`ReportSection.tsx`** (the one shared component every section renders through) now:
+computes the worst completeness across its `searchResults` and shows a
+`<CompletenessBadge>` next to `RiskBadge` — suppressed when `riskLevel` is already
+`'unavailable'`, since that already means "every check in this section failed" and a second
+badge saying much the same thing would be redundant; and colors each individual summary
+line (the existing `summaryTexts` block) by *its own* source result's completeness, with a
+"Cached data as of [date]" caption appended for `stale` results carrying `asOf`. Because
+this lives in the one shared component, every section that passes real `searchResults`
+benefited immediately with no per-call-site changes needed.
+
+**`RiskSummaryPanel.tsx`** (the first thing a reader sees) gained a `searchResults` prop and
+now shows an explicit caveat — "N check(s) could not be fully completed — this is not
+confirmation those areas are clear" — in both its "no findings" and "findings" states, when
+any result is non-complete. This is the single highest-value spot for this fix: it's exactly
+where the plan's own "a falsely-clean report is worse than an honest 'could not check'"
+concern is most acute, since it's the most prominent, first-read element of the report.
+
+**A real, systemic bug found and fixed while wiring this up, via an actual rendered-output
+check, not just `tsc --noEmit`**: 13 of the report's per-scraper sections
+(licensing/financial/enforcement — everything except 8.1) build a *synthetic* `SearchResult`
+object for their `ReportSection` call (`licenceSearch`, `nswFairTradingSearch`,
+`vicBpcSearch`, `courtSearch`, etc. — a long-standing pattern, e.g. the QBCC-split
+convention documented above) by hand-listing a subset of fields (`key`, `label`, `status`,
+`source`, `results`, `summary`, …). None of them carried `completeness`/`asOf` through from
+their underlying real result — meaning the new badge/summary work above would have silently
+never fired for any of those 13 sections, only the raw-object section (8.1). Confirmed via a
+Puppeteer script driving a real `next dev` server against `/report/preview` with synthetic
+`sessionStorage` data spanning all four completeness states (`server/scrapers/manifest.js`'s
+real 29 keys, `puppeteer` already a `web/node_modules` dependency) — screenshotted before and
+after; the "before" shot showed section 8.2 rendering a plain "✓ Clear" badge with no
+completeness signal at all despite a `partial` NSW Fair Trading result inside it. Fixed by
+adding `completeness`/`asOf` to all 13 synthetic objects, each pulled from its real
+underlying result (`courtSearch`, which aggregates every `courts_*` jurisdiction into one
+synthetic entry, uses `worstCompleteness()` across all of them, so e.g. `courts_act`'s
+circuit being open is reflected even though `courts_nsw`/`courts_federal` succeeded).
+Re-verified with the same screenshot script — badges and cached-as-of captions now appear
+correctly in sections 8.2, 8.3, and 8.4.
+
+**Deliberately not done**: `riskGrouper.ts` itself was left unchanged. Its job is computing
+risk *findings* from results, and correctly has no opinion on completeness today — folding
+"couldn't check" into a risk-trigger function would conflate two different concerns. The
+`isAllErrored`/`deriveRiskLevel` baseline logic in `ReportContent.tsx` (which decides
+`RiskBadge`'s existing `'unavailable'` level) was also left unchanged — it already correctly
+handles the "every check in this section failed" case; extending it to weight
+partial/stale would only duplicate what the new, additive `CompletenessBadge` now covers
+without touching that logic's existing, working precedence.
+
+Verified: `npx tsc --noEmit` clean; visual check via the Puppeteer script above (not
+committed — one-off, deleted after use) against all 29 real manifest keys with a spread of
+completeness states.
+
 ### Phase 7c — asicExtract: historical directors + charges register
 
 `asicExtract.js` currently returns companies that *current* directors are associated with (phoenix detection). Missing:

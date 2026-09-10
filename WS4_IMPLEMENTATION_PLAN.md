@@ -35,20 +35,24 @@ re-litigate them:
    already shipped (there's nothing "out of scope" left among the 16 in-scope keys to
    re-enable). Candidate chosen below.
 
-## Open dependency this plan does **not** resolve: WS0.5
+## Open dependency this plan does **not** resolve: WS0.5 — RESOLVED 2026-09-10
 
-Activity 4.3 ("degradation UX review — confirm Stale / Partial / Unavailable read clearly")
-assumes those states are visibly distinct in the report UI. They are not, yet:
-`web/src/types/index.ts:27` marks `completeness` as "additive... not yet consumed by"
-`riskGrouper.ts` or `ReportContent.tsx` — confirmed by grep, zero references outside the type
-file. Backend support is real (`validateResult.js` stamps `completeness`/`asOf` on every result;
-`markPartialIfNoDirectors` in `index.js` sets it explicitly), but nothing renders it differently
-from a normal "clear" result today.
+~~Activity 4.3 ("degradation UX review — confirm Stale / Partial / Unavailable read clearly")
+assumes those states are visibly distinct in the report UI. They are not, yet~~ — **WS0.5
+landed 2026-09-10**, outside this plan's original activity list, per user decision after a
+"go back through the plan" audit found no real reason it had been passed over three sessions
+running. See `CLAUDE.md`'s dedicated "WS0.5 — completeness states landed in the report UI"
+entry for the full record, including a real bug it surfaced and fixed (13 of the report's
+sections build a synthetic `SearchResult` object that was silently dropping
+`completeness`/`asOf` before display — only section 8.1 worked correctly until this fix).
 
-**This plan does not include building WS0.5** (that's ~4–6dd of its own, per the source
-document) — it's out of the WS4 activity list. But 4.3 as literally specified can't produce a
-meaningful review without it. Two ways to proceed, flagged here for a decision at execution
-time rather than assumed:
+4.3 can now run as originally specified, against real UI, not the backend-only fallback
+described below.
+
+**This plan did not originally include building WS0.5** (that's ~4–6dd of its own, per the
+source document) — it's out of the WS4 activity list, but was pulled forward. Two ways to
+proceed were flagged here for a decision at execution time rather than assumed — kept for
+the record, superseded by the "landed" note above:
 - Land WS0.5 first (recommended if there's room — it's the "highest-value trust fix in the
   plan" per the source doc's own framing), then run 4.3 for real against the actual UI, or
 - Descope 4.3 in this pass to a **backend-only** check — confirm the NDJSON stream carries the
