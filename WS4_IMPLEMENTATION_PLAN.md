@@ -194,6 +194,16 @@ confirmation.
 
 **Source doc:** 2–3 dev-days.
 
+**Update (2026-09-10):** `load-test-ws4.js` built and run locally at concurrency 3 and 8
+against real fixtures — zero crashes, zero contradictory status/completeness combos, no
+TTFB degradation, and the same 5 non-mvp-scope keys stuck in both runs (consistent, not
+concurrency-induced). Full record in `CLAUDE.md`'s WS4.4 entry, including a real bug found
+in the script's own first version (a socket-inactivity timeout that never actually fired
+against a stream with intermittent activity, fixed with a plain absolute-deadline timer).
+**The real-deploy re-run against staging (below) is still the open item** — this sandbox has
+no real credentials, so it structurally can't reproduce the CAPTCHA/Puppeteer-driven
+starvation class this activity exists to catch.
+
 New script: `server/tests/load-test-ws4.js` (plain Node, `http` or `axios`, no new dependency —
 matches the "no test framework" convention already established). Fires N concurrent
 `POST /api/search` requests against a **running** server (this one needs the real Express
@@ -324,7 +334,7 @@ run; pass/fail against the ≤1-day, manifest-plus-one-file bar stated plainly e
 | 4.1 Orchestrator cutover (16 MVP-scope keys) | 3–4 dd | **Done (2026-09-10)** — see `CLAUDE.md`'s WS4.1 follow-up entry for the execution record |
 | 4.2 Fault injection | 4–5 dd | **Done (2026-09-10)** — caught and fixed a real process-crashing bug on its first run, see `CLAUDE.md`'s WS4.2 follow-up entry |
 | 4.3 Degradation UX review | 2 dd (+ founder time) | **Prep delivered (2026-09-10)** — [walkthrough published](https://claude.ai/code/artifact/00399edb-10f7-4015-81bc-f92e459f2f60), awaiting founder sign-off |
-| 4.4 Concurrency & load test | 2–3 dd | Not started — blocked on 4.1 |
+| 4.4 Concurrency & load test | 2–3 dd | **Local pass done (2026-09-10)** — see `CLAUDE.md`'s WS4.4 entry; real-deploy re-run against staging with real credentials still needed for the signal this activity actually wants |
 | 4.5 Runbook | 2 dd | Not started — descoped to what exists (no 0.8 dashboard yet) |
 | 4.6 Expansion proof | 1 dd | Not started — candidate selected, not yet run |
 | **Total** | **14–18 dd** | |

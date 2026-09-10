@@ -601,6 +601,65 @@ Verified: `npx tsc --noEmit` clean; visual check via the Puppeteer script above 
 committed — one-off, deleted after use) against all 29 real manifest keys with a spread of
 completeness states.
 
+### WS4.4 — concurrency & load test (2026-09-10)
+
+New `server/tests/load-test-ws4.js` — a plain-Node HTTP client (no new dependency) that
+fires N concurrent `POST /api/search` requests against a **real, running** server (not
+`runSearchRequest()` in-process — this needs the actual HTTP path to exercise the rate
+limiter and NDJSON streaming), and reports TTFB/total-time percentiles, how many of the 29
+manifest keys never reached a terminal state per request, and a check for the
+self-contradictory `status`/`completeness` combo `test-ws2-live-hardening.js`'s Pilot 3
+already found and fixed once (`status:'error'` + `completeness:'complete'`, or the reverse)
+— worth re-checking under real concurrent load, not just the single-request path that test
+exercises.
+
+**A real bug in the load-test script itself, found on its first run**: the initial version
+used `req.setTimeout()` as a hard per-request cap, but that's a *socket-inactivity* timeout,
+not an absolute deadline — since the NDJSON stream keeps arriving in small bursts as
+individual scrapers finish throughout the request's lifetime, there's never a true
+multi-second gap with zero bytes for it to fire on, so a slow-but-not-dead request could run
+indefinitely. First run hung well past its intended 70s cap; confirmed by inspection, not
+by waiting it out. Fixed with a plain `setTimeout()` JS timer that unconditionally
+`req.destroy()`s at the deadline regardless of intermittent activity.
+
+**Run against a real local server** (`CAPTCHA_API_KEY`/`SCRAPERAPI_KEY` set to placeholder
+values, since this sandbox has no real credentials — see the WS4.2 entry above for the same
+constraint) at concurrency 3 and concurrency 8, each against the real NSW/ACT fixtures used
+throughout this file, 65s client-side cap: **both runs completed with zero crashes, zero
+contradictory status/completeness combos, and — the interesting part — the exact same 5
+keys stuck in both runs** (`courts_nt`, `qbcc`, `waLicenceRegister`, `tasLicenceRegister`,
+`asicExtract` — all non-`mvpScope` keys, i.e. not yet covered by WS4.1's breaker/timeout
+wrapping), with no measurable TTFB degradation going from concurrency 3 (p50 48ms) to 8
+(p50 61ms). Confirmed via the server's own log (118 lines, zero crash indicators —
+`unhandled`, `uncaught`, stack traces — grepped explicitly) that it stayed responsive
+through both runs and for the `2>/dev/null` health check afterward. One process required
+`kill -9`, not a plain `kill`, to actually stop after the runs — background CAPTCHA-retry
+work (the still-running `tasLicenceRegister`/`asicExtract` calls) kept the event loop busy
+past the client's own 65s window; unsurprising given `asicExtract`'s own 90s manifest
+timeout and 2captcha's real retry latency, not itself treated as a finding.
+
+**What this does and doesn't show, stated plainly per this file's own convention**: this is
+real evidence the request-handling path (the `Promise.all` over mvp + non-mvp entries in
+`searchOrchestrator.js`, the NDJSON write path, the rate limiter) doesn't crash or degrade
+meaningfully at this concurrency, in this sandbox, with fake credentials. It is **not**
+evidence against the specific historical incident class this activity exists to guard
+against — the `MAX_CONCURRENT_PAGES` page-pool leak and the "4 minutes, 8 scrapers stuck"
+incident earlier in this file were both root-caused only against the real Railway
+container, with real CPU/memory metrics and real concurrent Puppeteer load from real
+CAPTCHA-gated sites. A local run with placeholder credentials structurally cannot reproduce
+that — every CAPTCHA-gated scraper here fails fast on a bad key rather than actually
+driving Puppeteer/2captcha under load. Re-running this script against a real staging/
+preview deploy, with real credentials, real concurrent Puppeteer load, and Railway's own
+metrics pulled alongside it, is the only way to get the signal this activity actually
+wants — flagged here as the concrete next step, not done in this pass.
+
+**`PUPPETEER_MAX_CONCURRENT_PAGES` left at its default (3)** — the source plan's own
+tuning suggestion (3 → 6) is conditioned on a staging run showing real headroom, which this
+pass couldn't produce for the reason above. Revisit once a real-deploy run exists.
+
+**Not yet done**: the real-deploy re-run described above; extending `mvpScope` to the 5
+keys that showed up stuck here (already tracked as "WS4.1b" earlier in this file).
+
 ### Phase 7c — asicExtract: historical directors + charges register
 
 `asicExtract.js` currently returns companies that *current* directors are associated with (phoenix detection). Missing:
