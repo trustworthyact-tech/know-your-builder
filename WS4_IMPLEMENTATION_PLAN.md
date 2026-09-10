@@ -61,6 +61,62 @@ the record, superseded by the "landed" note above:
 
 ---
 
+## Live verification checklist — needs your credentials/access
+
+This sandbox has no `server/.env` (no `CAPTCHA_API_KEY`, `SCRAPERAPI_KEY`, `DATABASE_URL`)
+and no Railway access, so every item below is real, structurally-verified work that still
+needs a pass with real credentials against a real deploy before it's fully trusted. Nothing
+here is blocking — the code is shipped and tested as far as this environment allows — but
+each is a genuine gap between "verified here" and "verified for real," recorded once, in one
+place, rather than scattered across each commit's own `CLAUDE.md` entry.
+
+1. **Sign off on 4.3's UX review.** Read the published walkthrough —
+   [Coverage Signal Review](https://claude.ai/code/artifact/00399edb-10f7-4015-81bc-f92e459f2f60)
+   — and answer its four questions (does the coverage caveat register clearly, does it
+   compete with a significant-finding banner, is "Clear" + a coverage badge together
+   legible, anything you'd change). This is the one item on this list that's a judgment
+   call, not a technical check.
+
+2. **Re-run the 4.4 load test against a real staging/preview deploy**, not this sandbox.
+   `node server/tests/load-test-ws4.js <concurrency> <timeoutMs>` from a machine that can
+   reach it, with real `CAPTCHA_API_KEY`/`SCRAPERAPI_KEY` set server-side so the
+   CAPTCHA-gated scrapers actually run instead of failing fast on a bad key — that's the
+   only way to reproduce the specific `MAX_CONCURRENT_PAGES` starvation class this activity
+   exists to catch. Pull `railway metrics --raw --cpu --memory --json` for the same window,
+   same pattern as the 2026-08-28 root-cause session in `CLAUDE.md`. Try concurrency 5 and
+   10, per the source plan's own suggestion.
+
+3. **Confirm `DATABASE_URL` is actually set in Railway production**, and that
+   `dataset_snapshot`/`register_record` are actually being written to Postgres rather than
+   silently running on `datasetStore.js`'s disk-fallback path the whole time. `railway
+   variables --kv` or the dashboard confirms the env var; a quick `SELECT dataset_key,
+   row_count, status, fetched_at FROM dataset_snapshot;` against the real DB (or the new
+   admin health endpoint below, once extended to surface this) confirms it's live.
+
+4. **Sanity-check the four new dataset row-count floors** (`MIN_SANE_ROW_COUNT` in
+   `asicDpnDataset.js`: 100, `asicEnforceableUndertakingsDataset.js`: 50,
+   `actLicencesDataset.js`: 5,000 licence / 30 disciplinary, `vicBpcDataset.js`: 100 — added
+   in the WS0–3 audit pass) against a real refresh. These are estimates from historical
+   counts already documented in `CLAUDE.md` (32,001 / 377 / ~943 / etc.), not verified
+   against a fresh live pull. Let the existing background refreshers run once with real
+   credentials (or trigger them manually) and confirm each real count clears its floor with
+   real margin — if any register has shrunk closer to its floor than expected, that's worth
+   knowing before it silently starts rejecting genuinely valid smaller updates.
+
+5. **Set `ADMIN_HEALTH_KEY` in Railway** and hit
+   `GET https://<production-url>/api/admin/scraper-health` with the `x-admin-key` header
+   (see `CLAUDE.md`'s "Checking scraper health" section for the literal steps) to confirm
+   it returns real breaker state from production traffic, not just the synthetic state this
+   sandbox's tests constructed.
+
+6. **General production smoke test of the WS4.1 cutover** — run one real search (any of the
+   fixtures used throughout this file's tests) against production after deploying this
+   branch, and compare the report against a pre-cutover report for the same entity if one
+   exists. Everything here was verified structurally and against a local dev server with
+   fake credentials; it has never run against production with the real orchestrator path.
+
+---
+
 ## 4.1 — Orchestrator on the manifest
 
 **Source doc:** 3–4 dev-days. **Current state:** `server/index.js:404–420` already routes 9 of
