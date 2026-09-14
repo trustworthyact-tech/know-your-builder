@@ -8,7 +8,7 @@ const { replaceDatasetRecords, queryDataset, recordIngestionFailure, diskCachePa
 // Injectable fake pg Pool — same DI style as asicDpnDataset.js's _axios. Records every
 // query so tests can assert the transaction shape without a real Postgres connection.
 
-function makeFakePool({ clientQueryImpl, poolQueryImpl } = {}) {
+function makeFakePool({ clientQueryImpl, poolQueryImpl, connectImpl } = {}) {
   const calls = { client: [], pool: [] };
   const client = {
     query: async (sql, values) => {
@@ -20,7 +20,7 @@ function makeFakePool({ clientQueryImpl, poolQueryImpl } = {}) {
   };
   return {
     calls,
-    connect: async () => client,
+    connect: connectImpl ?? (async () => client),
     query: async (sql, values) => {
       calls.pool.push({ sql, values });
       if (poolQueryImpl) return poolQueryImpl(sql, values);
@@ -109,6 +109,30 @@ test('replaceDatasetRecords — DB failure rolls back and falls back to the disk
     // disk fallback was written before the DB attempt, so it's still readable
     const read = await queryDataset(key, {}, null);
     assert.deepEqual(read.rows, [{ name: 'Still On Disk' }]);
+  } finally {
+    cleanup(key);
+  }
+});
+
+test('replaceDatasetRecords — _pool.connect() itself rejecting (e.g. ENETUNREACH) falls back to disk, does not throw', async () => {
+  // Regression guard for the 2026-09-14 production incident: this exact rejection,
+  // unguarded, crashed the whole server via paymentTimesRefresh.js's unhandled call.
+  const key = 'test_connect_failure';
+  cleanup(key);
+  try {
+    const pool = makeFakePool({
+      connectImpl: async () => { throw new Error('connect ENETUNREACH 2406:xxxx:5432'); },
+    });
+    const rows = [{ payload: { name: 'Still On Disk Via Connect Failure' } }];
+
+    const promise = replaceDatasetRecords(key, rows, {}, pool);
+    await assert.doesNotReject(promise);
+    const result = await promise;
+    assert.equal(result.stored, 'disk');
+    assert.ok(result.error.includes('ENETUNREACH'));
+
+    const read = await queryDataset(key, {}, null);
+    assert.deepEqual(read.rows, [{ name: 'Still On Disk Via Connect Failure' }]);
   } finally {
     cleanup(key);
   }
