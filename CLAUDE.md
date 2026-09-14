@@ -24,17 +24,24 @@ cd web && npx tsc --noEmit  # web
 
 No test suite or linter configured.
 
-## Checking scraper health (stopgap, reliability plan)
+## Checking scraper health (WS0.8, reliability plan)
 
 Literal, founder-facing steps for this now live in `RUNBOOK.md` (WS4.5) — this section stays
-just the technical summary for whoever's writing code next. `GET /api/admin/scraper-health`
-(gated by an `x-admin-key` header checked against `ADMIN_HEALTH_KEY`, fails closed if that
-env var isn't set) reads `scraperHealth.js`'s in-memory breaker state via
-`buildHealthReport(SCRAPERS)` and reports each of the 29 manifest keys as `"healthy"` /
-`"degraded"` / `"open"` / `"no-data"`. Only the 16 `mvpScope: true` keys ever populate —
-resets to nothing on every restart, no persisted history. The real WS0.8 dashboard
-(persisted history, 7-day success rate, an actual page instead of raw JSON behind a curl
-command) is still future work — see `WS4_IMPLEMENTATION_PLAN.md`.
+just the technical summary for whoever's writing code next. `GET /admin/scraper-health` is a
+small static page (`server/public/admin-scraper-health.html`) that prompts once for the
+`ADMIN_HEALTH_KEY` value (stored in `sessionStorage`, not the URL) and renders a table, sorted
+worst-first, of each of the 29 manifest keys' current breaker status (`"healthy"` /
+`"degraded"` / `"open"` / `"no-data"`) plus a 7-day success rate. It's backed by
+`GET /api/admin/scraper-health/full` (same `x-admin-key`/`ADMIN_HEALTH_KEY` gate, fails closed
+if that env var isn't set), which merges `scraperHealth.js`'s in-memory breaker snapshot
+(`buildHealthReport(SCRAPERS)`) with persisted history from the new `health_check_event`
+table (`server/scrapers/healthHistory.js` — one row per `runScraper()` outcome, written
+fire-and-forget so a DB hiccup can never slow down or crash a search request). Only the 16
+`mvpScope: true` keys ever populate the live-breaker columns; history populates for any key
+once it's gone through `runScraper()` at a point where `DATABASE_URL` was set — with no DB
+configured (the normal local-dev state), every row reports `historyAvailable: false` rather
+than a misleading 0%. The original raw-JSON endpoint (`GET /api/admin/scraper-health`, no
+history, in-memory only) still exists unchanged for scripts/`curl`.
 
 ## Architecture
 
@@ -643,6 +650,65 @@ pass couldn't produce for the reason above. Revisit once a real-deploy run exist
 
 **Not yet done**: the real-deploy re-run described above; extending `mvpScope` to the 5
 keys that showed up stuck here (already tracked as "WS4.1b" earlier in this file).
+
+### WS0.8 — reliability dashboard landed (2026-09-11)
+
+The real dashboard this file's "Checking scraper health" section had been pointing at as
+future work since 2026-09-10 is now built, closing the last open item from WS0's original
+scope. Two gaps existed going in — confirmed by reading the code before starting, not
+assumed: no persisted history (the breaker `Map` reset on every restart) and no page (the
+stopgap endpoint was raw JSON behind `curl`).
+
+**Persisted history**: new `health_check_event` table (`server/db/schema.sql`, same
+idempotent `CREATE TABLE IF NOT EXISTS` pattern as `dataset_snapshot`/`register_record`) —
+one row per `runScraper()` outcome (`success`/`failure`/`circuit_open`), written by
+`server/scrapers/healthHistory.js`'s `logEvent()`. `runScraper.js` fires this
+fire-and-forget (`.catch(() => {})`, not awaited) right next to its existing
+`health.recordSuccess`/`recordFailure` calls, so it can never add latency to `/api/search`
+or — the specific failure mode this pattern guards against, per the WS4.2 entry above about
+`abnPromise`/`asicPromise` — crash the process via an unhandled rejection if the DB write
+fails. With no `DATABASE_URL` configured (normal local dev), `logEvent`/`getRollup` no-op
+and return `null` respectively, rather than throwing or reporting a misleading 0%.
+`getRollup({ windowDays: 7 })` computes success rate straight from the event log via one
+`COUNT(*) FILTER` group-by query — no separate rollup job.
+
+**The page**: `GET /admin/scraper-health` — a single static file
+(`server/public/admin-scraper-health.html`, no build step, no template engine, no new
+dependency), served by a plain Express route. Deliberately has no server-side gate of its
+own (it carries no embedded data): on load it prompts once for the `ADMIN_HEALTH_KEY` value,
+stores it in `sessionStorage` (not the URL, so it doesn't land in server/proxy logs), and
+calls the data endpoint client-side with it as the `x-admin-key` header — the actual gate is
+still exactly `ADMIN_HEALTH_KEY`, enforced server-side, same fails-closed behavior as before.
+Renders one row per manifest key — status badge, jurisdiction, MVP-scope badge, 7-day
+success rate (or "no history yet"), last success/failure timestamps — sorted worst-first
+(`open` > `degraded` > `no-data` > `healthy`) so problems don't require scrolling to find.
+
+**New endpoint**: `GET /api/admin/scraper-health/full` — merges `buildHealthReport()`'s live
+snapshot with `getRollup()`'s 7-day figures via a new pure `healthHistory.mergeHistory()`
+(extracted specifically so the merge logic is unit-testable without a live server or DB, same
+reasoning `buildHealthReport` itself was already pure for). The original
+`GET /api/admin/scraper-health` (no history, sync, in-memory only) is unchanged — still there
+for scripts/`curl`. Both routes now share one `requireAdminKey()` helper instead of
+duplicating the fails-closed check.
+
+Verified: `server/scrapers/healthHistory.test.js` (new — `logEvent`/`getRollup`/
+`mergeHistory`, using the same injectable-fake-pool DI style as `datasetStore.test.js`'s
+`makeFakePool()`) and four new cases in `runScraper.test.js` covering the three logged
+outcomes plus confirming a rejecting `logHealthEvent` never surfaces as an unhandled
+rejection or blocks `send()` — 118/118 `npm test` passing. Live-verified against a real local
+server with `DATABASE_URL` unset: `/admin/scraper-health` loads, the unauthenticated case
+401s, the no-`ADMIN_HEALTH_KEY` case 503s, `/api/admin/scraper-health/full` returns all 29
+rows with `historyAvailable: false` throughout, and the original endpoint's response shape is
+confirmed unchanged. **Not verified against a real Postgres in this pass** — no
+`DATABASE_URL`-backed instance was available in the environment this was built in; the SQL
+shape and rollup arithmetic are covered by the fake-pool unit tests only, not a live DB. Worth
+a real-`DATABASE_URL` smoke test (per this file's own "what a local run can't prove" caveats
+elsewhere, e.g. the WS4.4 entry) before leaning on the 7-day numbers for a real incident.
+
+**Not yet done**: no auto-refresh on the page (manual "Refresh" button only) — fine for
+occasional founder checks, would need revisiting if this becomes something watched
+continuously during an incident. `RUNBOOK.md` was updated in the same pass (its Section 2
+now leads with the dashboard page, `curl` kept as the scriptable fallback).
 
 ### Phase 7c — asicExtract: historical directors + charges register
 

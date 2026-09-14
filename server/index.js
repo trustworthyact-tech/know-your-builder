@@ -4,6 +4,7 @@
 // SCRAPERAPI_KEY) silently sees `undefined` and reports the key as missing.
 require('dotenv').config({ path: require('path').join(__dirname, '.env') });
 
+const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
@@ -12,6 +13,7 @@ const { getDecisionSignedUrl } = require('./scrapers/qbcc');
 const { runSearchRequest } = require('./searchOrchestrator');
 const { SCRAPERS } = require('./scrapers/manifest');
 const scraperHealth = require('./scrapers/scraperHealth');
+const healthHistory = require('./scrapers/healthHistory');
 const { startPaymentTimesRefresh } = require('./scrapers/paymentTimesRefresh');
 const { startAsicDpnDatasetRefresh } = require('./scrapers/asicDpnDatasetRefresh');
 const { startVicBpcDatasetRefresh } = require('./scrapers/vicBpcDatasetRefresh');
@@ -72,24 +74,51 @@ function validateSearchFields({ abn, acn, companyName, tradingName, directors })
 
 app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
 
-// Scraper-health stopgap (reliability plan) — the real WS0.8 dashboard (persisted history, 7-day
-// success rate, UI) isn't built yet; this is a minimal read of the in-memory circuit
-// breaker state (server/scrapers/scraperHealth.js) so the founders have *some* visibility
-// today. Fails closed: with no ADMIN_HEALTH_KEY set, the endpoint refuses to serve rather
-// than being silently open. Not a general admin auth system — just enough gate that this
-// isn't public. See WS4_IMPLEMENTATION_PLAN.md's 4.5 (runbook) for how to use it.
-app.get('/api/admin/scraper-health', (req, res) => {
+// Shared gate for every /api/admin/* route below. Fails closed: with no ADMIN_HEALTH_KEY
+// set, every admin route refuses to serve rather than being silently open. Not a general
+// admin auth system — just enough gate that these aren't public. Returns true/false and
+// writes the response itself on failure, so callers can `if (!requireAdminKey(req, res)) return;`.
+function requireAdminKey(req, res) {
   const configuredKey = process.env.ADMIN_HEALTH_KEY;
   if (!configuredKey) {
-    return res.status(503).json({
+    res.status(503).json({
       error: 'ADMIN_HEALTH_KEY is not set in server/.env — this endpoint is disabled until it is.',
     });
+    return false;
   }
   if (req.get('x-admin-key') !== configuredKey) {
-    return res.status(401).json({ error: 'Missing or incorrect x-admin-key header.' });
+    res.status(401).json({ error: 'Missing or incorrect x-admin-key header.' });
+    return false;
   }
+  return true;
+}
 
+// Scraper-health stopgap (reliability plan) — a minimal read of the in-memory circuit
+// breaker state (server/scrapers/scraperHealth.js). Fast and sync, still useful for
+// scripts/curl. See WS4_IMPLEMENTATION_PLAN.md's 4.5 (runbook) for how to use it.
+app.get('/api/admin/scraper-health', (req, res) => {
+  if (!requireAdminKey(req, res)) return;
   res.json(scraperHealth.buildHealthReport(SCRAPERS));
+});
+
+// WS0.8 (reliability plan) — the real dashboard's data source: the same in-memory snapshot
+// as above, merged with persisted 7-day history from health_check_event
+// (server/scrapers/healthHistory.js). historyAvailable is false (not a misleading 0%) when
+// no DATABASE_URL is configured, e.g. local dev per CLAUDE.md's run instructions.
+app.get('/api/admin/scraper-health/full', async (req, res) => {
+  if (!requireAdminKey(req, res)) return;
+
+  const report = scraperHealth.buildHealthReport(SCRAPERS);
+  const rollup = await healthHistory.getRollup({ windowDays: 7 });
+  res.json(healthHistory.mergeHistory(report, rollup));
+});
+
+// The reliability dashboard page itself — a static shell with no embedded data (it prompts
+// for the admin key client-side and calls /api/admin/scraper-health/full with it), so no
+// server-side gate is needed here; the data endpoint above is where ADMIN_HEALTH_KEY is
+// actually enforced.
+app.get('/admin/scraper-health', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'admin-scraper-health.html'));
 });
 
 // Redirects to a freshly-signed URL for a QBCC adjudication decision PDF.

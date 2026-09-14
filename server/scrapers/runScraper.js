@@ -2,6 +2,7 @@
 
 const defaultHealth = require('./scraperHealth');
 const { assertValidResult } = require('./validateResult');
+const healthHistory = require('./healthHistory');
 
 // Hard outer bound via Promise.race, independent of and layered on top of browser.js's
 // own internal challenge-timeout logic. This is the direct fix for the still-open
@@ -25,12 +26,17 @@ function withTimeout(promise, timeoutMs) {
  * WS0 pilot integration and by anything built on top of it going forward.
  *
  * `health` is injectable so tests can isolate breaker state per test instead of
- * sharing the real module-level Map.
+ * sharing the real module-level Map. `logHealthEvent` (WS0.8, persisted history behind
+ * the reliability dashboard) is injectable the same way, defaulting to the real
+ * healthHistory.logEvent — fired-and-forgotten with a .catch(() => {}) so a DB hiccup
+ * here can never surface as an unhandled rejection (the exact class of bug documented in
+ * CLAUDE.md's WS4.2 entry) or add latency to the request this scraper is part of.
  */
-async function runScraper(manifestEntry, fn, { send, health = defaultHealth } = {}) {
+async function runScraper(manifestEntry, fn, { send, health = defaultHealth, logHealthEvent = healthHistory.logEvent } = {}) {
   const { key, label, timeoutMs, breaker } = manifestEntry;
 
   if (health.isOpen(key)) {
+    logHealthEvent(key, 'circuit_open', null).catch(() => {});
     send({
       key,
       label,
@@ -46,10 +52,13 @@ async function runScraper(manifestEntry, fn, { send, health = defaultHealth } = 
   try {
     const result = await withTimeout(fn(), timeoutMs);
     health.recordSuccess(key);
+    logHealthEvent(key, 'success', null).catch(() => {});
     send({ key, label, status: 'done', ...assertValidResult(key, result) });
   } catch (err) {
     health.recordFailure(key, breaker);
-    console.error(`[${key}]`, err && err.message ? err.message : err);
+    const message = err && err.message ? err.message : String(err);
+    logHealthEvent(key, 'failure', message).catch(() => {});
+    console.error(`[${key}]`, message);
     send({ key, label, status: 'error', error: 'Search failed', results: [], completeness: 'unavailable' });
   }
 }

@@ -116,3 +116,50 @@ test('runScraper — a success resets consecutiveFailures (breaker does not open
 
   assert.equal(health.isOpen(key), false);
 });
+
+function loggerSpy() {
+  const events = [];
+  return { events, logHealthEvent: async (key, outcome, error) => { events.push({ key, outcome, error }); } };
+}
+
+test('runScraper — WS0.8: a success logs a single "success" health event', async () => {
+  const { send } = collector();
+  const { events, logHealthEvent } = loggerSpy();
+
+  await runScraper(entry('t_log_success'), async () => ({ results: [], summary: 'ok' }), { send, logHealthEvent });
+
+  assert.deepEqual(events, [{ key: 't_log_success', outcome: 'success', error: null }]);
+});
+
+test('runScraper — WS0.8: a rejecting fn logs a "failure" event with the error message', async () => {
+  const { send } = collector();
+  const { events, logHealthEvent } = loggerSpy();
+
+  await runScraper(entry('t_log_failure'), async () => { throw new Error('boom'); }, { send, logHealthEvent });
+
+  assert.deepEqual(events, [{ key: 't_log_failure', outcome: 'failure', error: 'boom' }]);
+});
+
+test('runScraper — WS0.8: a short-circuit on an open breaker logs "circuit_open", not "failure"', async () => {
+  const key = 't_log_circuit_open';
+  const failing = entry(key, { breaker: { failureThreshold: 1, cooldownMs: 10_000 } });
+  const { send } = collector();
+
+  await runScraper(failing, async () => { throw new Error('fail'); }, { send, logHealthEvent: async () => {} });
+  assert.equal(health.isOpen(key), true);
+
+  const { events, logHealthEvent } = loggerSpy();
+  await runScraper(failing, async () => ({ results: [], summary: 'should not run' }), { send, logHealthEvent });
+
+  assert.deepEqual(events, [{ key, outcome: 'circuit_open', error: null }]);
+});
+
+test('runScraper — WS0.8: a rejecting logHealthEvent never surfaces as an unhandled rejection or breaks the send', async () => {
+  const { sent, send } = collector();
+  const logHealthEvent = async () => { throw new Error('db down'); };
+
+  await assert.doesNotReject(
+    runScraper(entry('t_log_rejects'), async () => ({ results: [], summary: 'ok' }), { send, logHealthEvent })
+  );
+  assert.equal(sent[1].status, 'done');
+});

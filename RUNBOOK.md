@@ -5,10 +5,11 @@ literal, numbered steps — if a step doesn't work exactly as written, that's wo
 back rather than guessing past it, since the underlying tooling may have changed since this
 was written (2026-09-10).
 
-**What this covers today, and what it doesn't**: there is no dashboard yet (that's WS0.8,
-still unbuilt — see `WS4_IMPLEMENTATION_PLAN.md`). What exists is a small, real, in-memory
-health endpoint (WS4.1's stopgap) and whatever Railway itself already gives you. This
-document is honest about that gap rather than describing tooling that isn't there.
+**What this covers today, and what it doesn't**: there is now a real dashboard page (WS0.8,
+built 2026-09-11 — see `WS4_IMPLEMENTATION_PLAN.md`) with a 7-day success-rate history, on
+top of the in-memory health endpoint (WS4.1's stopgap) and whatever Railway itself already
+gives you. This document is still honest about what's left missing rather than describing
+tooling that isn't there — see "What's genuinely missing" at the end of this document.
 
 ---
 
@@ -46,39 +47,52 @@ will always show them as `"no-data"` regardless of whether they're actually work
 3. Save. Railway will automatically redeploy the service with the new variable — wait for
    that to finish (the dashboard shows a deploy in progress, then "Active" when done).
 
-**Checking health** (every time you want to check):
+**Checking health — using the dashboard page** (the normal way to do this):
 
-1. You need a tool that can send a custom "header" with a web request — a plain browser
-   address bar can't do this. The simplest free option: install **Postman** (postman.com) or
-   use `curl` from a terminal if you're comfortable with one.
-2. **Using curl** (Terminal app on Mac, or Command Prompt/PowerShell on Windows): type
-   exactly this, swapping in your production URL and the password you set in step 2 above:
-   ```
-   curl -H "x-admin-key: kyb-health-check-2026" https://<your production URL>/api/admin/scraper-health
-   ```
-3. **Using Postman**: create a new GET request to `https://<your production URL>/api/admin/scraper-health`,
-   go to the "Headers" tab, add a header named `x-admin-key` with your password as the
-   value, then click Send.
-4. You'll get back a list of 29 checks. For each one, look at its `"status"` field:
-   - `"healthy"` — working normally, nothing to do.
-   - `"degraded"` — some recent failures, but not tripped yet. Worth watching, not yet an
+1. In any browser, go to `https://<your production URL>/admin/scraper-health`.
+2. The first time, it asks for an "Admin key" — type in the password you set in step 2
+   above, then click **View dashboard**. It remembers this for the rest of your browser
+   session (until you close the tab), so you won't be asked again until you come back later.
+3. You'll see a table, one row per check, already sorted so the worst problems are at the
+   top. For each row, the coloured badge on the left tells you the current state:
+   - **healthy** — working normally, nothing to do.
+   - **degraded** — some recent failures, but not tripped yet. Worth watching, not yet an
      emergency.
-   - `"open"` — this check has tripped its circuit breaker. It is currently being skipped
+   - **open** — this check has tripped its circuit breaker. It is currently being skipped
      on every search and shown to users as "Temporarily unavailable." This is the one that
      means something is actually broken right now.
-   - `"no-data"` — hasn't run since the server last restarted. Normal right after a
-     restart or deploy; only a problem if it stays `"no-data"` after real search traffic
-     has gone through.
-5. If something shows `"open"`: that check's underlying government website has likely
+   - **no-data** — hasn't run since the server last restarted. Normal right after a
+     restart or deploy; only a problem if it stays `no-data` after real search traffic has
+     gone through.
+4. The "7-day success rate" column is a history that survives server restarts (unlike the
+   badge itself, see the note below) — a check that's currently `healthy` but has a low
+   7-day rate has been intermittently failing recently even though it looks fine right now.
+5. Click **Refresh** (top of the page) to pull the latest numbers without reloading the
+   whole page.
+6. If something shows **open**: that check's underlying government website has likely
    changed (the exact same pattern documented repeatedly in `CLAUDE.md` — a register
    changes its page layout or API, and the existing scraper code no longer understands it).
    This needs an actual code fix, not something to resolve from this runbook — bring the
-   `"open"` key name (e.g. `"nswFairTrading"`) to whoever's doing the engineering work.
+   key name shown in that row (e.g. `nswFairTrading`) to whoever's doing the engineering work.
 
-**Important**: this data resets to nothing every time the server restarts (it's kept in the
-server's memory, not saved anywhere). It only tells you "what's happened since the last
-restart," not a history. If you restart the server for any reason (see Section 3), every
-check will briefly show `"no-data"` again until real searches start flowing through it.
+**Checking health — using curl or Postman instead** (a scriptable alternative to the page,
+same data): send a GET request to
+`https://<your production URL>/api/admin/scraper-health/full` with a header named
+`x-admin-key` set to your password — e.g. from a terminal:
+```
+curl -H "x-admin-key: kyb-health-check-2026" https://<your production URL>/api/admin/scraper-health/full
+```
+This returns the same rows as the page, as raw JSON (`status`, `successRate7d`,
+`attempts7d`, `historyAvailable`, timestamps, per key) — useful for scripting, not needed for
+day-to-day checking now that the page exists.
+
+**Important**: the current-status badge (`healthy`/`degraded`/`open`/`no-data`) resets to
+nothing every time the server restarts (it's kept in the server's memory, not saved
+anywhere) — right after a restart, every row briefly shows `no-data` again until real
+searches start flowing through it. The **7-day success rate column does not reset** — it's
+read from a database table that survives restarts, so it's the one place you can actually see
+"how often has this been failing lately," independent of whether the server happened to
+restart recently.
 
 ---
 
@@ -166,12 +180,17 @@ government sites — independent of whether anyone has searched a real entity th
 
 ## What's genuinely missing (don't pretend these exist)
 
-- **No visual dashboard.** Section 2's health check is raw JSON behind a password, not a
-  page you can glance at. This is WS0.8 in the reliability plan, not built yet.
-- **No persisted history.** Section 2 only ever shows "since the last restart" — there's no
-  way to see "how often did this check fail last week."
+- **7-day success rate only covers the 16 `mvpScope: true` checks** — the same list named in
+  Section 2. The other 13 (QBCC, VIC, WA, SA, TAS, NT registers) don't log history yet, so
+  they'll always show "no history yet" on the dashboard regardless of how they're actually
+  performing.
+- **History only exists from 2026-09-11 onward** — the dashboard can't tell you anything
+  about a check's behaviour before this was built, only what's happened since.
 - **No single-check manual refresh or reset.** Sections 3 and 4 both only have the
   "restart everything" lever — nothing more targeted exists yet.
+- **No auto-refresh on the dashboard page** — it only updates when you click **Refresh** or
+  reload the page. Fine for an occasional glance; not something to leave open and watch
+  live during an active incident.
 
 ---
 
