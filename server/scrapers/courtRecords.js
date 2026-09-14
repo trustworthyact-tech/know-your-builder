@@ -82,7 +82,7 @@ const JURISDICTION_SOURCES = {
 // server/tests/test-ws2-live-hardening.js).
 const MANUAL_SEARCH_URLS = {
   qld: 'https://www.courts.qld.gov.au/decisions',
-  vic: 'https://courts.vic.gov.au/court-system/transcripts-and-judgments/judgments-decisions-and-orders',
+  vic: 'https://www.supremecourt.vic.gov.au/areas/case-summaries/judgments',
   wa: 'https://www.supremecourt.wa.gov.au/D/decisions_and_publications.aspx',
   sa: 'https://www.courts.sa.gov.au/court-decisions/judgments/',
   tas: 'https://www.supremecourt.tas.gov.au/publications/decisions-of-the-court/judgments/',
@@ -212,6 +212,42 @@ const fetchNswTermResults = makeTermCache(async (term) => {
       .slice(0, 300);
 
     results.push({ title, url: fullUrl, description: snippet || undefined, matchedTerm: term });
+  });
+
+  return results;
+});
+
+// Supreme Court of Victoria's own judgment-summaries listing — a Drupal Views exposed
+// filter with a real server-side `?query=` keyword search (confirmed live 2026-09-11:
+// `?query=Mokbel` returns exactly the 2 matching rows, not the full unfiltered list).
+// Plain axios/cheerio, no Cloudflare/JS gate found (confirmed via a direct curl).
+//
+// WS4.6 (reliability plan expansion proof) — added in place of the old buildManualFallback
+// path for 'vic'. Real but narrow: the Court only publishes summaries for a subset of
+// cases (skewed toward Court of Appeal matters) and states they are "removed and archived
+// 12 months after their date of publication" — confirmed live to carry roughly a dozen
+// entries total at any time, not a comprehensive Supreme Court case database. This is a
+// genuine improvement over "search manually" for the cases it does cover, not full VIC
+// court coverage — see CLAUDE.md's WS4.6 entry.
+const fetchVicTermResults = makeTermCache(async (term) => {
+  const searchUrl = `https://www.supremecourt.vic.gov.au/areas/case-summaries/judgments?query=${encodeURIComponent(term)}`;
+  const { data } = await axios.get(searchUrl, {
+    timeout: 30_000,
+    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; know-your-builder/1.0)' },
+  });
+  const $ = cheerio.load(data);
+  const results = [];
+
+  $('table.cols-3 tbody tr').each((_, el) => {
+    const link = $(el).find('td.views-field-title a').first();
+    const href = link.attr('href');
+    const title = link.text().trim();
+    if (!href || !title) return;
+
+    const fullUrl = href.startsWith('http') ? href : `https://www.supremecourt.vic.gov.au${href}`;
+    const date = $(el).find('td.views-field-created time').first().text().trim();
+
+    results.push({ title, url: fullUrl, description: date || undefined, matchedTerm: term });
   });
 
   return results;
@@ -505,6 +541,16 @@ function searchNswCaselaw(companyName, directors = []) {
   });
 }
 
+function searchVicSupremeCourt(companyName, directors = []) {
+  return runJurisdictionSearch(companyName, directors, {
+    fetchFn: fetchVicTermResults,
+    jurisdiction: 'VIC',
+    source: 'Supreme Court of Victoria — Judgment Summaries',
+    sourcesKey: 'vic',
+    searchUrlFor: (term) => `https://www.supremecourt.vic.gov.au/areas/case-summaries/judgments?query=${encodeURIComponent(term)}`,
+  });
+}
+
 // Combines the two independent ACT sources (courts.act.gov.au for Supreme/Magistrates Court,
 // acat.act.gov.au for ACAT). Uses allSettled rather than Promise.all so that one source
 // having a bad moment doesn't discard perfectly good results from the other — runJurisdictionSearch's
@@ -606,6 +652,7 @@ async function searchCourtRecords(companyName, directors = [], jurisdiction = 'f
   if (jurisdiction === 'act') return searchActJudgments(companyName, directors);
   if (jurisdiction === 'federal') return searchFederalCourtJudgments(companyName, directors);
   if (jurisdiction === 'nt') return searchNtSupremeCourt(companyName, directors);
+  if (jurisdiction === 'vic') return searchVicSupremeCourt(companyName, directors);
   return buildManualFallback(jurisdiction);
 }
 
@@ -615,5 +662,6 @@ module.exports = {
   searchActJudgments,
   searchFederalCourtJudgments,
   searchNtSupremeCourt,
+  searchVicSupremeCourt,
   buildManualFallback,
 };

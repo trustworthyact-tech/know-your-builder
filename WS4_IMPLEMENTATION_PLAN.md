@@ -393,6 +393,24 @@ finding the theoretically cleanest possible candidate.
 **Exit criteria:** elapsed time and file list recorded in this document (or `CLAUDE.md`) once
 run; pass/fail against the ≤1-day, manifest-plus-one-file bar stated plainly either way.
 
+**Done (2026-09-11):** ran the VIC Supreme Court candidate — re-verified live first (see
+`CLAUDE.md`'s WS4.6 entry for the full record), which found the source is real and legitimate
+but narrower than expected (~10-12 rows, Court of Appeal-skewed, 12-month rolling) and, unlike
+this section's assumption, is a genuine server-side `?query=` search, not a flat list. Also
+found this section's literal "one manifest entry + one fetch function" plan is stale: `vic`
+already exists as a manifest key (`courts_vic`, pointed at `buildManualFallback`), and — because
+WS4.1 (landed after this section was drafted) moved invocation wiring out of `index.js` into
+`searchOrchestrator.js`'s `invocations` map — a genuinely *new* parallel key
+(`courts_vic_supreme`, as originally written above) would now need 4 files touched
+(`manifest.js`, `searchOrchestrator.js`, `SearchContent.tsx` — enforced by `manifest.test.js`'s
+exact-sync check — plus the scraper file), not the 2 this section describes. Built as an
+upgrade to the existing `courts_vic` key instead (decided with the user): touches exactly one
+source file, `server/scrapers/courtRecords.js` (new fetcher + wrapper + one dispatch branch +
+an updated manual-fallback URL), plus the test file. Elapsed time well under the 1-day budget.
+**Pass**, against the bar this section set, even though the actual touch point (an existing key,
+not a new manifest entry) differs from what was originally planned — see CLAUDE.md for the full
+record including the coverage-limitation caveat.
+
 ---
 
 ## Effort summary
@@ -404,5 +422,5 @@ run; pass/fail against the ≤1-day, manifest-plus-one-file bar stated plainly e
 | 4.3 Degradation UX review | 2 dd (+ founder time) | **Prep delivered (2026-09-10)** — [walkthrough published](https://claude.ai/code/artifact/00399edb-10f7-4015-81bc-f92e459f2f60), awaiting founder sign-off |
 | 4.4 Concurrency & load test | 2–3 dd | **Local pass done (2026-09-10)** — see `CLAUDE.md`'s WS4.4 entry; real-deploy re-run against staging with real credentials still needed for the signal this activity actually wants |
 | 4.5 Runbook | 2 dd | **Done (2026-09-10)** — `RUNBOOK.md` at repo root, descoped to what exists (no 0.8 dashboard yet) |
-| 4.6 Expansion proof | 1 dd | Not started — candidate selected, not yet run |
+| 4.6 Expansion proof | 1 dd | **Done (2026-09-11)** — VIC Supreme Court judgment summaries, upgraded the existing `courts_vic` key; see `CLAUDE.md`'s WS4.6 entry |
 | **Total** | **14–18 dd** | |

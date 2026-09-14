@@ -1,5 +1,5 @@
 /**
- * TEST: Court Records — live jurisdictions (NSW, ACT, Federal, NT) + manual fallback
+ * TEST: Court Records — live jurisdictions (NSW, ACT, Federal, NT, VIC) + manual fallback
  *
  * PURPOSE
  *   Verifies that searchCourtRecords() actually returns real, parsed results for every
@@ -25,8 +25,8 @@
  *         entry was removed
  *
  * REQUIREMENTS
- *   NSW and ACT: no API keys or Puppeteer needed — axios + cheerio only, neither is
- *   Cloudflare/WAF-gated (confirmed 2026-08-26).
+ *   NSW, ACT and VIC: no API keys or Puppeteer needed — axios + cheerio only, none of the
+ *   three is Cloudflare/WAF-gated (NSW/ACT confirmed 2026-08-26; VIC confirmed 2026-09-11).
  *   Federal and NT: no API keys, but DO need Puppeteer (via fetchWithBrowser in
  *   browser.js) — both sit behind a Cloudflare managed challenge across their whole
  *   domain (confirmed: a solved session's cookies do not work for a subsequent plain
@@ -89,12 +89,21 @@ const LIVE_FIXTURES = {
   // Multiplex Constructions PL v Trans Australian Constructions PL [1995] NTSC 14 —
   // NT is a small jurisdiction; this is a real but old (1995) hit, expect exactly 1.
   nt: 'Multiplex',
+  // Mokbel v The King — Supreme Court of Victoria Judgment Summaries (WS4.6, added
+  // 2026-09-11) reliably returns 2 rows for this fixture as of that date ([2025] VSCA 243
+  // and an earlier undated "Mokbel v The King" summary). This source only ever carries a
+  // small, rotating set of published summaries (~10-12 at a time, skewed toward Court of
+  // Appeal matters, archived 12 months after publication) — if this fixture goes stale,
+  // re-discover by browsing https://www.supremecourt.vic.gov.au/areas/case-summaries/judgments
+  // (no query) for whatever's currently listed and picking any party name from it, same as
+  // the other live jurisdictions' fixtures above.
+  vic: 'Mokbel',
 };
 
 // Every jurisdiction not listed above should still return the manual fallback — see
 // CLAUDE.md's court-records investigation for why each of these has no free,
 // unauthenticated, full-text search yet.
-const FALLBACK_JURISDICTIONS = ['qld', 'vic', 'wa', 'sa', 'tas'];
+const FALLBACK_JURISDICTIONS = ['qld', 'wa', 'sa', 'tas'];
 
 (async () => {
   header('Court Records — Live Jurisdictions + Manual Fallback Test');
@@ -105,7 +114,7 @@ const FALLBACK_JURISDICTIONS = ['qld', 'vic', 'wa', 'sa', 'tas'];
   // NSW and ACT are fast (plain axios); Federal and NT are slow (Puppeteer round-trip
   // through a Cloudflare managed challenge) — this step runs them sequentially rather
   // than in parallel so failures are easy to attribute to one jurisdiction at a time.
-  const jurisdictionLabels = { nsw: 'NSW', act: 'ACT', federal: 'Federal', nt: 'NT' };
+  const jurisdictionLabels = { nsw: 'NSW', act: 'ACT', federal: 'Federal', nt: 'NT', vic: 'VIC' };
 
   for (const [jur, fixtureName] of Object.entries(LIVE_FIXTURES)) {
     const label = jurisdictionLabels[jur];

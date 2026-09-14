@@ -710,6 +710,62 @@ occasional founder checks, would need revisiting if this becomes something watch
 continuously during an incident. `RUNBOOK.md` was updated in the same pass (its Section 2
 now leads with the dashboard page, `curl` kept as the scriptable fallback).
 
+### WS4.6 — expansion proof landed (2026-09-11): VIC Supreme Court judgment summaries
+
+The last unstarted WS4 activity. Pass condition per `WS4_IMPLEMENTATION_PLAN.md`: touches only
+a manifest entry plus one fetch function — anything more means the framework failed its goal —
+timed and recorded either way.
+
+**Candidate re-verified live before building, not assumed from the 2026-09-07 note**: fetched
+`https://www.supremecourt.vic.gov.au/areas/case-summaries/judgments` directly. Confirmed: plain
+static HTML, no Cloudflare/JS gate (a bare `curl` with no headers beyond a UA string works), no
+scraping restriction in the site's `/termsofuse` page (checked directly — it only covers
+courtroom footage, not automated access). One correction to the 2026-09-07 note: this isn't a
+flat list — it's a real Drupal Views exposed filter with a server-side `?query=<term>` keyword
+search (confirmed: `?query=Mokbel` returns exactly the 2 matching rows out of the ~10 total, not
+the full unfiltered list) — so this was built as a genuine per-term live search, the same shape
+as the NSW/ACT/Federal/NT fetchers, not a fetch-all-and-filter-locally pattern.
+
+**Real, material limitation, flagged explicitly per a direct request not to gloss over it**:
+the Court only publishes summaries for a subset of cases it decides to summarise (skewed toward
+Court of Appeal matters — Mallard v Homes Victoria, Mokbel v The King, DPP v Raux, etc.) and
+states they are "removed and archived 12 months after their date of publication" (live listing
+on 2026-09-11 actually still showed entries back to June 2024, so that policy isn't tightly
+enforced, but the total is small regardless — ~10-12 rows at any time). This is a genuine
+improvement over "search manually" for the cases it does cover — not comprehensive VIC Supreme
+Court coverage, and nowhere near what NSW Caselaw or the Federal Court search offer. Treat any
+"0 results in VIC" as much weaker evidence of a clean record than the same result from NSW/ACT/
+Federal/NT.
+
+**Chose to upgrade the existing `courts_vic` key rather than add a new parallel one**, deviating
+from `WS4_IMPLEMENTATION_PLAN.md`'s literal `courts_vic_supreme` text — decided with the user
+after confirming two things by reading the current code: `courts_vic` already exists in
+`manifest.js`/`searchOrchestrator.js`'s `invocations` map/web's `INITIAL_SEARCHES`, currently
+pointed at `buildManualFallback('vic')`; and the doc's own "manifest entry plus one fetch
+function" bar is no longer accurate for a *brand-new* key now that WS4.1 moved invocation wiring
+out of `index.js` into `searchOrchestrator.js` (after this doc section was drafted) — a new key
+would need `manifest.js` + `searchOrchestrator.js` + `SearchContent.tsx` (enforced by
+`manifest.test.js`'s exact-sync check) + the scraper file, i.e. 4 files, not 2. Upgrading the
+existing key instead touches exactly one source file
+(`server/scrapers/courtRecords.js`) — new `fetchVicTermResults` (plain axios/cheerio,
+`makeTermCache`-wrapped like every other fetcher here), `searchVicSupremeCourt()` wrapper via
+the existing `runJurisdictionSearch`, one new dispatch branch in `searchCourtRecords()`, and an
+updated `MANUAL_SEARCH_URLS.vic` (was pointing at a directory page that just redirects further;
+now the precise judgments-listing URL) — plus the test file. No `manifest.js`, no
+`searchOrchestrator.js`, no web/ changes at all.
+
+**Elapsed time**: well under the 1-day budget — live re-verification, implementation, and test
+updates together took under an hour of active work in this session.
+
+**Verified**: `server/tests/test-court-records.js` — moved `vic` from `FALLBACK_JURISDICTIONS`
+into `LIVE_FIXTURES` (fixture: "Mokbel", 2 real rows as of 2026-09-11; same
+re-discovery-if-stale approach as the file's other fixtures, since this source's own content
+rotates independently) — all 11 assertions pass live, including the now-VIC-specific Step 1
+check and Step 2 correctly covering only `[qld, wa, sa, tas]`. Full `npm test` (118/118) and a
+direct `searchCourtRecords('Mokbel', [], 'vic')` call both confirmed working.
+`git diff --stat` confirms the change touches only `courtRecords.js` +
+`test-court-records.js` — **pass**, against the stated bar.
+
 ### Phase 7c — asicExtract: historical directors + charges register
 
 `asicExtract.js` currently returns companies that *current* directors are associated with (phoenix detection). Missing:
