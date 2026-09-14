@@ -710,6 +710,120 @@ occasional founder checks, would need revisiting if this becomes something watch
 continuously during an incident. `RUNBOOK.md` was updated in the same pass (its Section 2
 now leads with the dashboard page, `curl` kept as the scriptable fallback).
 
+**Follow-up (2026-09-14): two real gaps found and fixed while confirming there's no manual DB
+step needed for this table** (there isn't — `schema.sql` is applied idempotently at runtime by
+`db.js`'s `ensureSchema()`, same as every other table here; no migration framework, per this
+file's own note at the top of `schema.sql`). Both found by reading `healthHistory.js` closely,
+not by a live failure:
+
+1. **`healthHistory.js` never called `ensureSchema()` itself** — `logEvent`/`getRollup` only
+   imported `getPool()`. Table creation for `health_check_event` was riding entirely on some
+   *other* code path (a `datasetStore.js`-backed refresh job) happening to run first and
+   applying the whole `schema.sql` file as a side effect. In production this probably always
+   worked, since the `start*Refresh()` jobs fire immediately on boot — but it was never
+   guaranteed, and a fresh environment where none of those jobs run before the first search
+   could silently never create the table. Fixed: both functions now call `ensureSchema()`
+   themselves, mirroring `datasetStore.js`'s own established pattern exactly.
+2. **`getRollup()` had no try/catch at all, and its one caller
+   (`/api/admin/scraper-health/full` in `index.js`) didn't wrap it either.** A query failure —
+   the table not existing yet being the obvious trigger, but any transient connection error
+   would do it — would reject uncaught inside an async Express 4 route handler, which Express
+   does not catch on its own. That's an unhandled rejection in a process that has already
+   crashed once from exactly this shape of bug (see the WS4.2 entry above for
+   `abnPromise`/`asicPromise`). Fixed: `getRollup()` now catches and returns `null` (the same
+   contract as "no DB configured"), so a query failure degrades to "no persisted history
+   available" instead of a second instance of that crash class.
+
+Added a regression test (`getRollup` — a rejecting `pool.query` resolves to `null`, doesn't
+throw) to `healthHistory.test.js` — 128/128 `npm test` passing. Still not verified against a
+real Postgres in this pass, same caveat as above — worth confirming `DATABASE_URL` is actually
+set in the real Railway environment (unconfirmed from this sandbox, same open item as the
+earlier WS0–3 audit entry's note on `datasetStore.js`) before relying on the dashboard's 7-day
+numbers.
+
+**Follow-up (2026-09-14): the exact thing the caveat above warned about happened, and it took
+production down.** The user set a real `DATABASE_URL` (a Supabase pooler connection, already
+shared with `web/`'s Prisma setup) on the Railway server service for the first time. The whole
+container immediately went into a crash loop — `https://know-your-builder-server-production
+.up.railway.app` returned Railway's generic "Application failed to respond" edge error, not
+even `Cannot GET /` (which it had returned correctly moments earlier, confirming the app itself
+was healthy before this variable was added).
+
+**Root cause: `db.js`'s `getPool()` created a `pg.Pool` with no `.on('error', ...)` listener.**
+This is a well-documented `node-postgres` gotcha, distinct from every other robustness fix in
+this file: `pg.Pool` emits `'error'` on behalf of any idle client that hits a connection-level
+problem (a dropped connection, an auth hiccup, a network blip) — and Node treats an unhandled
+`EventEmitter` `'error'` event as fatal, throwing synchronously and crashing the whole process.
+This happens completely outside of any `await`/promise chain, so it is invisible to — and not
+preventable by — any of the `try/catch` blocks already carefully placed throughout this
+codebase (the four dataset-refresh jobs that hit the DB immediately on boot were all confirmed,
+by reading their code, to already handle promise rejection correctly; none of that mattered
+here, because this isn't a promise rejection). The exact trigger for the specific idle-client
+error wasn't captured (the user restored service before logs were pulled), but the fix needed
+was the same regardless: attach the listener so any such event gets logged instead of taking
+the process down.
+
+**Immediate mitigation**: had the user remove the `DATABASE_URL` variable in Railway, which
+restored service on redeploy (confirms nothing else about that change was the problem — the
+app runs fine on the disk-cache-only path, exactly as it did throughout WS0–WS4).
+
+**Fixed**: `pool.on('error', ...)` added in `getPool()`, logging rather than crashing. New
+`server/scrapers/db.test.js` — proves the fix by actually emitting `'error'` on a real
+(network-inert; `pg.Pool` doesn't connect until first checkout) `Pool` instance and asserting
+it doesn't throw; verified the test genuinely catches the regression by reverting the fix and
+re-running it (fails cleanly on the listener-count assertion, as it should). 130/130 `npm test`
+passing.
+
+Shipped via its own dedicated `hotfix/pg-pool-error-handler` branch/PR straight to `main`,
+deliberately kept separate from the rest of this session's work (this entry, the dashboard, VIC
+courts, the matching-bug fix below) so merging it didn't also deploy anything else untested —
+`main`'s own `db.js` carries this same fix independently of whatever lands from this branch.
+
+**Follow-up (2026-09-14, same day): re-adding `DATABASE_URL` crashed production a second time —
+real logs this time, and a different, second bug.** Once the hotfix above was deployed, the user
+re-added `DATABASE_URL` and the container crashed again. This time the actual Railway deploy
+logs were pulled (not skipped for speed, learning from the first round): `[db] failed to apply
+schema.sql: connect ENETUNREACH 2406:da14:...:5432` was being logged correctly (that part of the
+fix above working exactly as designed), but the process still crashed, with a stack trace
+pointing at `datasetStore.js:100` inside `replaceDatasetRecords`, called from
+`paymentTimesRefresh.js:50`.
+
+**Root cause, two stacking bugs, both distinct from the `pool.on('error')` gap**:
+1. `datasetStore.js`'s `replaceDatasetRecords()` called `const client = await _pool.connect();`
+   *outside* its own `try` block — so when the connection itself failed (the `ENETUNREACH`
+   above: Supabase's pooler hostname resolved to an IPv6 address Railway's network couldn't
+   route to), the rejection propagated uncaught instead of falling into the disk-fallback catch
+   every other failure in this function already used.
+2. `paymentTimesRefresh.js`'s final `await replaceDatasetRecords(...)` was the one call in that
+   function not wrapped in try/catch, unlike every other step in the same file (which all
+   explicitly comment "never throw: this must not crash the long-lived server process"). The
+   other three refresh jobs (`vicBpc`, `actLicences`, `asicEU`) were structurally safe already —
+   their `datasetStore` calls happen *inside* their own already-try/catch-wrapped fetch
+   functions, so `paymentTimes` was uniquely exposed.
+
+**Fixed**: `replaceDatasetRecords()`'s `_pool.connect()` moved inside its own try/catch (the
+root-cause fix — protects every current and future caller, not just `paymentTimes`);
+`paymentTimesRefresh.js`'s call site wrapped too, for defense in depth. New regression test in
+`datasetStore.test.js` injects a rejecting `connect()` into a fake pool and asserts
+`replaceDatasetRecords` still resolves with a disk-fallback result — verified it genuinely
+catches the regression by reverting the fix and re-running (fails cleanly on the injected
+rejection, not a process crash, confirming the test itself is a safe way to prove this). Shipped
+via a second dedicated branch/PR, `hotfix/dataset-store-connect-error`, same reasoning as above.
+
+**Still open as of this entry**: the `ENETUNREACH` itself is a routing problem, not something
+either hotfix fixes — Supabase's pooler resolving to an IPv6 address Railway can't reach means
+every dataset refresh will keep falling back to disk (gracefully now, not crashing) until the
+connection string itself points somewhere reachable. Next step recommended: try Supabase's
+"Transaction pooler" connection string (typically port `6543`, documented by Supabase as the
+IPv4-reachable option for platforms like Railway) in place of the current port-`5432` one, in
+`DATABASE_URL`. Not yet confirmed whether that resolves it.
+
+**Lesson for future sessions**: pull real deploy logs before the *first* guess, not after a
+second crash. The first hotfix was a real, correct, necessary fix — but it was also an
+educated guess made without seeing the actual error, and it turned out there was a second,
+independent bug waiting right behind it. Real logs the second time found the actual cause in
+one pass instead of another round of guessing.
+
 ### WS4.6 — expansion proof landed (2026-09-11): VIC Supreme Court judgment summaries
 
 The last unstarted WS4 activity. Pass condition per `WS4_IMPLEMENTATION_PLAN.md`: touches only
@@ -765,6 +879,58 @@ check and Step 2 correctly covering only `[qld, wa, sa, tas]`. Full `npm test` (
 direct `searchCourtRecords('Mokbel', [], 'vic')` call both confirmed working.
 `git diff --stat` confirms the change touches only `courtRecords.js` +
 `test-court-records.js` — **pass**, against the stated bar.
+
+### Silent false-negative in the shared word-length matching filter — 2 files fixed, 5 flagged (2026-09-14)
+
+Found while investigating whether the `run-all.sh` legacy test failures (`act-licence`,
+`modern-slavery`, among others) were masking real regressions, per a direct user request to
+verify before assuming they were safe to ignore.
+
+**`act-licence` — confirmed a false alarm, not a regression.** This is a dead reconnaissance
+probe against `accesscanberra.act.gov.au/licence-and-registration/check-a-licence` — a page
+Access Canberra has since removed entirely (live-confirmed: "This page was removed, renamed
+or doesn't exist"). The real production scraper (`actLicences.js`, covered by the separate,
+passing `act-licences` test) has used ACT's `data.act.gov.au` Socrata API since the WS3
+director-discovery work — a completely different mechanism this stale probe predates and
+never tests. No action needed; this probe is testing infrastructure that no longer exists.
+
+**`modern-slavery` — the specific test failure is also a false alarm** (a self-discovered
+fixture with an unusually long, comma-joined dual-entity name the register's own search
+doesn't index for — confirmed via the test's own direct-re-query diagnostic). **But
+sanity-checking it live surfaced a real, separate, previously-undetected bug**: a direct
+`searchModernSlavery('BHP', '')` call returned zero results despite BHP having real, current
+statements on the register (confirmed by querying the raw register directly and finding
+several). Root cause: `isEntityMatch`'s word-distinctiveness filter required `length > 3` —
+so a company name whose only word is exactly 3 characters (BHP, NAB, ANZ, CBA, IAG, TAB...)
+leaves zero "distinctive" words after filtering, and `words.length === 0` short-circuits to
+`false` for every such search with no ABN supplied. Large ASX-listed entities — exactly the
+population Modern Slavery Statements cover — are disproportionately likely to hit this via a
+short ticker-style name.
+
+The identical filter (`w.length > 3`, same regex, same stopword list) is duplicated across
+**7 files**: `modernSlavery.js` and `asicEnforceableUndertakings.js` (both national,
+`mvpScope: true`) plus `vicBpc.js`, `waLicenceRegister.js`, `vicVbaLicence.js`,
+`tasLicenceRegister.js`, `qbcc.js` (all VIC/WA/TAS/QLD-specific). `courtRecords.js`'s
+`titleMatchesTerm` already uses the correct `> 2` threshold elsewhere in this codebase — these
+7 are the outliers, all presumably copy-pasted from the same original source.
+
+**Fixed the 2 national/in-scope files** (`modernSlavery.js`, `asicEnforceableUndertakings.js`):
+`> 3` → `> 2`, matching `courtRecords.js`'s precedent. Live-reverified: `searchModernSlavery('BHP', '')`
+now returns 6 real results. Added `scrapers/modernSlavery.test.js` and
+`scrapers/asicEnforceableUndertakings.test.js` — pure-function regression tests against the
+now-exported `isEntityMatch`/`nameMatchesEntity` (no network needed), covering the 3-char fix,
+confirming the 1-2 char floor still holds, and confirming multi-word phrase-anchoring and the
+ABN-match path are unaffected. Both added to `server/package.json`'s `test` script — 127/127
+passing. `run-all.sh`'s live `asic-eu` test also still passes; `modern-slavery`'s own live test
+still fails on the same unrelated bad fixture as before (confirmed unrelated to this fix).
+
+**Not fixed — flagged only, same as this file's established practice for shared-helper bugs
+found outside a change's immediate scope** (e.g. the "Pty Limited" suffix-stripping entry
+above): `vicBpc.js`, `waLicenceRegister.js`, `vicVbaLicence.js`, `tasLicenceRegister.js`,
+`qbcc.js` all still carry the `> 3` bug. Deliberately left alone — these are all VIC/WA/TAS/QLD
+registers, outside this product's current NSW/ACT scope; revisit if/when those jurisdictions
+come back into scope, or opportunistically the next time one of these files is touched for an
+unrelated reason.
 
 ### Phase 7c — asicExtract: historical directors + charges register
 

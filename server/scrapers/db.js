@@ -24,9 +24,21 @@ function getPool() {
   const { Pool } = require('pg');
   pool = new Pool({
     connectionString: process.env.DATABASE_URL,
-    // Railway's managed Postgres requires SSL; rejectUnauthorized: false matches Railway's
-    // own connection guidance (their certs aren't in the default trust store).
+    // Works against both Railway's managed Postgres and Supabase's connection pooler;
+    // rejectUnauthorized: false skips validating the cert chain against Node's default
+    // trust store rather than requiring a specific provider's CA to be installed.
     ssl: process.env.DATABASE_URL.includes('sslmode=disable') ? false : { rejectUnauthorized: false },
+  });
+  // REQUIRED — without this, pg's Pool crashes the entire process on any idle-client
+  // connection error (a dropped connection, an auth hiccup, a network blip): Node treats
+  // an EventEmitter 'error' event with no listener as fatal and throws, bypassing every
+  // try/catch in this codebase entirely (this is a distinct mechanism from a promise
+  // rejection — every scraper/refresh-job try/catch here is irrelevant to it). This was
+  // found live in production (2026-09-14): adding DATABASE_URL for the first time crashed
+  // the whole Railway container immediately, taking down the entire app, not just the
+  // health-history feature that motivated adding it.
+  pool.on('error', (err) => {
+    console.error('[db] pool error (idle client) — not fatal, connection will be retried:', err.message);
   });
   return pool;
 }

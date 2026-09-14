@@ -27,10 +27,17 @@ function isEntityMatch(entityText, companyName, abn) {
   // text as a whole word. Plain substring matching both false-positives on short
   // numeric tokens (e.g. "37" inside "237") and, without excluding "pty"/"ltd", treats
   // them as distinctive even though virtually every company name contains them.
+  //
+  // Threshold is length > 2 (3+ chars), not > 3 — found 2026-09-14 via a live "BHP"
+  // sanity check returning zero results despite BHP having real, current statements on
+  // the register: at > 3, a name whose only word is exactly 3 characters (BHP, NAB, ANZ,
+  // CBA...) has zero "distinctive" words left, so `words.length === 0` short-circuits to
+  // a silent false negative for every such search with no ABN supplied. Matches
+  // courtRecords.js's titleMatchesTerm, which already uses this correct threshold.
   const words = companyName
     .toLowerCase()
     .split(/\s+/)
-    .filter((w) => (w.length > 3 || /^\d+$/.test(w)) && !/^(pty|ltd|limited|the|and|of|a)$/.test(w));
+    .filter((w) => (w.length > 2 || /^\d+$/.test(w)) && !/^(pty|ltd|limited|the|and|of|a)$/.test(w));
   if (words.length === 0) return false;
   return words.every((w) => new RegExp(`\\b${escapeRegExp(w)}\\b`).test(haystack));
 }
@@ -93,4 +100,4 @@ async function searchModernSlavery(companyName, abn) {
   };
 }
 
-module.exports = { searchModernSlavery };
+module.exports = { searchModernSlavery, isEntityMatch };

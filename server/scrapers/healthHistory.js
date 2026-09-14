@@ -1,6 +1,6 @@
 'use strict';
 
-const { getPool } = require('./db');
+const { getPool, ensureSchema } = require('./db');
 
 // WS0.8 (reliability plan) — persisted history behind the reliability dashboard, backed by
 // the health_check_event table (server/db/schema.sql). Companion to scraperHealth.js's
@@ -17,6 +17,12 @@ const { getPool } = require('./db');
 async function logEvent(key, outcome, error, pool = getPool()) {
   if (!pool) return;
   try {
+    // Idempotent + memoized (see db.js) — cheap to call on every event, and guarantees
+    // this table exists without relying on some other module (datasetStore.js) having
+    // called it first. Found 2026-09-14: this call was missing entirely, so in a fresh
+    // deploy health_check_event's creation depended entirely on incidental ordering —
+    // whichever dataset-refresh job happened to run first via datasetStore.js.
+    await ensureSchema();
     await pool.query(
       'INSERT INTO health_check_event (scraper_key, outcome, error) VALUES ($1, $2, $3)',
       [key, outcome, error ?? null]
@@ -34,27 +40,42 @@ async function logEvent(key, outcome, error, pool = getPool()) {
 // in the table for the dashboard to show separately if useful later.
 async function getRollup({ windowDays = 7 } = {}, pool = getPool()) {
   if (!pool) return null;
-  const { rows } = await pool.query(
-    `SELECT scraper_key,
-            COUNT(*) FILTER (WHERE outcome = 'success') AS successes,
-            COUNT(*) FILTER (WHERE outcome IN ('success', 'failure')) AS attempts
-       FROM health_check_event
-      WHERE occurred_at > now() - ($1 || ' days')::interval
-      GROUP BY scraper_key`,
-    [String(windowDays)]
-  );
+  // Found 2026-09-14 alongside the missing ensureSchema() call above: this had no
+  // try/catch at all, and its one caller (index.js's /api/admin/scraper-health/full
+  // route) doesn't wrap it either — a query failure (table not yet created, a transient
+  // connection error) would reject uncaught into an async Express 4 route handler, which
+  // Express does not catch on its own. That's an unhandled rejection, and this process
+  // has already crashed once from exactly that shape of bug (see the WS4.2 entry for
+  // abnPromise/asicPromise). Treat a query failure the same as "no DB configured" — the
+  // dashboard already has a defined, graceful way to render that (historyAvailable:
+  // false) — rather than let it become a second instance of the same crash class.
+  try {
+    await ensureSchema();
+    const { rows } = await pool.query(
+      `SELECT scraper_key,
+              COUNT(*) FILTER (WHERE outcome = 'success') AS successes,
+              COUNT(*) FILTER (WHERE outcome IN ('success', 'failure')) AS attempts
+         FROM health_check_event
+        WHERE occurred_at > now() - ($1 || ' days')::interval
+        GROUP BY scraper_key`,
+      [String(windowDays)]
+    );
 
-  const result = {};
-  for (const row of rows) {
-    const attempts = Number(row.attempts);
-    const successes = Number(row.successes);
-    result[row.scraper_key] = {
-      attempts,
-      successes,
-      successRate: attempts > 0 ? successes / attempts : null,
-    };
+    const result = {};
+    for (const row of rows) {
+      const attempts = Number(row.attempts);
+      const successes = Number(row.successes);
+      result[row.scraper_key] = {
+        attempts,
+        successes,
+        successRate: attempts > 0 ? successes / attempts : null,
+      };
+    }
+    return result;
+  } catch (err) {
+    console.warn('[healthHistory] getRollup failed, reporting as no history available:', err.message);
+    return null;
   }
-  return result;
 }
 
 // Pure merge of scraperHealth.buildHealthReport()'s live snapshot with getRollup()'s

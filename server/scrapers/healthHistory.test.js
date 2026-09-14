@@ -66,6 +66,12 @@ test('getRollup — computes successRate from attempts/successes and excludes ci
   assert.match(pool.calls[0].sql, /outcome IN \('success', 'failure'\)/);
 });
 
+test('getRollup — a rejecting pool.query (e.g. table not yet created) resolves to null, does not throw', async () => {
+  const pool = makeFakePool({ queryImpl: async () => { throw new Error('relation "health_check_event" does not exist'); } });
+  await assert.doesNotReject(getRollup({ windowDays: 7 }, pool));
+  assert.equal(await getRollup({ windowDays: 7 }, pool), null);
+});
+
 test('getRollup — a key with zero attempts in the window reports successRate null, not NaN', async () => {
   const pool = makeFakePool({
     queryImpl: async () => ({ rows: [{ scraper_key: 'qbcc', successes: '0', attempts: '0' }] }),
