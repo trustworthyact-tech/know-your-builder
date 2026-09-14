@@ -97,8 +97,15 @@ async function replaceDatasetRecords(datasetKey, rows, { sourceUrl } = {}, _pool
   if (!_pool) return { stored: 'disk', fetchedAt, rowCount: rows.length };
 
   await ensureSchema();
-  const client = await _pool.connect();
+  let client;
   try {
+    // Found 2026-09-14 in production: _pool.connect() itself can reject (e.g. a network
+    // route to the DB being unreachable — ENETUNREACH), and until this fix that happened
+    // outside this try block, so the rejection propagated uncaught instead of falling
+    // into the disk-fallback catch below like every other failure here does. `client` is
+    // declared outside the try so the catch/finally below can safely check whether a
+    // connection was actually established before touching it.
+    client = await _pool.connect();
     await client.query('BEGIN');
     await client.query(
       `INSERT INTO dataset_snapshot (dataset_key, fetched_at, row_count, status, source_url, error)
@@ -111,11 +118,13 @@ async function replaceDatasetRecords(datasetKey, rows, { sourceUrl } = {}, _pool
     await client.query('COMMIT');
     return { stored: 'db', fetchedAt, rowCount: rows.length };
   } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
+    // client is undefined here if _pool.connect() itself was what failed — nothing to
+    // roll back or release in that case.
+    if (client) await client.query('ROLLBACK').catch(() => {});
     console.error(`[datasetStore] replaceDatasetRecords(${datasetKey}) DB write failed, disk fallback already written:`, err.message);
     return { stored: 'disk', fetchedAt, rowCount: rows.length, error: err.message };
   } finally {
-    client.release();
+    if (client) client.release();
   }
 }
 

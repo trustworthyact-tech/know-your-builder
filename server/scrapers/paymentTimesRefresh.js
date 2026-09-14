@@ -47,12 +47,20 @@ async function refreshOnce() {
     return;
   }
 
-  await replaceDatasetRecords(
-    DATASET_KEY,
-    rows.map((r) => ({ payload: r, abn: r.abn || null, normalisedName: r.name ? r.name.toLowerCase() : null })),
-    { sourceUrl: 'https://register.paymenttimes.gov.au/dashboard.html' }
-  );
-  console.log(`[paymentTimesRefresh] ingested ${rows.length} row(s) into datasetStore`);
+  // Found 2026-09-14 in production: this was the one call in this function not wrapped
+  // in try/catch, unlike every other step above — replaceDatasetRecords() is now fixed
+  // to never reject on its own (see datasetStore.js), but this guard stays as defense in
+  // depth, matching every other step's "never throw" contract in this file.
+  try {
+    await replaceDatasetRecords(
+      DATASET_KEY,
+      rows.map((r) => ({ payload: r, abn: r.abn || null, normalisedName: r.name ? r.name.toLowerCase() : null })),
+      { sourceUrl: 'https://register.paymenttimes.gov.au/dashboard.html' }
+    );
+    console.log(`[paymentTimesRefresh] ingested ${rows.length} row(s) into datasetStore`);
+  } catch (err) {
+    console.error('[paymentTimesRefresh] failed to ingest into datasetStore:', err.message);
+  }
 }
 
 function startPaymentTimesRefresh(intervalMs = Number(process.env.PTRR_REFRESH_INTERVAL_MS) || DEFAULT_INTERVAL_MS) {
