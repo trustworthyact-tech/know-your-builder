@@ -9,12 +9,17 @@ function escapeRegExp(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+// Threshold is length > 2 (3+ chars), not > 3 — see modernSlavery.js's isEntityMatch for
+// the live "BHP" sanity check (found 2026-09-14) that surfaced this: at > 3, a name whose
+// only word is exactly 3 characters (BHP, NAB, ANZ, CBA...) leaves zero "distinctive"
+// words, silently matching nothing. Same shared filter shape, same fix, same file across
+// several scrapers in this codebase — see CLAUDE.md for the other files still carrying it.
 function nameMatchesEntity(text, name) {
   if (!name) return false;
   const words = name
     .toLowerCase()
     .split(/\s+/)
-    .filter((w) => (w.length > 3 || /^\d+$/.test(w)) && !/^(pty|ltd|limited|the|and|of|a)$/.test(w));
+    .filter((w) => (w.length > 2 || /^\d+$/.test(w)) && !/^(pty|ltd|limited|the|and|of|a)$/.test(w));
   if (words.length === 0) return false;
   const lower = text.toLowerCase();
   if (words.length > 1) {

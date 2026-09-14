@@ -2,7 +2,14 @@
 
 const axios = require('axios');
 const cheerio = require('cheerio');
-const { replaceDatasetRecords, queryDataset } = require('./datasetStore');
+const { replaceDatasetRecords, queryDataset, recordIngestionFailure } = require('./datasetStore');
+
+// WS4 reliability-plan audit (2026-09-10) — see the identical guard in asicDpnDataset.js
+// for the full rationale (the historical Payment Times silent-column-shift bug is the
+// direct precedent). The real register holds ~500 records since 1998; 50 is a generous
+// floor well below any plausible legitimate value, meant only to catch "the page markup
+// changed and parseRecords() found almost nothing," not to police the register's size.
+const MIN_SANE_ROW_COUNT = 50;
 
 // ASIC's Court Enforceable Undertakings register has no bulk/open-data API — confirmed
 // by querying data.gov.au's CKAN Action API directly for ASIC's organization
@@ -102,9 +109,10 @@ async function readCachedRecords() {
  * Throws only when the live fetch fails AND no cached copy exists.
  *
  * _axios is injectable so tests can simulate a fetch failure and stale fallback without
- * touching the network — same pattern as captcha.js's _http.
+ * touching the network — same pattern as captcha.js's _http. _minRows is injectable so
+ * tests can exercise the row-count sanity guard without a 50-record fixture.
  */
-async function doFetchAsicEuRecords(_axios = axios) {
+async function doFetchAsicEuRecords(_axios = axios, _minRows = MIN_SANE_ROW_COUNT) {
   let html;
   try {
     const { data } = await _axios.get(REGISTER_URL, { headers: HEADERS, timeout: 30_000 });
@@ -116,6 +124,17 @@ async function doFetchAsicEuRecords(_axios = axios) {
   }
 
   const records = parseRecords(html);
+
+  if (records.length < _minRows) {
+    // Same "treat an implausibly small parse like a fetch failure" guard as
+    // asicDpnDataset.js — don't promote it, record why, and fall back to the last
+    // known-good copy for this caller too.
+    console.error(`[asicEnforceableUndertakingsDataset] parsed only ${records.length} record(s) (expected ${_minRows}+) — refusing to promote, likely a page markup change`);
+    await recordIngestionFailure(DATASET_KEY, `parsed only ${records.length} record(s), below the ${_minRows} sanity floor`);
+    const cached = await readCachedRecords();
+    if (cached) return cached;
+    throw new Error(`ASIC EU: parsed only ${records.length} record(s) and no prior cache to fall back to`);
+  }
 
   try {
     await replaceDatasetRecords(DATASET_KEY, records.map((payload) => ({ payload })), { sourceUrl: REGISTER_URL });
@@ -131,9 +150,9 @@ async function doFetchAsicEuRecords(_axios = axios) {
 // pattern in asicDpnDataset.js / vicBpcDataset.js.
 let inFlightFetch = null;
 
-async function fetchAsicEuRecords(_axios = axios) {
+async function fetchAsicEuRecords(_axios = axios, _minRows = MIN_SANE_ROW_COUNT) {
   if (inFlightFetch) return inFlightFetch;
-  inFlightFetch = doFetchAsicEuRecords(_axios);
+  inFlightFetch = doFetchAsicEuRecords(_axios, _minRows);
   try {
     return await inFlightFetch;
   } finally {
@@ -141,4 +160,4 @@ async function fetchAsicEuRecords(_axios = axios) {
   }
 }
 
-module.exports = { fetchAsicEuRecords, parseRecords, DATASET_KEY, REGISTER_URL };
+module.exports = { fetchAsicEuRecords, parseRecords, DATASET_KEY, REGISTER_URL, MIN_SANE_ROW_COUNT };

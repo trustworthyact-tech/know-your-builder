@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Scraper Health — Know Your Builder</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f4f6f9;
+    --card: #ffffff;
+    --border: #eef1f6;
+    --text: #1a2233;
+    --muted: #636b76;
+    --healthy: #1e7a3d;
+    --degraded: #b3720a;
+    --open: #b3261e;
+    --nodata: #636b76;
+  }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    padding: 24px;
+  }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; font-size: 13px; }
+  #gate {
+    max-width: 420px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px;
+  }
+  #gate input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 8px 10px;
+    font-size: 14px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    margin: 8px 0 12px;
+  }
+  button {
+    background: #1a3a5c;
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    padding: 8px 14px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  button:hover { opacity: 0.92; }
+  #error { color: var(--open); font-size: 13px; margin-top: 8px; min-height: 1em; }
+  #toolbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 14px;
+  }
+  #generatedAt { color: var(--muted); font-size: 12px; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  th, td {
+    text-align: left;
+    padding: 9px 12px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+    white-space: nowrap;
+  }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.02em; }
+  tr:last-child td { border-bottom: none; }
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #fff;
+  }
+  .badge-healthy { background: var(--healthy); }
+  .badge-degraded { background: var(--degraded); }
+  .badge-open { background: var(--open); }
+  .badge-no-data { background: var(--nodata); }
+  .mvp {
+    font-size: 11px;
+    color: var(--muted);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 5px;
+  }
+  .note { color: var(--muted); font-size: 12px; margin-top: 12px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+  <h1>Scraper Health</h1>
+  <p class="sub">Reliability dashboard (WS0.8) — live breaker state plus 7-day persisted success rate.</p>
+
+  <div id="gate">
+    <label for="keyInput">Admin key</label>
+    <input id="keyInput" type="password" placeholder="x-admin-key value" autocomplete="off" />
+    <button id="unlockBtn">View dashboard</button>
+    <div id="error"></div>
+  </div>
+
+  <div id="dashboard" hidden>
+    <div id="toolbar">
+      <button id="refreshBtn">Refresh</button>
+      <span id="generatedAt"></span>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>Status</th>
+          <th>Key</th>
+          <th>Jurisdiction</th>
+          <th>Scope</th>
+          <th>7-day success rate</th>
+          <th>Last success</th>
+          <th>Last failure</th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <p class="note" id="historyNote"></p>
+  </div>
+
+<script>
+(function () {
+  var STORAGE_KEY = 'kyb_admin_health_key';
+  var SEVERITY = { open: 0, degraded: 1, 'no-data': 2, healthy: 3 };
+
+  var gate = document.getElementById('gate');
+  var dashboard = document.getElementById('dashboard');
+  var keyInput = document.getElementById('keyInput');
+  var errorEl = document.getElementById('error');
+  var rowsEl = document.getElementById('rows');
+  var generatedAtEl = document.getElementById('generatedAt');
+  var historyNoteEl = document.getElementById('historyNote');
+
+  function fmtTime(iso) {
+    if (!iso) return '—';
+    var d = new Date(iso);
+    return d.toLocaleString();
+  }
+
+  function fmtRate(row) {
+    if (!row.historyAvailable) return 'no history yet';
+    if (row.attempts7d == null || row.attempts7d === 0) return 'no attempts';
+    return Math.round(row.successRate7d * 100) + '% (' + row.attempts7d + ')';
+  }
+
+  function render(report) {
+    var rows = report.scrapers.slice().sort(function (a, b) {
+      var sa = SEVERITY[a.status] ?? 4;
+      var sb = SEVERITY[b.status] ?? 4;
+      if (sa !== sb) return sa - sb;
+      return a.key.localeCompare(b.key);
+    });
+
+    rowsEl.innerHTML = rows.map(function (row) {
+      return '<tr>' +
+        '<td><span class="badge badge-' + row.status + '">' + row.status + '</span></td>' +
+        '<td>' + row.key + '<br><span style="color:var(--muted);font-weight:400">' + (row.label || '') + '</span></td>' +
+        '<td>' + (row.jurisdiction || '—') + '</td>' +
+        '<td><span class="mvp">' + (row.mvpScope ? 'MVP' : 'non-MVP') + '</span></td>' +
+        '<td>' + fmtRate(row) + '</td>' +
+        '<td>' + fmtTime(row.lastSuccessAt) + '</td>' +
+        '<td>' + fmtTime(row.lastFailureAt) + '</td>' +
+        '</tr>';
+    }).join('');
+
+    generatedAtEl.textContent = 'Generated ' + fmtTime(report.generatedAt);
+    var anyHistory = report.scrapers.some(function (r) { return r.historyAvailable; });
+    historyNoteEl.textContent = anyHistory
+      ? '7-day success rate is computed from persisted health_check_event rows.'
+      : 'No persisted history available yet (DATABASE_URL not configured, or no events logged since setup).';
+  }
+
+  function fetchReport(key) {
+    return fetch('/api/admin/scraper-health/full', { headers: { 'x-admin-key': key } })
+      .then(function (res) {
+        if (res.status === 401 || res.status === 503) {
+          return res.json().then(function (body) {
+            throw new Error(body.error || ('Request failed: ' + res.status));
+          });
+        }
+        if (!res.ok) throw new Error('Request failed: ' + res.status);
+        return res.json();
+      });
+  }
+
+  function showGate(message) {
+    dashboard.hidden = true;
+    gate.hidden = false;
+    errorEl.textContent = message || '';
+  }
+
+  function unlock(key) {
+    fetchReport(key).then(function (report) {
+      try { sessionStorage.setItem(STORAGE_KEY, key); } catch (e) { /* private browsing, fine */ }
+      gate.hidden = true;
+      dashboard.hidden = false;
+      render(report);
+    }).catch(function (err) {
+      try { sessionStorage.removeItem(STORAGE_KEY); } catch (e) { /* fine */ }
+      showGate(err.message);
+    });
+  }
+
+  document.getElementById('unlockBtn').addEventListener('click', function () {
+    unlock(keyInput.value.trim());
+  });
+  keyInput.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') unlock(keyInput.value.trim());
+  });
+  document.getElementById('refreshBtn').addEventListener('click', function () {
+    var key = (function () { try { return sessionStorage.getItem(STORAGE_KEY); } catch (e) { return null; } })();
+    if (key) unlock(key);
+  });
+
+  var stored = (function () { try { return sessionStorage.getItem(STORAGE_KEY); } catch (e) { return null; } })();
+  if (stored) {
+    keyInput.value = stored;
+    unlock(stored);
+  }
+})();
+</script>
+</body>
+</html>

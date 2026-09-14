@@ -24,6 +24,25 @@ cd web && npx tsc --noEmit  # web
 
 No test suite or linter configured.
 
+## Checking scraper health (WS0.8, reliability plan)
+
+Literal, founder-facing steps for this now live in `RUNBOOK.md` (WS4.5) — this section stays
+just the technical summary for whoever's writing code next. `GET /admin/scraper-health` is a
+small static page (`server/public/admin-scraper-health.html`) that prompts once for the
+`ADMIN_HEALTH_KEY` value (stored in `sessionStorage`, not the URL) and renders a table, sorted
+worst-first, of each of the 29 manifest keys' current breaker status (`"healthy"` /
+`"degraded"` / `"open"` / `"no-data"`) plus a 7-day success rate. It's backed by
+`GET /api/admin/scraper-health/full` (same `x-admin-key`/`ADMIN_HEALTH_KEY` gate, fails closed
+if that env var isn't set), which merges `scraperHealth.js`'s in-memory breaker snapshot
+(`buildHealthReport(SCRAPERS)`) with persisted history from the new `health_check_event`
+table (`server/scrapers/healthHistory.js` — one row per `runScraper()` outcome, written
+fire-and-forget so a DB hiccup can never slow down or crash a search request). Only the 16
+`mvpScope: true` keys ever populate the live-breaker columns; history populates for any key
+once it's gone through `runScraper()` at a point where `DATABASE_URL` was set — with no DB
+configured (the normal local-dev state), every row reports `historyAvailable: false` rather
+than a misleading 0%. The original raw-JSON endpoint (`GET /api/admin/scraper-health`, no
+history, in-memory only) still exists unchanged for scripts/`curl`.
+
 ## Architecture
 
 ```
@@ -292,6 +311,626 @@ extension, reliability dashboard), WS2 (live-path hardening for the remaining li
 scrapers), WS3 (director-discovery correctness — see `resolveDirectors()` entries
 elsewhere in this file), WS4 (manifest-driven orchestrator cutover, fault injection, load
 test).
+
+**Follow-up (2026-09-10, reliability plan WS4.1): orchestrator cutover landed for the
+16 MVP-scope keys.** Full activity plan in `WS4_IMPLEMENTATION_PLAN.md` (repo root) —
+this entry is the execution record for its 4.1 activity. The per-request search pipeline
+was extracted out of `index.js`'s inline `app.post('/api/search', ...)` handler into
+`server/searchOrchestrator.js`'s `runSearchRequest({ abn, acn, companyName, tradingName,
+directors }, { send })` — `index.js`'s route handler is now just request validation +
+NDJSON headers + one call into this function. This was already flagged as WS4.1's job by
+`test-ws2-live-hardening.js`'s own doc comment (the courts_act manual-fallback branch
+"lives inline in index.js's route handler, which isn't yet extracted into a
+directly-callable function"); the extraction also means fault-injection tests (WS4.2) can
+call `runSearchRequest` directly with a fake `send` collector, no live HTTP server needed.
+
+`manifest.js` gained an `mvpScope: true/false` flag per entry — the 16 keys the source
+reliability-plan document scoped the MVP to (`abn`, `asic`, `asicDisqualified`,
+`asicInsolvency`, `atoDebt`, `courts_federal`, `courts_nsw`, `courts_act`, `paymentTimes`,
+`modernSlavery`, `fwo`, `nswFairTrading`, `actLicences`, `actDisciplinary`, `asicExtract`,
+`asicEnforceableUndertakings`) are `true`; the other 13 (QLD/VIC/WA/SA/TAS/NT court
+jurisdictions, `qbcc`, `vicBpc`, `vicVbaLicence`, `waBuildingEnergy`,
+`ntBuildingPractitioners`, `waLicenceRegister`, `tasLicenceRegister` — all built after the
+reliability plan document was drafted) are `false`. This flag, not a second hand-maintained
+Set, is now what decides which keys `runSearchRequest` routes through `runScraper()`'s
+timeout + circuit breaker; the other 13 stay on the pre-existing plain try/catch, unchanged
+— a deliberate scope decision (recorded when this activity was planned), not a coverage
+regression. `abn` was added to the breaker-wrapped set here, closing the gap WS1.7 above
+explicitly deferred to this cutover. The old `RUN_SCRAPER_KEYS` Set that had to be
+hand-kept in sync with `manifest.js` is gone.
+
+Verified: all 29 manifest keys have a matching invocation closure (scripted cross-check,
+zero missing/orphaned); `node --check` on all three touched/new files; the three existing
+WS0/WS2/WS3 regression tests (`test-ws0-pilot.js`, `test-ws2-live-hardening.js`,
+`test-ws3-director-discovery.js`) pass unmodified; and a live smoke run of
+`runSearchRequest` against the Universal Property Group fixture confirmed the mvp/non-mvp
+split runs concurrently with no uncaught exception, and that the newly-wrapped keys
+degrade to `completeness: 'unavailable'` on their manifest-declared timeout exactly as
+`asicDisqualified`/`asicInsolvency`/`atoDebt`/`fwo`/`nswFairTrading`/`actLicences`/
+`actDisciplinary`/`courts_federal`/`courts_act` all did in that run (10s/20s/45s per their
+bucket, matching `manifest.js`).
+
+That same smoke run surfaced two pre-existing, environment-specific issues — not
+regressions from this change, not fixed here: `qbcc` and `waLicenceRegister` (both
+non-mvp-scope, both CAPTCHA-adjacent, both already on the unwrapped plain try/catch path
+before and after this change) never reached a terminal state within a 55s window in this
+sandbox, most likely because no `CAPTCHA_API_KEY` is configured here; and `vicVbaLicence`
+threw a TLS certificate mismatch against `discover.data.vic.gov.au`
+(`sni-missing-or-domain-unknown.help.section.io` in the cert's altnames) that looks like
+this sandbox's own network egress path, not a real site-side break — worth a real-network
+re-check before reading either as a genuine incident.
+
+**Follow-up (2026-09-10, same day): minimal scraper-health stopgap added, since WS0.8's
+real dashboard doesn't exist and the user asked how to actually check whether any of this
+is working in production.** `scraperHealth.js` gained timestamp tracking
+(`lastSuccessAt`/`lastFailureAt`/`lastOpenedAt`, previously untracked) and a pure
+`buildHealthReport(scrapers)` function; `index.js` gained `GET /api/admin/scraper-health`,
+gated behind an `x-admin-key` header checked against a new `ADMIN_HEALTH_KEY` env var
+(fails closed — 503 if that env var isn't set, not silently open). See this file's new
+"Checking scraper health" section (under "Type checking") for the literal steps to use it.
+Deliberately thin: reads the same in-memory `Map` the breaker already keeps, no new store,
+no persisted history, no UI — a stand-in for WS0.8, not WS0.8 itself. Covered by
+`server/tests/test-admin-scraper-health.js` (6 pilots, pure function, no network — added to
+`run-all.sh`).
+
+**Not yet done**: extending `mvpScope`/the breaker to the other 13 keys ("WS4.1b"); WS4.3
+(blocked on WS0.5 — completeness states aren't visually distinct in the report UI yet, see
+`WS4_IMPLEMENTATION_PLAN.md`'s "Open dependency" section), WS4.4 (concurrency/load test),
+WS4.5 (the *real* runbook — this stopgap's usage notes live in CLAUDE.md for now, a proper
+`RUNBOOK.md` is still open), WS0.8 (the real dashboard — persisted history, 7-day success
+rate, an actual UI, not raw JSON behind a curl command), WS4.6 (expansion proof, candidate
+already selected — see the plan doc).
+
+**Follow-up (2026-09-10, reliability plan WS4.2): fault injection landed, and it caught a
+real, pre-existing process-crashing bug on its first run.** New
+`server/tests/test-ws4-fault-injection.js`, run against the real `runSearchRequest()` entry
+point (not individual scrapers in isolation — those are already covered elsewhere).
+Section A forces every one of the 16 `mvpScope` keys' circuit breakers open before calling
+`runSearchRequest`, so `runScraper()`'s `isOpen()` check short-circuits before any real
+fetch — fast (~3s) and network-independent — then asserts the one invariant this whole
+reliability plan exists to guarantee: no key ever reports `completeness: 'complete'` or a
+"done" status while its circuit is open (49 assertions, all passing), plus a dedicated
+check that `courts_act` specifically degrades to `buildManualFallback('act')` (both the
+courts.act.gov.au and ACAT links present) rather than the generic message. Section B runs
+the real pipeline once, live, against a fictitious entity, bounded to a 50s window, and
+treats its outcome as informational (`warn`, not `fail`) rather than a hard assertion — see
+the file's own header for why a live-network section shouldn't fail the suite over
+sandbox/site flakiness unrelated to the code.
+
+**The crash, found on Section A's very first run**: `searchOrchestrator.js` creates
+`abnPromise`/`asicPromise` eagerly and unconditionally at the top of `runSearchRequest`,
+before either key's breaker state is checked. When a breaker is open, `runScraper()`
+returns early and never calls `invocations.abn()`/`invocations.asic()` — meaning nothing
+ever `await`s or attaches a `.catch()` to that already-in-flight promise. When it later
+rejected (a real `ASIC Connect search failed and no fallback data available` error, live,
+in this sandbox with no `CAPTCHA_API_KEY` configured), Node treated it as an unhandled
+rejection and **crashed the entire process**. This is not something WS4.1's extraction
+introduced — `asic` was already one of the 9 keys routed through `runScraper()` before
+WS4.1 (see the WS2 entries above), so this exact crash was already reachable in production
+any time ASIC Connect's circuit tripped from real failures, which per this file's own
+extensive ASIC-unreliability history is plausible. It was simply never triggered by a real
+request before now, or was triggered and looked like an unrelated process restart.
+
+**Fixed**: `abnPromise.catch(() => {})` / `asicPromise.catch(() => {})` — a no-op listener
+attached immediately alongside the original promise. This does not change what
+`invocations.abn()`/`invocations.asic()` resolve/reject to for `runScraper()`'s own
+try/catch (every `.then`/`.catch`/`await` attaches independently to the same promise); it
+only guarantees at least one handler exists so Node never treats the rejection as
+unhandled. Re-ran the full Section A matrix (all 16 keys forced open simultaneously) and
+the existing WS0/WS2/WS3/admin-health regression tests after the fix — all pass, no crash.
+Added to `run-all.sh`.
+
+**Not yet done**: WS4.3, WS4.4, WS4.5, WS0.8, WS4.6 (unchanged from the list above — WS4.2
+is now the completed item).
+
+**Follow-up (2026-09-10, reliability plan audit): went back through WS0–WS3 against the
+actual code rather than trusting this log's own "done" markers, per a direct user
+request. Two real, fixable gaps found and fixed; the rest of the "not yet done" list above
+confirmed still accurate.**
+
+**Bug 1 — `manifest.js`'s `modernSlavery` entry had the wrong shape, and was actively
+enforcing it.** The entry claimed `bucket: 1, sourceType: 'bulk-dataset', timeoutMs:
+10_000` — but `modernSlavery.js` is, and always was, a plain live `axios`+`cheerio`
+scrape; bulk ingestion for this register was investigated and explicitly declined (see
+this same section's earlier "Modern Slavery bulk ingestion investigated and deferred").
+Since WS4.1 made `modernSlavery` `mvpScope: true`, this wrong metadata was live —
+enforcing a 10-second timeout (meant for a local dataset lookup) against a real HTTP
+fetch that should get the standard 20-second live-call budget like every other bucket-2
+entry. **Fixed**: corrected to `bucket: 2, sourceType: 'live-scrape', cadence: null,
+timeoutMs: 20_000`.
+
+**Bug 2 — 4 of 5 dataset refresh jobs had zero validate-before-promote protection**,
+meaning the exact historical Payment Times silent-column-shift bug (this file's own
+"Section 8.3 — Payment Times dropdown fixed" entry) was still fully reproducible against
+`asicDpnDataset.js` (**the Disqualified Persons Register**), `asicEnforceableUndertakingsDataset.js`,
+`actLicencesDataset.js` (both its licence and disciplinary datasets), and `vicBpcDataset.js`
+— only `paymentTimes.js`/`paymentTimesRefresh.js` had ever gotten this protection (WS1.3).
+Confirmed by reading each file: `replaceDatasetRecords()` (`datasetStore.js`) unconditionally
+writes whatever row count it's given, including zero, with no caller-side guard — and
+`vicBpcDataset.js` (which predates/bypasses `datasetStore.js` entirely, using its own disk
+cache) had the identical unconditional-write shape. A source-side markup/API change could
+silently wipe any of these five to empty, and — this is the part that matters — every future
+search would render that as a normal, confident "checked, found nothing" with no alarm
+anywhere. For the Disqualified Persons Register specifically, that's the same class of
+false-clean this whole reliability plan exists to prevent, just relocated from a live scrape
+to a cache-ingestion path.
+
+**Fixed**: each of the five now has its own row-count sanity floor (`asicDpnDataset.js`:
+100, `asicEnforceableUndertakingsDataset.js`: 50, `actLicencesDataset.js`: 5,000 for
+licences / 30 for disciplinary — the two Socrata datasets differ by two orders of
+magnitude (32,001 vs. 377 rows, per WS1.5/1.6's own live-confirmed counts), so they don't
+share one constant — `vicBpcDataset.js`: 100). A fetch landing below its floor is treated
+exactly like a fetch *failure*: not promoted (the existing good cache/rows stay live), a
+loud `console.error`, `recordIngestionFailure()` called where `datasetStore.js` backs the
+dataset (all but `vicBpcDataset.js`, which has no equivalent — flagged, not fixed, since
+migrating it onto `datasetStore.js` is a separate, larger piece of work), and — the part
+the original Payment Times fix didn't need to handle, since that one only gates the
+background refresh cycle — **the current request also falls back to the last known-good
+cached copy rather than receiving the bad under-parsed rows directly**, since these four
+modules (unlike `paymentTimes.js`) serve their `fetch*()` function directly to both the
+live search path and the refresh job. Every floor is an injectable parameter (`_minRows`,
+mirroring this codebase's established `_axios`/`_http` injectable-dependency convention)
+so real unit tests could exercise the guard without needing a 100+ or 5,000+-row fixture.
+
+Added regression tests for all five: new cases in `asicDpnDataset.test.js` (2),
+`asicEnforceableUndertakingsDataset.test.js` (2), `actLicencesDataset.test.js` (3, one per
+dataset plus the "independent floors" case) — each verifying both "falls back to cache
+without overwriting it" and "throws rather than returning bad data when no cache exists
+at all." `vicBpcDataset.js` had **no test file at all before this fix** (confirmed by
+search) — added `vicBpcDataset.test.js` from scratch (5 tests), which also required
+adding an injectable `_fetchAllPages` param (mirroring the same convention) so its
+Puppeteer-driven fetch is unit-testable without a real browser. All new tests wired into
+`npm test`'s script list in `server/package.json` (which didn't include
+`vicBpcDataset.test.js` before) and pass alongside the full existing suite (103/103).
+
+**A third, unrelated regression caught while re-running the full suite**: `npm test` (not
+just the shell-based `run-all.sh`/`test-ws*.js` files this session had been running) had
+one failing test — `manifest.test.js`'s "manifest keys match server/index.js searches
+array exactly" — because WS4.1 (earlier this session) removed `index.js`'s `searches`
+array entirely, moving invocation closures into `searchOrchestrator.js`'s `invocations`
+map. This is a real gap in WS4.1's own verification at the time (only the shell-style
+`test-ws*.js` files were run, not the project's actual `npm test`) — caught here, not at
+the time. Fixed: `manifest.test.js`'s extraction logic now reads
+`searchOrchestrator.js`'s `invocations` map (a different object shape — bare-identifier
+keys, not `{ key: '...' }` entries — needed its own regex) instead of the no-longer-
+existing `index.js` block. **Lesson for future sessions doing structural refactors in
+`server/`: run `npm test` from `server/`, not just `run-all.sh`/the individual
+`test-ws*.js` files — they cover different, non-overlapping test files.**
+
+**WS0/1/2/3 status re-confirmed by this audit, beyond the two bugs above**:
+- 0.1–0.4: confirmed correctly built (only the two bugs above were latent problems within
+  otherwise-correct code, not evidence 0.1–0.4 themselves are wrong).
+- 0.3 (ingestion DB): the Postgres + disk-fallback pattern in `datasetStore.js`/`db.js` is
+  correctly built and degrades gracefully; **not independently verified from this session
+  whether `DATABASE_URL` is actually set in the real Railway production environment** —
+  that needs a live check outside this sandbox, not a code read.
+- 0.5, 0.8: still not done, as already documented above (WS0.5 is scheduled next, per user
+  decision, before WS4.3 resumes).
+- 0.6: **still not the generic manifest-driven ingestion-runner the source plan specified**
+  — what exists after this fix is five separately-tuned row-count floors, proportionate to
+  closing the most acute version of the gap (a silent full-empty wipe), not the fuller
+  "row-count delta history + shape validation + not-an-error-page detection" the original
+  WS0.6 activity called for. Worth revisiting as its own activity if a source starts
+  failing in a way a flat floor doesn't catch (e.g. a shape change that still produces a
+  plausible-looking row count).
+- 0.7: still not manifest-driven (`run-all.sh` is a hand-maintained parallel list); the 6
+  legacy-test failures flagged in the "QBCC and VBA/BPC licence checks fixed" entry below
+  (`wa-be-licence`, `act-licence`, `tas-cbos-licence`, `asic-insolvency`, `modern-slavery`,
+  `fwo`) were not re-investigated in this pass — still open.
+- WS1 (ingestion): confirmed essentially complete (the gap was 0.6's missing validation
+  around it, now partly closed above, not the migrations themselves).
+- WS2 (live hardening): confirmed all 6 sub-activities (2.1–2.6) map exactly to the 9 keys
+  wrapped before this session — genuinely complete, independent of the WS4.2 crash bug
+  found in how that wrapping was used.
+- WS3 (directors): confirmed complete for its explicitly-stated NSW/ACT-only scope: no new
+  gaps found beyond what its own "Not yet done" list already says.
+
+### WS0.5 — completeness states landed in the report UI (2026-09-10)
+
+Per the source reliability-plan document's own framing, this was called "the highest-value
+trust fix in the plan" and had been passed over three sessions in a row (see the WS4.2
+audit entry above) in favour of active correctness bugs. Landed as its own pass, unblocking
+WS4.3.
+
+**New `web/components/CompletenessBadge.tsx`** — a small pill badge (`partial` / `stale` /
+`unavailable`), deliberately separate from `RiskBadge`'s own `unavailable` level rather than
+overloading it: risk severity and check completeness are orthogonal (a section can carry a
+confirmed significant finding from the checks that *did* run while a different check in that
+same section is only partially covered — collapsing both into one badge would lose whichever
+one didn't "win"). Exports `worstCompleteness()`, a small precedence helper
+(`unavailable > stale > partial`, missing/undefined treated as `complete` — matches
+`validateResult.js`'s own default) reused in three places below.
+
+**`ReportSection.tsx`** (the one shared component every section renders through) now:
+computes the worst completeness across its `searchResults` and shows a
+`<CompletenessBadge>` next to `RiskBadge` — suppressed when `riskLevel` is already
+`'unavailable'`, since that already means "every check in this section failed" and a second
+badge saying much the same thing would be redundant; and colors each individual summary
+line (the existing `summaryTexts` block) by *its own* source result's completeness, with a
+"Cached data as of [date]" caption appended for `stale` results carrying `asOf`. Because
+this lives in the one shared component, every section that passes real `searchResults`
+benefited immediately with no per-call-site changes needed.
+
+**`RiskSummaryPanel.tsx`** (the first thing a reader sees) gained a `searchResults` prop and
+now shows an explicit caveat — "N check(s) could not be fully completed — this is not
+confirmation those areas are clear" — in both its "no findings" and "findings" states, when
+any result is non-complete. This is the single highest-value spot for this fix: it's exactly
+where the plan's own "a falsely-clean report is worse than an honest 'could not check'"
+concern is most acute, since it's the most prominent, first-read element of the report.
+
+**A real, systemic bug found and fixed while wiring this up, via an actual rendered-output
+check, not just `tsc --noEmit`**: 13 of the report's per-scraper sections
+(licensing/financial/enforcement — everything except 8.1) build a *synthetic* `SearchResult`
+object for their `ReportSection` call (`licenceSearch`, `nswFairTradingSearch`,
+`vicBpcSearch`, `courtSearch`, etc. — a long-standing pattern, e.g. the QBCC-split
+convention documented above) by hand-listing a subset of fields (`key`, `label`, `status`,
+`source`, `results`, `summary`, …). None of them carried `completeness`/`asOf` through from
+their underlying real result — meaning the new badge/summary work above would have silently
+never fired for any of those 13 sections, only the raw-object section (8.1). Confirmed via a
+Puppeteer script driving a real `next dev` server against `/report/preview` with synthetic
+`sessionStorage` data spanning all four completeness states (`server/scrapers/manifest.js`'s
+real 29 keys, `puppeteer` already a `web/node_modules` dependency) — screenshotted before and
+after; the "before" shot showed section 8.2 rendering a plain "✓ Clear" badge with no
+completeness signal at all despite a `partial` NSW Fair Trading result inside it. Fixed by
+adding `completeness`/`asOf` to all 13 synthetic objects, each pulled from its real
+underlying result (`courtSearch`, which aggregates every `courts_*` jurisdiction into one
+synthetic entry, uses `worstCompleteness()` across all of them, so e.g. `courts_act`'s
+circuit being open is reflected even though `courts_nsw`/`courts_federal` succeeded).
+Re-verified with the same screenshot script — badges and cached-as-of captions now appear
+correctly in sections 8.2, 8.3, and 8.4.
+
+**Deliberately not done**: `riskGrouper.ts` itself was left unchanged. Its job is computing
+risk *findings* from results, and correctly has no opinion on completeness today — folding
+"couldn't check" into a risk-trigger function would conflate two different concerns. The
+`isAllErrored`/`deriveRiskLevel` baseline logic in `ReportContent.tsx` (which decides
+`RiskBadge`'s existing `'unavailable'` level) was also left unchanged — it already correctly
+handles the "every check in this section failed" case; extending it to weight
+partial/stale would only duplicate what the new, additive `CompletenessBadge` now covers
+without touching that logic's existing, working precedence.
+
+Verified: `npx tsc --noEmit` clean; visual check via the Puppeteer script above (not
+committed — one-off, deleted after use) against all 29 real manifest keys with a spread of
+completeness states.
+
+### WS4.4 — concurrency & load test (2026-09-10)
+
+New `server/tests/load-test-ws4.js` — a plain-Node HTTP client (no new dependency) that
+fires N concurrent `POST /api/search` requests against a **real, running** server (not
+`runSearchRequest()` in-process — this needs the actual HTTP path to exercise the rate
+limiter and NDJSON streaming), and reports TTFB/total-time percentiles, how many of the 29
+manifest keys never reached a terminal state per request, and a check for the
+self-contradictory `status`/`completeness` combo `test-ws2-live-hardening.js`'s Pilot 3
+already found and fixed once (`status:'error'` + `completeness:'complete'`, or the reverse)
+— worth re-checking under real concurrent load, not just the single-request path that test
+exercises.
+
+**A real bug in the load-test script itself, found on its first run**: the initial version
+used `req.setTimeout()` as a hard per-request cap, but that's a *socket-inactivity* timeout,
+not an absolute deadline — since the NDJSON stream keeps arriving in small bursts as
+individual scrapers finish throughout the request's lifetime, there's never a true
+multi-second gap with zero bytes for it to fire on, so a slow-but-not-dead request could run
+indefinitely. First run hung well past its intended 70s cap; confirmed by inspection, not
+by waiting it out. Fixed with a plain `setTimeout()` JS timer that unconditionally
+`req.destroy()`s at the deadline regardless of intermittent activity.
+
+**Run against a real local server** (`CAPTCHA_API_KEY`/`SCRAPERAPI_KEY` set to placeholder
+values, since this sandbox has no real credentials — see the WS4.2 entry above for the same
+constraint) at concurrency 3 and concurrency 8, each against the real NSW/ACT fixtures used
+throughout this file, 65s client-side cap: **both runs completed with zero crashes, zero
+contradictory status/completeness combos, and — the interesting part — the exact same 5
+keys stuck in both runs** (`courts_nt`, `qbcc`, `waLicenceRegister`, `tasLicenceRegister`,
+`asicExtract` — all non-`mvpScope` keys, i.e. not yet covered by WS4.1's breaker/timeout
+wrapping), with no measurable TTFB degradation going from concurrency 3 (p50 48ms) to 8
+(p50 61ms). Confirmed via the server's own log (118 lines, zero crash indicators —
+`unhandled`, `uncaught`, stack traces — grepped explicitly) that it stayed responsive
+through both runs and for the `2>/dev/null` health check afterward. One process required
+`kill -9`, not a plain `kill`, to actually stop after the runs — background CAPTCHA-retry
+work (the still-running `tasLicenceRegister`/`asicExtract` calls) kept the event loop busy
+past the client's own 65s window; unsurprising given `asicExtract`'s own 90s manifest
+timeout and 2captcha's real retry latency, not itself treated as a finding.
+
+**What this does and doesn't show, stated plainly per this file's own convention**: this is
+real evidence the request-handling path (the `Promise.all` over mvp + non-mvp entries in
+`searchOrchestrator.js`, the NDJSON write path, the rate limiter) doesn't crash or degrade
+meaningfully at this concurrency, in this sandbox, with fake credentials. It is **not**
+evidence against the specific historical incident class this activity exists to guard
+against — the `MAX_CONCURRENT_PAGES` page-pool leak and the "4 minutes, 8 scrapers stuck"
+incident earlier in this file were both root-caused only against the real Railway
+container, with real CPU/memory metrics and real concurrent Puppeteer load from real
+CAPTCHA-gated sites. A local run with placeholder credentials structurally cannot reproduce
+that — every CAPTCHA-gated scraper here fails fast on a bad key rather than actually
+driving Puppeteer/2captcha under load. Re-running this script against a real staging/
+preview deploy, with real credentials, real concurrent Puppeteer load, and Railway's own
+metrics pulled alongside it, is the only way to get the signal this activity actually
+wants — flagged here as the concrete next step, not done in this pass.
+
+**`PUPPETEER_MAX_CONCURRENT_PAGES` left at its default (3)** — the source plan's own
+tuning suggestion (3 → 6) is conditioned on a staging run showing real headroom, which this
+pass couldn't produce for the reason above. Revisit once a real-deploy run exists.
+
+**Not yet done**: the real-deploy re-run described above; extending `mvpScope` to the 5
+keys that showed up stuck here (already tracked as "WS4.1b" earlier in this file).
+
+### WS0.8 — reliability dashboard landed (2026-09-11)
+
+The real dashboard this file's "Checking scraper health" section had been pointing at as
+future work since 2026-09-10 is now built, closing the last open item from WS0's original
+scope. Two gaps existed going in — confirmed by reading the code before starting, not
+assumed: no persisted history (the breaker `Map` reset on every restart) and no page (the
+stopgap endpoint was raw JSON behind `curl`).
+
+**Persisted history**: new `health_check_event` table (`server/db/schema.sql`, same
+idempotent `CREATE TABLE IF NOT EXISTS` pattern as `dataset_snapshot`/`register_record`) —
+one row per `runScraper()` outcome (`success`/`failure`/`circuit_open`), written by
+`server/scrapers/healthHistory.js`'s `logEvent()`. `runScraper.js` fires this
+fire-and-forget (`.catch(() => {})`, not awaited) right next to its existing
+`health.recordSuccess`/`recordFailure` calls, so it can never add latency to `/api/search`
+or — the specific failure mode this pattern guards against, per the WS4.2 entry above about
+`abnPromise`/`asicPromise` — crash the process via an unhandled rejection if the DB write
+fails. With no `DATABASE_URL` configured (normal local dev), `logEvent`/`getRollup` no-op
+and return `null` respectively, rather than throwing or reporting a misleading 0%.
+`getRollup({ windowDays: 7 })` computes success rate straight from the event log via one
+`COUNT(*) FILTER` group-by query — no separate rollup job.
+
+**The page**: `GET /admin/scraper-health` — a single static file
+(`server/public/admin-scraper-health.html`, no build step, no template engine, no new
+dependency), served by a plain Express route. Deliberately has no server-side gate of its
+own (it carries no embedded data): on load it prompts once for the `ADMIN_HEALTH_KEY` value,
+stores it in `sessionStorage` (not the URL, so it doesn't land in server/proxy logs), and
+calls the data endpoint client-side with it as the `x-admin-key` header — the actual gate is
+still exactly `ADMIN_HEALTH_KEY`, enforced server-side, same fails-closed behavior as before.
+Renders one row per manifest key — status badge, jurisdiction, MVP-scope badge, 7-day
+success rate (or "no history yet"), last success/failure timestamps — sorted worst-first
+(`open` > `degraded` > `no-data` > `healthy`) so problems don't require scrolling to find.
+
+**New endpoint**: `GET /api/admin/scraper-health/full` — merges `buildHealthReport()`'s live
+snapshot with `getRollup()`'s 7-day figures via a new pure `healthHistory.mergeHistory()`
+(extracted specifically so the merge logic is unit-testable without a live server or DB, same
+reasoning `buildHealthReport` itself was already pure for). The original
+`GET /api/admin/scraper-health` (no history, sync, in-memory only) is unchanged — still there
+for scripts/`curl`. Both routes now share one `requireAdminKey()` helper instead of
+duplicating the fails-closed check.
+
+Verified: `server/scrapers/healthHistory.test.js` (new — `logEvent`/`getRollup`/
+`mergeHistory`, using the same injectable-fake-pool DI style as `datasetStore.test.js`'s
+`makeFakePool()`) and four new cases in `runScraper.test.js` covering the three logged
+outcomes plus confirming a rejecting `logHealthEvent` never surfaces as an unhandled
+rejection or blocks `send()` — 118/118 `npm test` passing. Live-verified against a real local
+server with `DATABASE_URL` unset: `/admin/scraper-health` loads, the unauthenticated case
+401s, the no-`ADMIN_HEALTH_KEY` case 503s, `/api/admin/scraper-health/full` returns all 29
+rows with `historyAvailable: false` throughout, and the original endpoint's response shape is
+confirmed unchanged. **Not verified against a real Postgres in this pass** — no
+`DATABASE_URL`-backed instance was available in the environment this was built in; the SQL
+shape and rollup arithmetic are covered by the fake-pool unit tests only, not a live DB. Worth
+a real-`DATABASE_URL` smoke test (per this file's own "what a local run can't prove" caveats
+elsewhere, e.g. the WS4.4 entry) before leaning on the 7-day numbers for a real incident.
+
+**Not yet done**: no auto-refresh on the page (manual "Refresh" button only) — fine for
+occasional founder checks, would need revisiting if this becomes something watched
+continuously during an incident. `RUNBOOK.md` was updated in the same pass (its Section 2
+now leads with the dashboard page, `curl` kept as the scriptable fallback).
+
+**Follow-up (2026-09-14): two real gaps found and fixed while confirming there's no manual DB
+step needed for this table** (there isn't — `schema.sql` is applied idempotently at runtime by
+`db.js`'s `ensureSchema()`, same as every other table here; no migration framework, per this
+file's own note at the top of `schema.sql`). Both found by reading `healthHistory.js` closely,
+not by a live failure:
+
+1. **`healthHistory.js` never called `ensureSchema()` itself** — `logEvent`/`getRollup` only
+   imported `getPool()`. Table creation for `health_check_event` was riding entirely on some
+   *other* code path (a `datasetStore.js`-backed refresh job) happening to run first and
+   applying the whole `schema.sql` file as a side effect. In production this probably always
+   worked, since the `start*Refresh()` jobs fire immediately on boot — but it was never
+   guaranteed, and a fresh environment where none of those jobs run before the first search
+   could silently never create the table. Fixed: both functions now call `ensureSchema()`
+   themselves, mirroring `datasetStore.js`'s own established pattern exactly.
+2. **`getRollup()` had no try/catch at all, and its one caller
+   (`/api/admin/scraper-health/full` in `index.js`) didn't wrap it either.** A query failure —
+   the table not existing yet being the obvious trigger, but any transient connection error
+   would do it — would reject uncaught inside an async Express 4 route handler, which Express
+   does not catch on its own. That's an unhandled rejection in a process that has already
+   crashed once from exactly this shape of bug (see the WS4.2 entry above for
+   `abnPromise`/`asicPromise`). Fixed: `getRollup()` now catches and returns `null` (the same
+   contract as "no DB configured"), so a query failure degrades to "no persisted history
+   available" instead of a second instance of that crash class.
+
+Added a regression test (`getRollup` — a rejecting `pool.query` resolves to `null`, doesn't
+throw) to `healthHistory.test.js` — 128/128 `npm test` passing. Still not verified against a
+real Postgres in this pass, same caveat as above — worth confirming `DATABASE_URL` is actually
+set in the real Railway environment (unconfirmed from this sandbox, same open item as the
+earlier WS0–3 audit entry's note on `datasetStore.js`) before relying on the dashboard's 7-day
+numbers.
+
+**Follow-up (2026-09-14): the exact thing the caveat above warned about happened, and it took
+production down.** The user set a real `DATABASE_URL` (a Supabase pooler connection, already
+shared with `web/`'s Prisma setup) on the Railway server service for the first time. The whole
+container immediately went into a crash loop — `https://know-your-builder-server-production
+.up.railway.app` returned Railway's generic "Application failed to respond" edge error, not
+even `Cannot GET /` (which it had returned correctly moments earlier, confirming the app itself
+was healthy before this variable was added).
+
+**Root cause: `db.js`'s `getPool()` created a `pg.Pool` with no `.on('error', ...)` listener.**
+This is a well-documented `node-postgres` gotcha, distinct from every other robustness fix in
+this file: `pg.Pool` emits `'error'` on behalf of any idle client that hits a connection-level
+problem (a dropped connection, an auth hiccup, a network blip) — and Node treats an unhandled
+`EventEmitter` `'error'` event as fatal, throwing synchronously and crashing the whole process.
+This happens completely outside of any `await`/promise chain, so it is invisible to — and not
+preventable by — any of the `try/catch` blocks already carefully placed throughout this
+codebase (the four dataset-refresh jobs that hit the DB immediately on boot were all confirmed,
+by reading their code, to already handle promise rejection correctly; none of that mattered
+here, because this isn't a promise rejection). The exact trigger for the specific idle-client
+error wasn't captured (the user restored service before logs were pulled), but the fix needed
+was the same regardless: attach the listener so any such event gets logged instead of taking
+the process down.
+
+**Immediate mitigation**: had the user remove the `DATABASE_URL` variable in Railway, which
+restored service on redeploy (confirms nothing else about that change was the problem — the
+app runs fine on the disk-cache-only path, exactly as it did throughout WS0–WS4).
+
+**Fixed**: `pool.on('error', ...)` added in `getPool()`, logging rather than crashing. New
+`server/scrapers/db.test.js` — proves the fix by actually emitting `'error'` on a real
+(network-inert; `pg.Pool` doesn't connect until first checkout) `Pool` instance and asserting
+it doesn't throw; verified the test genuinely catches the regression by reverting the fix and
+re-running it (fails cleanly on the listener-count assertion, as it should). 130/130 `npm test`
+passing.
+
+Shipped via its own dedicated `hotfix/pg-pool-error-handler` branch/PR straight to `main`,
+deliberately kept separate from the rest of this session's work (this entry, the dashboard, VIC
+courts, the matching-bug fix below) so merging it didn't also deploy anything else untested —
+`main`'s own `db.js` carries this same fix independently of whatever lands from this branch.
+
+**Follow-up (2026-09-14, same day): re-adding `DATABASE_URL` crashed production a second time —
+real logs this time, and a different, second bug.** Once the hotfix above was deployed, the user
+re-added `DATABASE_URL` and the container crashed again. This time the actual Railway deploy
+logs were pulled (not skipped for speed, learning from the first round): `[db] failed to apply
+schema.sql: connect ENETUNREACH 2406:da14:...:5432` was being logged correctly (that part of the
+fix above working exactly as designed), but the process still crashed, with a stack trace
+pointing at `datasetStore.js:100` inside `replaceDatasetRecords`, called from
+`paymentTimesRefresh.js:50`.
+
+**Root cause, two stacking bugs, both distinct from the `pool.on('error')` gap**:
+1. `datasetStore.js`'s `replaceDatasetRecords()` called `const client = await _pool.connect();`
+   *outside* its own `try` block — so when the connection itself failed (the `ENETUNREACH`
+   above: Supabase's pooler hostname resolved to an IPv6 address Railway's network couldn't
+   route to), the rejection propagated uncaught instead of falling into the disk-fallback catch
+   every other failure in this function already used.
+2. `paymentTimesRefresh.js`'s final `await replaceDatasetRecords(...)` was the one call in that
+   function not wrapped in try/catch, unlike every other step in the same file (which all
+   explicitly comment "never throw: this must not crash the long-lived server process"). The
+   other three refresh jobs (`vicBpc`, `actLicences`, `asicEU`) were structurally safe already —
+   their `datasetStore` calls happen *inside* their own already-try/catch-wrapped fetch
+   functions, so `paymentTimes` was uniquely exposed.
+
+**Fixed**: `replaceDatasetRecords()`'s `_pool.connect()` moved inside its own try/catch (the
+root-cause fix — protects every current and future caller, not just `paymentTimes`);
+`paymentTimesRefresh.js`'s call site wrapped too, for defense in depth. New regression test in
+`datasetStore.test.js` injects a rejecting `connect()` into a fake pool and asserts
+`replaceDatasetRecords` still resolves with a disk-fallback result — verified it genuinely
+catches the regression by reverting the fix and re-running (fails cleanly on the injected
+rejection, not a process crash, confirming the test itself is a safe way to prove this). Shipped
+via a second dedicated branch/PR, `hotfix/dataset-store-connect-error`, same reasoning as above.
+
+**Still open as of this entry**: the `ENETUNREACH` itself is a routing problem, not something
+either hotfix fixes — Supabase's pooler resolving to an IPv6 address Railway can't reach means
+every dataset refresh will keep falling back to disk (gracefully now, not crashing) until the
+connection string itself points somewhere reachable. Next step recommended: try Supabase's
+"Transaction pooler" connection string (typically port `6543`, documented by Supabase as the
+IPv4-reachable option for platforms like Railway) in place of the current port-`5432` one, in
+`DATABASE_URL`. Not yet confirmed whether that resolves it.
+
+**Lesson for future sessions**: pull real deploy logs before the *first* guess, not after a
+second crash. The first hotfix was a real, correct, necessary fix — but it was also an
+educated guess made without seeing the actual error, and it turned out there was a second,
+independent bug waiting right behind it. Real logs the second time found the actual cause in
+one pass instead of another round of guessing.
+
+### WS4.6 — expansion proof landed (2026-09-11): VIC Supreme Court judgment summaries
+
+The last unstarted WS4 activity. Pass condition per `WS4_IMPLEMENTATION_PLAN.md`: touches only
+a manifest entry plus one fetch function — anything more means the framework failed its goal —
+timed and recorded either way.
+
+**Candidate re-verified live before building, not assumed from the 2026-09-07 note**: fetched
+`https://www.supremecourt.vic.gov.au/areas/case-summaries/judgments` directly. Confirmed: plain
+static HTML, no Cloudflare/JS gate (a bare `curl` with no headers beyond a UA string works), no
+scraping restriction in the site's `/termsofuse` page (checked directly — it only covers
+courtroom footage, not automated access). One correction to the 2026-09-07 note: this isn't a
+flat list — it's a real Drupal Views exposed filter with a server-side `?query=<term>` keyword
+search (confirmed: `?query=Mokbel` returns exactly the 2 matching rows out of the ~10 total, not
+the full unfiltered list) — so this was built as a genuine per-term live search, the same shape
+as the NSW/ACT/Federal/NT fetchers, not a fetch-all-and-filter-locally pattern.
+
+**Real, material limitation, flagged explicitly per a direct request not to gloss over it**:
+the Court only publishes summaries for a subset of cases it decides to summarise (skewed toward
+Court of Appeal matters — Mallard v Homes Victoria, Mokbel v The King, DPP v Raux, etc.) and
+states they are "removed and archived 12 months after their date of publication" (live listing
+on 2026-09-11 actually still showed entries back to June 2024, so that policy isn't tightly
+enforced, but the total is small regardless — ~10-12 rows at any time). This is a genuine
+improvement over "search manually" for the cases it does cover — not comprehensive VIC Supreme
+Court coverage, and nowhere near what NSW Caselaw or the Federal Court search offer. Treat any
+"0 results in VIC" as much weaker evidence of a clean record than the same result from NSW/ACT/
+Federal/NT.
+
+**Chose to upgrade the existing `courts_vic` key rather than add a new parallel one**, deviating
+from `WS4_IMPLEMENTATION_PLAN.md`'s literal `courts_vic_supreme` text — decided with the user
+after confirming two things by reading the current code: `courts_vic` already exists in
+`manifest.js`/`searchOrchestrator.js`'s `invocations` map/web's `INITIAL_SEARCHES`, currently
+pointed at `buildManualFallback('vic')`; and the doc's own "manifest entry plus one fetch
+function" bar is no longer accurate for a *brand-new* key now that WS4.1 moved invocation wiring
+out of `index.js` into `searchOrchestrator.js` (after this doc section was drafted) — a new key
+would need `manifest.js` + `searchOrchestrator.js` + `SearchContent.tsx` (enforced by
+`manifest.test.js`'s exact-sync check) + the scraper file, i.e. 4 files, not 2. Upgrading the
+existing key instead touches exactly one source file
+(`server/scrapers/courtRecords.js`) — new `fetchVicTermResults` (plain axios/cheerio,
+`makeTermCache`-wrapped like every other fetcher here), `searchVicSupremeCourt()` wrapper via
+the existing `runJurisdictionSearch`, one new dispatch branch in `searchCourtRecords()`, and an
+updated `MANUAL_SEARCH_URLS.vic` (was pointing at a directory page that just redirects further;
+now the precise judgments-listing URL) — plus the test file. No `manifest.js`, no
+`searchOrchestrator.js`, no web/ changes at all.
+
+**Elapsed time**: well under the 1-day budget — live re-verification, implementation, and test
+updates together took under an hour of active work in this session.
+
+**Verified**: `server/tests/test-court-records.js` — moved `vic` from `FALLBACK_JURISDICTIONS`
+into `LIVE_FIXTURES` (fixture: "Mokbel", 2 real rows as of 2026-09-11; same
+re-discovery-if-stale approach as the file's other fixtures, since this source's own content
+rotates independently) — all 11 assertions pass live, including the now-VIC-specific Step 1
+check and Step 2 correctly covering only `[qld, wa, sa, tas]`. Full `npm test` (118/118) and a
+direct `searchCourtRecords('Mokbel', [], 'vic')` call both confirmed working.
+`git diff --stat` confirms the change touches only `courtRecords.js` +
+`test-court-records.js` — **pass**, against the stated bar.
+
+### Silent false-negative in the shared word-length matching filter — 2 files fixed, 5 flagged (2026-09-14)
+
+Found while investigating whether the `run-all.sh` legacy test failures (`act-licence`,
+`modern-slavery`, among others) were masking real regressions, per a direct user request to
+verify before assuming they were safe to ignore.
+
+**`act-licence` — confirmed a false alarm, not a regression.** This is a dead reconnaissance
+probe against `accesscanberra.act.gov.au/licence-and-registration/check-a-licence` — a page
+Access Canberra has since removed entirely (live-confirmed: "This page was removed, renamed
+or doesn't exist"). The real production scraper (`actLicences.js`, covered by the separate,
+passing `act-licences` test) has used ACT's `data.act.gov.au` Socrata API since the WS3
+director-discovery work — a completely different mechanism this stale probe predates and
+never tests. No action needed; this probe is testing infrastructure that no longer exists.
+
+**`modern-slavery` — the specific test failure is also a false alarm** (a self-discovered
+fixture with an unusually long, comma-joined dual-entity name the register's own search
+doesn't index for — confirmed via the test's own direct-re-query diagnostic). **But
+sanity-checking it live surfaced a real, separate, previously-undetected bug**: a direct
+`searchModernSlavery('BHP', '')` call returned zero results despite BHP having real, current
+statements on the register (confirmed by querying the raw register directly and finding
+several). Root cause: `isEntityMatch`'s word-distinctiveness filter required `length > 3` —
+so a company name whose only word is exactly 3 characters (BHP, NAB, ANZ, CBA, IAG, TAB...)
+leaves zero "distinctive" words after filtering, and `words.length === 0` short-circuits to
+`false` for every such search with no ABN supplied. Large ASX-listed entities — exactly the
+population Modern Slavery Statements cover — are disproportionately likely to hit this via a
+short ticker-style name.
+
+The identical filter (`w.length > 3`, same regex, same stopword list) is duplicated across
+**7 files**: `modernSlavery.js` and `asicEnforceableUndertakings.js` (both national,
+`mvpScope: true`) plus `vicBpc.js`, `waLicenceRegister.js`, `vicVbaLicence.js`,
+`tasLicenceRegister.js`, `qbcc.js` (all VIC/WA/TAS/QLD-specific). `courtRecords.js`'s
+`titleMatchesTerm` already uses the correct `> 2` threshold elsewhere in this codebase — these
+7 are the outliers, all presumably copy-pasted from the same original source.
+
+**Fixed the 2 national/in-scope files** (`modernSlavery.js`, `asicEnforceableUndertakings.js`):
+`> 3` → `> 2`, matching `courtRecords.js`'s precedent. Live-reverified: `searchModernSlavery('BHP', '')`
+now returns 6 real results. Added `scrapers/modernSlavery.test.js` and
+`scrapers/asicEnforceableUndertakings.test.js` — pure-function regression tests against the
+now-exported `isEntityMatch`/`nameMatchesEntity` (no network needed), covering the 3-char fix,
+confirming the 1-2 char floor still holds, and confirming multi-word phrase-anchoring and the
+ABN-match path are unaffected. Both added to `server/package.json`'s `test` script — 127/127
+passing. `run-all.sh`'s live `asic-eu` test also still passes; `modern-slavery`'s own live test
+still fails on the same unrelated bad fixture as before (confirmed unrelated to this fix).
+
+**Not fixed — flagged only, same as this file's established practice for shared-helper bugs
+found outside a change's immediate scope** (e.g. the "Pty Limited" suffix-stripping entry
+above): `vicBpc.js`, `waLicenceRegister.js`, `vicVbaLicence.js`, `tasLicenceRegister.js`,
+`qbcc.js` all still carry the `> 3` bug. Deliberately left alone — these are all VIC/WA/TAS/QLD
+registers, outside this product's current NSW/ACT scope; revisit if/when those jurisdictions
+come back into scope, or opportunistically the next time one of these files is touched for an
+unrelated reason.
 
 ### Phase 7c — asicExtract: historical directors + charges register
 

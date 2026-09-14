@@ -25,3 +25,16 @@ CREATE TABLE IF NOT EXISTS register_record (
 CREATE INDEX IF NOT EXISTS idx_register_record_dataset_abn  ON register_record(dataset_key, abn);
 CREATE INDEX IF NOT EXISTS idx_register_record_dataset_acn  ON register_record(dataset_key, acn);
 CREATE INDEX IF NOT EXISTS idx_register_record_norm_name    ON register_record(dataset_key, normalised_name);
+
+-- WS0.8 (reliability plan) — persisted scraper-health event log, backing the reliability
+-- dashboard. One row per runScraper() outcome; a 7-day success rate is a plain
+-- COUNT(*) FILTER group-by over this table, no separate rollup job needed.
+CREATE TABLE IF NOT EXISTS health_check_event (
+  id            BIGSERIAL PRIMARY KEY,
+  scraper_key   TEXT NOT NULL,
+  outcome       TEXT NOT NULL,          -- 'success' | 'failure' | 'circuit_open'
+  error         TEXT,
+  occurred_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_health_check_event_key_time ON health_check_event(scraper_key, occurred_at);

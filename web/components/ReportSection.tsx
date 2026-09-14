@@ -4,7 +4,15 @@ import { useState } from 'react';
 import { SearchResult, ResultItem } from '@/src/types';
 import { ResultCard } from './ResultCard';
 import { RiskBadge, RiskLevel } from './RiskBadge';
+import { CompletenessBadge, worstCompleteness } from './CompletenessBadge';
 import { trackEvent } from '@/lib/analytics';
+
+function formatAsOf(asOf?: string): string | null {
+  if (!asOf) return null;
+  const d = new Date(asOf);
+  if (isNaN(d.getTime())) return null;
+  return d.toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' });
+}
 
 interface Props {
   id: string;
@@ -43,9 +51,19 @@ export function ReportSection({
   const allResults: ResultItem[] =
     resultsOverride ?? searchResults.flatMap((sr) => sr.results || []);
 
-  const summaryTexts = searchResults
+  // WS0.5 (reliability plan) — each summary line keeps its own source result's
+  // completeness/asOf, so a partial/stale/unavailable check reads differently from a
+  // normal "checked, found nothing" summary rather than blending in with it.
+  const summaries = searchResults
     .filter((sr) => sr.summary)
-    .map((sr) => sr.summary as string);
+    .map((sr) => ({ text: sr.summary as string, completeness: sr.completeness, asOf: sr.asOf }));
+
+  // Section-level badge — the worst completeness across every contributing result,
+  // shown next to RiskBadge. Suppressed when riskLevel is already 'unavailable': that
+  // badge already means "every check in this section failed," so a second badge saying
+  // much the same thing would be redundant, not additive.
+  const sectionCompleteness =
+    riskLevel === 'unavailable' ? null : worstCompleteness(searchResults.map((sr) => sr.completeness));
 
   const directSources = searchResults
     .filter((sr) => sr.searchUrl && (!linksRequireResults || (sr.results?.length ?? 0) > 0))
@@ -75,6 +93,7 @@ export function ReportSection({
         </div>
         <div className="flex items-center gap-2 ml-3 shrink-0">
           {riskLevel && <RiskBadge level={riskLevel} />}
+          {sectionCompleteness && <CompletenessBadge level={sectionCompleteness} />}
           <span className="text-white/60 text-xs md:hidden" aria-hidden="true">
             {open ? '▲' : '▼'}
           </span>
@@ -90,14 +109,21 @@ export function ReportSection({
               <p className="text-sm font-semibold text-danger">{criticalBanner}</p>
             </div>
           )}
-          {summaryTexts.map((s, i) => (
-            <p
-              key={i}
-              className="text-sm text-text-secondary bg-surface-alt rounded-lg px-4 py-3 mb-4"
-            >
-              {s}
-            </p>
-          ))}
+          {summaries.map(({ text, completeness, asOf }, i) => {
+            const isCaveat = completeness === 'partial' || completeness === 'stale' || completeness === 'unavailable';
+            const asOfLabel = completeness === 'stale' ? formatAsOf(asOf) : null;
+            return (
+              <p
+                key={i}
+                className={`text-sm rounded-lg px-4 py-3 mb-4 ${
+                  isCaveat ? 'text-info bg-info-bg' : 'text-text-secondary bg-surface-alt'
+                }`}
+              >
+                {text}
+                {asOfLabel && <span className="block text-xs mt-1 opacity-80">Cached data as of {asOfLabel}</span>}
+              </p>
+            );
+          })}
 
           {isLinkSection ? (
             <div className="divide-y divide-border-light">

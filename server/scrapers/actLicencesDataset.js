@@ -1,7 +1,16 @@
 'use strict';
 
 const axios = require('axios');
-const { replaceDatasetRecords, queryDataset } = require('./datasetStore');
+const { replaceDatasetRecords, queryDataset, recordIngestionFailure } = require('./datasetStore');
+
+// WS4 reliability-plan audit (2026-09-10) — see the identical guard in asicDpnDataset.js
+// for the full rationale. These two datasets are confirmed (via Socrata's own count
+// endpoint, per the comment above) to be very different sizes — 32,001 rows vs. 377 —
+// so each gets its own floor rather than sharing one constant; both are generous margins
+// below the real confirmed counts, meant only to catch "Socrata's API shape changed and
+// fetchAllPages() came back nearly empty," not to police either dataset's actual size.
+const MIN_SANE_ROW_COUNT_LICENCE = 5_000;
+const MIN_SANE_ROW_COUNT_DISCIPLINARY = 30;
 
 // WS1 (2026-09-09, reliability plan activities 1.5/1.6): bulk-fetch and cache both of
 // ACT's Socrata open-data datasets instead of querying them live per search. Both are
@@ -37,7 +46,7 @@ async function fetchAllPages(url, _axios) {
   return all;
 }
 
-async function doFetchRecords(resourceUrl, datasetKey, _axios) {
+async function doFetchRecords(resourceUrl, datasetKey, _axios, _minRows) {
   let rows;
   try {
     rows = await fetchAllPages(resourceUrl, _axios);
@@ -47,6 +56,19 @@ async function doFetchRecords(resourceUrl, datasetKey, _axios) {
       return { records: cached.rows, stale: true, cachedAt: cached.fetchedAt };
     }
     throw err;
+  }
+
+  if (rows.length < _minRows) {
+    // Same "treat an implausibly small parse like a fetch failure" guard as
+    // asicDpnDataset.js/asicEnforceableUndertakingsDataset.js — don't promote it, record
+    // why, and fall back to the last known-good copy for this caller too.
+    console.error(`[actLicencesDataset] ${datasetKey}: fetched only ${rows.length} row(s) (expected ${_minRows}+) — refusing to promote, likely a Socrata API shape change`);
+    await recordIngestionFailure(datasetKey, `fetched only ${rows.length} row(s), below the ${_minRows} sanity floor`);
+    const cached = await queryDataset(datasetKey);
+    if (cached.rows && cached.rows.length > 0) {
+      return { records: cached.rows, stale: true, cachedAt: cached.fetchedAt };
+    }
+    throw new Error(`${datasetKey}: fetched only ${rows.length} row(s) and no prior cache to fall back to`);
   }
 
   try {
@@ -62,9 +84,9 @@ async function doFetchRecords(resourceUrl, datasetKey, _axios) {
 // walk of the same dataset — coalesce into one in-flight request per dataset, mirroring
 // the inFlightFetch pattern already used throughout server/scrapers/.
 let inFlightLicence = null;
-async function fetchActLicenceRecords(_axios = axios) {
+async function fetchActLicenceRecords(_axios = axios, _minRows = MIN_SANE_ROW_COUNT_LICENCE) {
   if (inFlightLicence) return inFlightLicence;
-  inFlightLicence = doFetchRecords(LICENCE_RESOURCE_URL, LICENCE_DATASET_KEY, _axios);
+  inFlightLicence = doFetchRecords(LICENCE_RESOURCE_URL, LICENCE_DATASET_KEY, _axios, _minRows);
   try {
     return await inFlightLicence;
   } finally {
@@ -73,9 +95,9 @@ async function fetchActLicenceRecords(_axios = axios) {
 }
 
 let inFlightDisciplinary = null;
-async function fetchActDisciplinaryRecords(_axios = axios) {
+async function fetchActDisciplinaryRecords(_axios = axios, _minRows = MIN_SANE_ROW_COUNT_DISCIPLINARY) {
   if (inFlightDisciplinary) return inFlightDisciplinary;
-  inFlightDisciplinary = doFetchRecords(DISCIPLINARY_RESOURCE_URL, DISCIPLINARY_DATASET_KEY, _axios);
+  inFlightDisciplinary = doFetchRecords(DISCIPLINARY_RESOURCE_URL, DISCIPLINARY_DATASET_KEY, _axios, _minRows);
   try {
     return await inFlightDisciplinary;
   } finally {
@@ -88,4 +110,6 @@ module.exports = {
   fetchActDisciplinaryRecords,
   LICENCE_DATASET_KEY,
   DISCIPLINARY_DATASET_KEY,
+  MIN_SANE_ROW_COUNT_LICENCE,
+  MIN_SANE_ROW_COUNT_DISCIPLINARY,
 };
