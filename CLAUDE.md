@@ -2064,6 +2064,102 @@ needing to redeploy just to add a `console.log`.
 
 ---
 
+### ASIC Insolvency — a real crash-causing bug fixed, timing reliability still open (2026-09-15)
+
+Same day's incident as the dataset-scraper live-refetch bug above: `asicInsolvency` was one
+of three keys (with `courts_federal`, `courts_act`) still degraded after that fix, prioritized
+by the user for a deep dive since no bulk/open-data alternative exists for any of the three
+(confirmed against data.gov.au — ASIC's 12 published datasets don't include an insolvency-
+notices register).
+
+**Bug 1, real and fixed: a navigation race.** `asicInsolvency.js` drives Puppeteer through
+`publishednotices.asic.gov.au`'s ASP.NET WebForms search — type into a field,
+`__doPostBack()` via `page.evaluate()`, wait for the resulting full-page navigation. Live logs
+showed `Execution context was destroyed, most likely because of a navigation` on every single
+run — the classic Puppeteer race where `__doPostBack`'s synchronous form submission tears
+down the page's JS context before `page.evaluate()`'s own promise settles, even though the
+navigation it triggers succeeds fine. The adjacent `page.waitForNavigation()` already
+`.catch()`ed exactly this class of expected rejection; `evaluate()` didn't, so its rejection
+propagated up and failed the whole search unconditionally, every time, regardless of manifest
+timeout. Fixed with `.catch(() => {})` on the evaluate call, the same "Load older data" button
+click below it (same risk), and defensively on the WAF-challenge polling loop's `page.title()`
+calls. Live-verified: 26.7s, found a real notice for a known fixture (Universal Property Group
+— matches this same company's insolvency administration referenced elsewhere in this file),
+no more navigation-race error.
+
+**Bug 2, investigated, partially mitigated, not solved: Puppeteer pool contention under real
+concurrent search load.** Even after the navigation-race fix, `asicInsolvency` kept timing out
+in real `/api/search` requests — but not because of queueing. Instrumented `browser.js`'s
+`acquirePageSlot()`/`pageWaitQueue` directly (temporary, never committed — edited the file on
+the container's disk, which is invisible to the already-running server process since Node
+caches modules in memory per-process; verified in an isolated `node` invocation instead) and
+fired 6 realistic concurrent Puppeteer consumers. `asicInsolvency` got a page slot
+*immediately* every time — zero queue wait — yet still took 71.3s, versus 26.7s completely
+alone. Running several Chromium pages at once inside the one shared browser instance
+measurably slows down each page's own execution, independent of the pool's slot-accounting
+logic. `atoDebt` (identical WAF-gated ASP.NET-postback shape, never separately investigated
+before this) showed the same pattern: 56.6s under that same 6-way load, 1.2–1.3s alone in
+later tests.
+
+Two real fixes landed to reduce total concurrent Puppeteer demand (both good fixes on their
+own merits, not just for this investigation):
+- **`DISABLED_SCRAPER_KEYS`** (new, see manifest.js/searchOrchestrator.js) — a reversible
+  per-scraper kill switch, env-var-driven, no redeploy needed to toggle. Set to
+  `waLicenceRegister,tasLicenceRegister,courts_nt` — the two 90s CAPTCHA-gated non-MVP
+  registers (historically the longest, least predictable pool holders, per this file's own
+  "Puppeteer-dependent scrapers systemically starved" entry above) plus `courts_nt` (measured
+  only 727ms standalone — its own contribution is minor, included anyway since it was one of
+  the three the user originally asked about). A disabled key is never invoked at all — no
+  network call, no page slot held — and reports an honest `completeness: 'unavailable'`
+  result, never a silent empty "clean" one.
+- **`vicBpc.js` had the identical live-refetch-on-every-request bug already fixed for the
+  ASIC/ACT dataset scrapers earlier the same day**, just with a disk cache instead of
+  Postgres: `searchVicBpc` called `fetchVbaBpcRecords()` (the full Puppeteer-driven,
+  Cloudflare-clearing fetch of the whole ~943-record register) on every search, instead of
+  reading the cache `vicBpcDatasetRefresh.js`'s 24h job already kept warm. Added
+  `readCachedVbaBpcRecords()` (plain `fs.readFile`, real staleness computed against the 24h
+  cadence) and switched the live path to it. Live-verified: 13ms, zero Puppeteer usage, down
+  from ~2s of unnecessary browser work on every single search.
+
+**Tested whether lowering `MAX_CONCURRENT_PAGES` (bumped 3→6 earlier the same day, see the
+Puppeteer-pool-starvation entry above) would help further, with the reduced 5-consumer set
+(`asicInsolvency`, `courts_federal`, `atoDebt`, `asicExtract`, `qbcc` — `vicBpc` no longer
+competes).** Result argues against going lower: at pool=6, `asicInsolvency` measured 50.9s;
+at pool=4, 94.8s — worse, because with 5 real concurrent consumers, a smaller pool means more
+queueing than the per-page slowdown it saves. Kept at 6. Caveat stated plainly: run-to-run
+variance in these tests was huge (`atoDebt` 1.2s–56.6s, `courts_federal` 1.9s–25.6s across the
+session's tests) — real AWS WAF-challenge-clearing and 2captcha-solve timing dominates over
+anything controllable internally, consistent with this file's own long-documented "CAPTCHA
+solve observed 33s–120s+" history. Two single runs per setting isn't enough to claim a
+precise optimum, only a direction.
+
+**Confirmed the WAF is real, not a fixable client fingerprinting issue**: a plain `curl` to
+`publishednotices.asic.gov.au/browsesearch-notices` returns `x-amzn-waf-action: challenge`
+(AWS WAF, served via CloudFront — not Cloudflare, despite the code's generic "WAF/Cloudflare"
+comment) with an empty 202 body. This rules out ever moving this scraper off Puppeteer onto
+plain `axios` the way NSW Fair Trading/QBCC were — the challenge requires real JS execution.
+
+**Net result**: `manifest.js`'s `asicInsolvency` timeout raised 60s → 120s (bucket 2 → 4,
+matching the "otherwise slow/fragile" bucket-4 treatment already given to CAPTCHA-adjacent
+scrapers) as the pragmatic mitigation, given a real measured worst case of 94.8s under load.
+This is not a full fix — it accepts that this specific check will sometimes take up to two
+minutes, rather than reducing that cost further.
+
+**Not yet done**:
+- `browser.js`'s page queue has no priority tiering — `asicInsolvency`/`courts_federal` (MVP)
+  queue exactly like `qbcc` (non-MVP) for a slot. A priority queue (MVP requests jump ahead)
+  is a plausible next lever, not yet built or tested.
+- `atoDebt` shares `asicInsolvency`'s exact WAF-gated ASP.NET-postback code shape and showed
+  the identical load-dependent slowdown pattern in this session's testing, but wasn't
+  separately investigated or fixed — its own timeout (20s) was never revisited, and it may
+  have the same or a similar navigation-race bug lurking (not checked).
+- `qbcc.js`'s own live Puppeteer cost (~17-19s measured, consistent across tests) wasn't
+  investigated for a possible reduction, unlike `vicBpc.js`.
+- No real-Postgres-vs-disk-cache question here (unlike the earlier fix) — this dataset
+  genuinely has no bulk/open-data source, confirmed via data.gov.au's CKAN API.
+
+---
+
 ## Performance baseline (2026-05-21)
 
 10 sequential `POST /api/search` requests, entity "Multiplex", Express at `localhost:3001`.

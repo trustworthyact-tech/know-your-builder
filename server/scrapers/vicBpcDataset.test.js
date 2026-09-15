@@ -3,7 +3,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
-const { fetchVbaBpcRecords, CACHE_PATH } = require('./vicBpcDataset');
+const { fetchVbaBpcRecords, readCachedVbaBpcRecords, CACHE_PATH } = require('./vicBpcDataset');
 
 // No test file existed for this module before the WS4 reliability-plan audit
 // (2026-09-10) — added alongside the row-count sanity guard below so the guard (and the
@@ -78,4 +78,41 @@ test('fetchVbaBpcRecords — fetch below the row-count floor with no existing ca
   clearCache();
   const fakeFetch = async () => ({ records: [{ id: 'under-parsed' }], reportedTotal: 1 });
   await assert.rejects(() => fetchVbaBpcRecords(5, fakeFetch), /fetched only \d+ record\(s\)/);
+});
+
+// -------------------------------------------------------------------
+// readCachedVbaBpcRecords — the fast, no-Puppeteer read for the live search hot
+// path (vicBpc.js), added 2026-09-15 alongside the identical fix for the
+// datasetStore.js-backed modules (see CLAUDE.md). Never touches fetchAllPages.
+// -------------------------------------------------------------------
+
+test('readCachedVbaBpcRecords — reads a warm cache without touching Puppeteer, not stale', async () => {
+  clearCache();
+  try {
+    seedCache([{ id: 'warm' }]);
+    const result = await readCachedVbaBpcRecords();
+    assert.equal(result.stale, false);
+    assert.deepEqual(result.records, [{ id: 'warm' }]);
+  } finally {
+    clearCache();
+  }
+});
+
+test('readCachedVbaBpcRecords — a cache older than the 24h refresh cadence is marked stale, not silently fresh', async () => {
+  clearCache();
+  try {
+    seedCache([{ id: 'old' }]);
+    const oldTime = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    fs.utimesSync(CACHE_PATH, oldTime, oldTime);
+    const result = await readCachedVbaBpcRecords();
+    assert.equal(result.stale, true);
+    assert.deepEqual(result.records, [{ id: 'old' }]);
+  } finally {
+    clearCache();
+  }
+});
+
+test('readCachedVbaBpcRecords — no cache at all throws rather than reporting a false clean', async () => {
+  clearCache();
+  await assert.rejects(() => readCachedVbaBpcRecords(), /no cached data available/);
 });

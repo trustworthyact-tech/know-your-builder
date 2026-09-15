@@ -54,12 +54,15 @@ const SCRAPERS = [
   { key: 'abn', label: 'ABR — Business Register', jurisdiction: 'national', bucket: 2, sourceType: 'live-api', cadence: null, timeoutMs: 20_000, mvpScope: true },
   { key: 'asic', label: 'ASIC Connect — Company Search', jurisdiction: 'national', bucket: 4, sourceType: 'live-scrape-captcha', cadence: null, timeoutMs: 90_000, mvpScope: true },
   { key: 'asicDisqualified', label: 'ASIC — Disqualified Persons Register', jurisdiction: 'national', bucket: 1, sourceType: 'bulk-dataset', cadence: '12h', timeoutMs: 10_000, mvpScope: true },
-  // timeoutMs was 20_000 — live-measured 2026-09-15 (see CLAUDE.md): a genuine, correct
-  // run against this ASP.NET/WAF-gated multi-step form (clear the WAF challenge, type
-  // into the field, __doPostBack, wait for a full page navigation, sometimes a second
-  // navigation for archived results) takes ~28s on a warm shared browser, structurally
-  // more than 20s could ever cover — not a site block, just an under-budgeted timeout.
-  { key: 'asicInsolvency', label: 'ASIC Published Notices — Insolvency', jurisdiction: 'national', bucket: 2, sourceType: 'live-source', cadence: null, timeoutMs: 60_000, mvpScope: true },
+  // timeoutMs raised twice on 2026-09-15 (see CLAUDE.md's "ASIC Insolvency" incomplete-work
+  // entry for the full investigation): 20s → 60s once the ASP.NET/WAF-gated multi-step form
+  // itself was measured at ~28s standalone; 60s → 120s once real concurrent-search-load
+  // testing (after fixing a separate navigation-race bug) showed this same flow taking up
+  // to 94.8s under realistic Puppeteer-pool contention — not queueing (it got a page slot
+  // immediately every time tested) but the shared browser's per-page execution genuinely
+  // slowing down under concurrent load. Reclassified bucket 2 → 4 ("otherwise slow/
+  // fragile") to match. Still not fully reliable even at 120s — see the CLAUDE.md entry.
+  { key: 'asicInsolvency', label: 'ASIC Published Notices — Insolvency', jurisdiction: 'national', bucket: 4, sourceType: 'live-source', cadence: null, timeoutMs: 120_000, mvpScope: true },
   { key: 'atoDebt', label: 'ASIC Published Notices — ATO Tax Debt', jurisdiction: 'national', bucket: 2, sourceType: 'live-source', cadence: null, timeoutMs: 20_000, mvpScope: true },
   { key: 'courts_federal', label: 'Federal Courts', jurisdiction: 'national', bucket: 2, sourceType: 'live-fulltext-search', cadence: null, timeoutMs: 45_000, mvpScope: true },
   { key: 'courts_qld', label: 'QLD Courts & Tribunals', jurisdiction: 'qld', bucket: 3, sourceType: 'manual-link', cadence: null, timeoutMs: 10_000, mvpScope: false },

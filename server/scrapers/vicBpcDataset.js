@@ -57,6 +57,29 @@ async function readCachedRecords() {
   }
 }
 
+// Fast-path read for the live search hot path (vicBpc.js) — reads the disk cache
+// directly rather than driving a full Puppeteer-cleared-Cloudflare fetch of the
+// whole ~943-record register on every search request. Found 2026-09-15 (same
+// investigation/fix already applied to asicDpnDataset.js/actLicencesDataset.js/
+// asicEnforceableUndertakingsDataset.js the same day — see CLAUDE.md): the live
+// search path had never actually been wired to a cache read at all, making
+// vicBpc one more Puppeteer page competing for browser.js's shared pool on every
+// single search, on top of its own unnecessary latency. Unlike those three, this
+// dataset predates/bypasses datasetStore.js (its own disk-only cache, no
+// Postgres) — same fix shape, different storage read. readCachedRecords() above
+// exists only for doFetchVbaBpcRecords's own error-fallback path and hardcodes
+// stale:true, which is wrong for a normal read — this computes real staleness
+// against the refresh job's own interval (24h, see vicBpcDatasetRefresh.js).
+// Throws if genuinely nothing is cached — callers must treat that as "couldn't
+// check," not a false-clean.
+const CACHE_SLA_MS = 24 * 60 * 60 * 1000;
+async function readCachedVbaBpcRecords() {
+  const cached = await readCachedRecords();
+  if (!cached) throw new Error('VIC BPC: no cached data available');
+  const stale = Date.now() - new Date(cached.cachedAt).getTime() > CACHE_SLA_MS;
+  return { ...cached, stale };
+}
+
 // This API is behind Cloudflare — a plain axios/curl GET to it returns a
 // "Just a moment..." challenge page (HTTP 403). The same URL works fine when
 // fetched from inside a real Puppeteer page's JS context after that page has
@@ -161,4 +184,4 @@ async function fetchVbaBpcRecords(_minRows = MIN_SANE_ROW_COUNT, _fetchAllPages 
   }
 }
 
-module.exports = { fetchVbaBpcRecords, CACHE_PATH, REGISTER_PAGE_URL, API_URL, MIN_SANE_ROW_COUNT };
+module.exports = { fetchVbaBpcRecords, readCachedVbaBpcRecords, CACHE_PATH, REGISTER_PAGE_URL, API_URL, MIN_SANE_ROW_COUNT };

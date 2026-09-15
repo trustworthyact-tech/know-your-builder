@@ -1,5 +1,5 @@
 const cheerio = require('cheerio');
-const { fetchVbaBpcRecords } = require('./vicBpcDataset');
+const { readCachedVbaBpcRecords } = require('./vicBpcDataset');
 
 // The VBA (Victorian Building Authority) rebranded to the Building and Plumbing
 // Commission. The old prosecution & disciplinary register at
@@ -14,6 +14,14 @@ const { fetchVbaBpcRecords } = require('./vicBpcDataset');
 // server-side — so this scraper no longer drives Puppeteer per query. Instead
 // vicBpcDataset.js fetches (and caches) the whole register once, and we do the
 // name matching locally against that cached list. Confirmed live 2026-08-28.
+//
+// Found 2026-09-15: this file still called fetchVbaBpcRecords() (the full live
+// Puppeteer-driven fetch) on every search request instead of reading the disk
+// cache the 24h refresh job (vicBpcDatasetRefresh.js) already keeps warm — one
+// more Puppeteer page competing for browser.js's shared pool on every search,
+// unnecessarily. Switched to readCachedVbaBpcRecords() (see its own comment in
+// vicBpcDataset.js) — this scraper no longer touches Puppeteer on the live path
+// at all.
 const PROSECUTION_REGISTER_URL = 'https://www.bpc.vic.gov.au/compliance-and-enforcement-register';
 
 // Every significant word must appear in the record text to prevent false positives.
@@ -93,7 +101,7 @@ async function searchVicBpc(companyName, abn, directors) {
 
   let records;
   try {
-    const fetched = await fetchVbaBpcRecords();
+    const fetched = await readCachedVbaBpcRecords();
     records = fetched.records;
   } catch (err) {
     // No live data AND no cache at all — fail loud rather than silently
