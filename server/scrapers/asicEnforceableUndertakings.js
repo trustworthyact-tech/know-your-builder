@@ -1,4 +1,4 @@
-const { fetchAsicEuRecords, REGISTER_URL } = require('./asicEnforceableUndertakingsDataset');
+const { readCachedAsicEuRecords, REGISTER_URL } = require('./asicEnforceableUndertakingsDataset');
 
 // Every significant word must appear in the record text to prevent false positives.
 // Phrase-anchored (not just "every word present anywhere") for multi-word queries —
@@ -53,12 +53,17 @@ function mapRecordToResult(record) {
   };
 }
 
-async function searchAsicEnforceableUndertakings(companyName, directorNames) {
+// Found 2026-09-15: this was calling fetchAsicEuRecords() (a full live fetch
+// of the register page) on every search request instead of reading the
+// already-refreshed Postgres cache — see readCachedAsicEuRecords's own comment
+// in asicEnforceableUndertakingsDataset.js. _readCachedAsicEuRecords is
+// injectable for tests, same DI convention as asicDpnMatch.js's _fetchDpnRows.
+async function searchAsicEnforceableUndertakings(companyName, directorNames, _readCachedAsicEuRecords = readCachedAsicEuRecords) {
   const queries = [stripCompanySuffix(companyName), ...(directorNames || [])].filter(Boolean);
 
   let records;
   try {
-    const fetched = await fetchAsicEuRecords();
+    const fetched = await _readCachedAsicEuRecords();
     records = fetched.records;
   } catch {
     // No live data AND no cache at all — fail loud rather than silently reporting

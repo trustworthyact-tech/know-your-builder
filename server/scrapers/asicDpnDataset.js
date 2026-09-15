@@ -106,6 +106,27 @@ async function readCachedRows() {
   return { rows: cached.rows, stale: true, cachedAt: cached.fetchedAt };
 }
 
+// Fast-path read for the live search hot path (asicDpnMatch.js) — reads the
+// already-refreshed Postgres cache directly rather than re-downloading and
+// re-parsing the CSV on every search request. Found 2026-09-15: the live search
+// path had never actually been wired to a cache read at all — it was calling
+// fetchDpnRows() (the full live CKAN-resolve + CSV-download-and-parse below) on
+// every request, an 8s+ live round trip against this key's 10s manifest budget,
+// which is what was tripping the circuit breaker to "degraded" under real
+// traffic despite the cache itself being warm and the DB being healthy.
+// readCachedRows() above exists only for doFetchDpnRows's own error-fallback
+// path and hardcodes stale:true, which is wrong for a normal read — this
+// computes real staleness against the refresh job's own interval (12h, see
+// asicDpnDatasetRefresh.js). Throws if genuinely nothing is cached (DB and disk
+// fallback both empty) — callers must treat that as "couldn't check," not a
+// false-clean.
+const CACHE_SLA_MS = 12 * 60 * 60 * 1000;
+async function readCachedDpnRows(_queryDataset = queryDataset) {
+  const cached = await _queryDataset(DATASET_KEY, { slaMs: CACHE_SLA_MS });
+  if (!cached.fetchedAt) throw new Error(`ASIC DPN: no cached data available for "${DATASET_KEY}"`);
+  return { rows: cached.rows, stale: Boolean(cached.stale), cachedAt: cached.fetchedAt };
+}
+
 // ── Fetch ────────────────────────────────────────────────────────────────────
 
 /**
@@ -192,4 +213,4 @@ async function fetchDpnRows(_axios = axios, _minRows = MIN_SANE_ROW_COUNT) {
   }
 }
 
-module.exports = { fetchDpnRows, parseCsv, parseCsvLine, DATASET_KEY, MIN_SANE_ROW_COUNT };
+module.exports = { fetchDpnRows, readCachedDpnRows, parseCsv, parseCsvLine, DATASET_KEY, MIN_SANE_ROW_COUNT };

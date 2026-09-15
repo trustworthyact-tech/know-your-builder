@@ -1,4 +1,4 @@
-const { fetchActLicenceRecords, fetchActDisciplinaryRecords } = require('./actLicencesDataset');
+const { readCachedLicenceRecords, readCachedDisciplinaryRecords } = require('./actLicencesDataset');
 
 // ACT Access Canberra — List of Professionals (Socrata open-data API).
 // No auth required. Company names are stored in the `surname` field;
@@ -13,8 +13,17 @@ const { fetchActLicenceRecords, fetchActDisciplinaryRecords } = require('./actLi
 //
 // WS1 (2026-09-09, reliability plan activities 1.5/1.6): both datasets moved from
 // live per-query Socrata calls to bulk ingestion — see actLicencesDataset.js.
-// Matching now happens locally against the full cached row set (same shape as
+// Matching happens locally against the full cached row set (same shape as
 // vicBpc.js), which also removes the previous one-live-call-per-director-name cost.
+//
+// The three functions below read that cache via readCachedLicenceRecords()/
+// readCachedDisciplinaryRecords() (datasetStore.js, Postgres, ~150-300ms) — not
+// fetchActLicenceRecords()/fetchActDisciplinaryRecords() (the full live Socrata
+// walk in actLicencesDataset.js), which only the background refresh job should
+// call. Found 2026-09-15: these functions were calling the live-walk versions
+// on every search request — the licence dataset's walk alone measured ~43s
+// against this key's 20s manifest timeout, the main cause of the breaker
+// reading "degraded" in production despite the cache being warm and correct.
 
 const PORTAL_URL = 'https://www.data.act.gov.au/Business-and-Industry/List-of-Professionals/de4w-gbt3';
 const DISCIPLINARY_PORTAL_URL = 'https://www.data.act.gov.au/Business-and-Industry/Register-Of-Disciplinary-Actions/avib-prrz';
@@ -96,13 +105,13 @@ function parseNames(field) {
 // costs a cache read, not a duplicate HTTP request — not worth the complexity a hoisted-
 // promise split would add. Fails open (returns []) on any error — director discovery is
 // best-effort and must never block resolveDirectors()'s other 12 consumers.
-async function resolveActAssociatedNames(companyName) {
+async function resolveActAssociatedNames(companyName, _readCachedLicenceRecords = readCachedLicenceRecords) {
   const strippedName = (companyName || '').replace(/\s*(?:pty|proprietary)?\.?\s*(?:ltd|limited)\.?\s*$/i, '').trim();
   if (!strippedName) return [];
 
   let records;
   try {
-    ({ records } = await fetchActLicenceRecords());
+    ({ records } = await _readCachedLicenceRecords());
   } catch {
     return [];
   }
@@ -117,14 +126,14 @@ async function resolveActAssociatedNames(companyName) {
   return names;
 }
 
-async function searchACTLicences(companyName, abn, directors) {
+async function searchACTLicences(companyName, abn, directors, _readCachedLicenceRecords = readCachedLicenceRecords) {
   // Strip "Pty Ltd" so partial-word matches work against the registered name.
   const strippedName = companyName.replace(/\s*(?:pty|proprietary)?\.?\s*(?:ltd|limited)\.?\s*$/i, '').trim();
   const queries = [strippedName, ...(directors || [])].filter(Boolean);
 
   let records;
   try {
-    ({ records } = await fetchActLicenceRecords());
+    ({ records } = await _readCachedLicenceRecords());
   } catch (err) {
     return {
       source: 'ACT Access Canberra — Builder Licence Register',
@@ -188,7 +197,7 @@ function toDisciplinaryResultItem(hit, query) {
   };
 }
 
-async function searchACTDisciplinary(companyName, abn, directors) {
+async function searchACTDisciplinary(companyName, abn, directors, _readCachedDisciplinaryRecords = readCachedDisciplinaryRecords) {
   // A company's ABN is its two check digits followed by its ACN — derive a
   // candidate ACN from either a bare 9-digit ACN or an 11-digit ABN so a match
   // against a_c_n is still possible if the registered name in this dataset
@@ -203,7 +212,7 @@ async function searchACTDisciplinary(companyName, abn, directors) {
 
   let records;
   try {
-    ({ records } = await fetchActDisciplinaryRecords());
+    ({ records } = await _readCachedDisciplinaryRecords());
   } catch (err) {
     return {
       source: 'ACT Access Canberra — Register of Disciplinary Actions',

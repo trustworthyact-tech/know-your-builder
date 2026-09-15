@@ -1,6 +1,6 @@
 'use strict';
 
-const { fetchDpnRows } = require('./asicDpnDataset');
+const { readCachedDpnRows } = require('./asicDpnDataset');
 const { isNameMatch, buildSearchUrl } = require('./asicDisqualified');
 
 const BASE = 'https://connectonline.asic.gov.au';
@@ -82,9 +82,13 @@ function buildResultsForDirector(rows, directorName) {
  * dataset is effectively free, so every supplied director is checked.
  *
  * _fetchDpnRows is injectable so tests can simulate dataset-unavailable and
- * stale-cache scenarios without touching the network.
+ * stale-cache scenarios without touching the network. Defaults to
+ * readCachedDpnRows() (a fast Postgres cache read) rather than the live CSV
+ * refetch — see readCachedDpnRows's own comment in asicDpnDataset.js for why
+ * this is a fix, not just a rename: the live refetch was blowing this key's 10s
+ * manifest budget on every real search.
  */
-async function searchASICDisqualifiedFromDataset(directors, _fetchDpnRows = fetchDpnRows) {
+async function searchASICDisqualifiedFromDataset(directors, _fetchDpnRows = readCachedDpnRows) {
   if (!directors || directors.length === 0) {
     return {
       source: 'ASIC — Disqualified Persons Register',

@@ -99,6 +99,24 @@ async function readCachedRecords() {
   return { records: cached.rows, stale: true, cachedAt: cached.fetchedAt };
 }
 
+// Fast-path read for the live search hot path (asicEnforceableUndertakings.js) —
+// reads the already-refreshed Postgres cache directly rather than re-fetching
+// and re-parsing the register page on every search request. Found 2026-09-15:
+// the live search path had never actually been wired to a cache read — it
+// called fetchAsicEuRecords() (the full live fetch below) on every request.
+// readCachedRecords() above exists only for doFetchAsicEuRecords's own
+// error-fallback path and hardcodes stale:true, which is wrong for a normal
+// read — this computes real staleness against the refresh job's own interval
+// (24h, see asicEnforceableUndertakingsDatasetRefresh.js). Throws if genuinely
+// nothing is cached — callers must treat that as "couldn't check," not a
+// false-clean.
+const CACHE_SLA_MS = 24 * 60 * 60 * 1000;
+async function readCachedAsicEuRecords(_queryDataset = queryDataset) {
+  const cached = await _queryDataset(DATASET_KEY, { slaMs: CACHE_SLA_MS });
+  if (!cached.fetchedAt) throw new Error(`ASIC EU: no cached data available for "${DATASET_KEY}"`);
+  return { records: cached.rows, stale: Boolean(cached.stale), cachedAt: cached.fetchedAt };
+}
+
 /**
  * Fetches (or returns a cached copy of) the full ASIC Court Enforceable Undertakings
  * register.
@@ -160,4 +178,4 @@ async function fetchAsicEuRecords(_axios = axios, _minRows = MIN_SANE_ROW_COUNT)
   }
 }
 
-module.exports = { fetchAsicEuRecords, parseRecords, DATASET_KEY, REGISTER_URL, MIN_SANE_ROW_COUNT };
+module.exports = { fetchAsicEuRecords, readCachedAsicEuRecords, parseRecords, DATASET_KEY, REGISTER_URL, MIN_SANE_ROW_COUNT };

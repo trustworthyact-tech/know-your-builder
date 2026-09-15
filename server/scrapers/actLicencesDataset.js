@@ -105,9 +105,40 @@ async function fetchActDisciplinaryRecords(_axios = axios, _minRows = MIN_SANE_R
   }
 }
 
+// Fast-path reads for the live search hot path (actLicences.js) — read the
+// already-refreshed Postgres cache directly rather than re-walking all of
+// Socrata's paginated results on every search request. Found 2026-09-15: the
+// live search functions (searchACTLicences, searchACTDisciplinary,
+// resolveActAssociatedNames) had never actually been wired to a cache read —
+// they called fetchActLicenceRecords()/fetchActDisciplinaryRecords() (the full
+// live paginated walk above) on every request. Live-measured on production:
+// the licence dataset's full walk takes ~43s against this key's 20s manifest
+// budget — the single biggest contributor to the "degraded" breaker state
+// under real traffic (and, being that slow, plausibly starves other scrapers
+// running concurrently in the same search request too). The disciplinary
+// dataset's walk is small enough (377 rows) to not blow its own budget, but
+// there's no reason to pay a live network round trip for it either when the
+// cache is right there. Throws if genuinely nothing is cached (DB and disk
+// fallback both empty) — callers must treat that as "couldn't check," not a
+// false-clean, exactly like a live-fetch failure would have.
+const CACHE_SLA_MS = 24 * 60 * 60 * 1000; // matches actLicencesDatasetRefresh.js's interval
+async function readCachedLicenceRecords(_queryDataset = queryDataset) {
+  const cached = await _queryDataset(LICENCE_DATASET_KEY, { slaMs: CACHE_SLA_MS });
+  if (!cached.fetchedAt) throw new Error(`ACT licences: no cached data available for "${LICENCE_DATASET_KEY}"`);
+  return { records: cached.rows, stale: Boolean(cached.stale), cachedAt: cached.fetchedAt };
+}
+
+async function readCachedDisciplinaryRecords(_queryDataset = queryDataset) {
+  const cached = await _queryDataset(DISCIPLINARY_DATASET_KEY, { slaMs: CACHE_SLA_MS });
+  if (!cached.fetchedAt) throw new Error(`ACT disciplinary: no cached data available for "${DISCIPLINARY_DATASET_KEY}"`);
+  return { records: cached.rows, stale: Boolean(cached.stale), cachedAt: cached.fetchedAt };
+}
+
 module.exports = {
   fetchActLicenceRecords,
   fetchActDisciplinaryRecords,
+  readCachedLicenceRecords,
+  readCachedDisciplinaryRecords,
   LICENCE_DATASET_KEY,
   DISCIPLINARY_DATASET_KEY,
   MIN_SANE_ROW_COUNT_LICENCE,
