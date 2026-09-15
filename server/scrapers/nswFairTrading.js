@@ -18,6 +18,21 @@ const HEADERS = {
   Referer: `${REGISTER_BASE}/`,
 };
 
+// Found live 2026-09-15: Railway's outbound network cannot reach verify.licence.nsw.gov.au
+// at all — confirmed by running curl directly inside the Railway container itself (via its
+// Console tab), which hung indefinitely, while the identical request from an unrelated
+// network returned instantly. Same class of issue already hit and fixed for ACT/Federal
+// courts in courtRecords.js (Railway's IP being blocked/degraded reaching a site that's
+// otherwise perfectly healthy) — same fix: route through ScraperAPI's proxy. This is what
+// was silently starving every scraper that depends on resolveDirectors() (which awaits
+// fetchNswCompanyLookup below), not a database issue — ruled out separately by finding zero
+// active queries in Postgres (pg_stat_activity) during a search where these were hanging.
+// Falls back to a direct request when SCRAPERAPI_KEY isn't set (e.g. local dev).
+function viaScraperApi(url) {
+  const key = process.env.SCRAPERAPI_KEY;
+  return key ? `http://api.scraperapi.com?api_key=${key}&url=${encodeURIComponent(url)}` : url;
+}
+
 function escapeRegExp(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -39,7 +54,7 @@ function nameMatchesEntity(text, query) {
 
 async function fetchLicences(query) {
   const { data } = await axios.post(
-    SEARCH_URL,
+    viaScraperApi(SEARCH_URL),
     {
       licenceGroup: 'Trades',
       search: query,
@@ -61,7 +76,7 @@ async function fetchLicences(query) {
 async function fetchLicenceDetails(licenceType, licenceId) {
   const url = `${API_BASE}/search/details/${encodeURIComponent(licenceType)}/${encodeURIComponent(licenceId)}`;
   try {
-    const { data } = await axios.get(url, { headers: HEADERS, timeout: 20000 });
+    const { data } = await axios.get(viaScraperApi(url), { headers: HEADERS, timeout: 20000 });
     return data?.componentData ?? null;
   } catch {
     return null; // non-fatal — callers treat a null details fetch as "unknown", not "none"
