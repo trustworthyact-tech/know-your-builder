@@ -80,3 +80,44 @@ test('manifest keys match web INITIAL_SEARCHES exactly', () => {
     'manifest.js and web/app/search/SearchContent.tsx INITIAL_SEARCHES have drifted apart'
   );
 });
+
+// DISABLED_SCRAPER_KEYS — the temporary-decommission mechanism added 2026-09-15 (see
+// CLAUDE.md). Read once at module load from process.env, so exercising both states
+// means deleting the require cache and re-requiring with the env var set/unset — the
+// same trick this file doesn't otherwise need since SCRAPERS itself has no other
+// env-dependent branching.
+function loadManifestWithEnv(disabledCsv) {
+  const prev = process.env.DISABLED_SCRAPER_KEYS;
+  if (disabledCsv === undefined) delete process.env.DISABLED_SCRAPER_KEYS;
+  else process.env.DISABLED_SCRAPER_KEYS = disabledCsv;
+  delete require.cache[require.resolve('./manifest')];
+  try {
+    return require('./manifest').SCRAPERS;
+  } finally {
+    if (prev === undefined) delete process.env.DISABLED_SCRAPER_KEYS;
+    else process.env.DISABLED_SCRAPER_KEYS = prev;
+    delete require.cache[require.resolve('./manifest')];
+  }
+}
+
+test('DISABLED_SCRAPER_KEYS unset — every entry defaults to enabled', () => {
+  const scrapers = loadManifestWithEnv(undefined);
+  assert.ok(scrapers.every((s) => s.enabled === true));
+});
+
+test('DISABLED_SCRAPER_KEYS — listed keys are disabled, everything else stays enabled', () => {
+  const scrapers = loadManifestWithEnv('waLicenceRegister,tasLicenceRegister,courts_nt');
+  const byKey = new Map(scrapers.map((s) => [s.key, s.enabled]));
+  assert.equal(byKey.get('waLicenceRegister'), false);
+  assert.equal(byKey.get('tasLicenceRegister'), false);
+  assert.equal(byKey.get('courts_nt'), false);
+  assert.equal(byKey.get('courts_federal'), true);
+  assert.equal(byKey.get('asicInsolvency'), true);
+});
+
+test('DISABLED_SCRAPER_KEYS — tolerates stray whitespace and empty segments', () => {
+  const scrapers = loadManifestWithEnv(' waLicenceRegister ,, tasLicenceRegister,');
+  const byKey = new Map(scrapers.map((s) => [s.key, s.enabled]));
+  assert.equal(byKey.get('waLicenceRegister'), false);
+  assert.equal(byKey.get('tasLicenceRegister'), false);
+});

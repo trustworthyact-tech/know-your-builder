@@ -205,9 +205,27 @@ async function runSearchRequest({ abn, acn, companyName, tradingName, directors 
   const mvpEntries = SCRAPERS.filter((s) => s.mvpScope);
   const nonMvpEntries = SCRAPERS.filter((s) => !s.mvpScope);
 
+  // A key disabled via DISABLED_SCRAPER_KEYS (manifest.js) never gets invoked at all —
+  // not run-and-ignored, genuinely skipped, so it can't hold a Puppeteer page slot or any
+  // other resource. Reported honestly as unavailable rather than a silent empty "clean"
+  // result, same convention as buildManualFallback below.
+  function disabledResult(label) {
+    return {
+      status: 'error',
+      completeness: 'unavailable',
+      results: [],
+      error: 'Temporarily disabled',
+      summary: `${label} is temporarily disabled — see CLAUDE.md for why`,
+    };
+  }
+
   await Promise.all([
     ...mvpEntries.map(async (entry) => {
       const { key, label } = entry;
+      if (!entry.enabled) {
+        send({ key, label, ...disabledResult(label) });
+        return;
+      }
       // ACT Courts is the one live check with a real manual-link fallback (see
       // courtRecords.js's buildManualFallback) — on an open circuit, degrade to that
       // instead of runScraper's generic "unavailable" message, so a homeowner always
@@ -223,6 +241,10 @@ async function runSearchRequest({ abn, acn, companyName, tradingName, directors 
     }),
     ...nonMvpEntries.map(async (entry) => {
       const { key, label } = entry;
+      if (!entry.enabled) {
+        send({ key, label, status: 'error', ...disabledResult(label) });
+        return;
+      }
       send({ key, label, status: 'searching' });
       try {
         const result = await invocations[key]();
