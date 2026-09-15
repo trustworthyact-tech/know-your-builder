@@ -28,6 +28,28 @@
 
 const DEFAULT_BREAKER = { failureThreshold: 5, cooldownMs: 5 * 60_000 };
 
+// Temporary, reversible decommissioning — found live 2026-09-15: waLicenceRegister and
+// tasLicenceRegister are both CAPTCHA-gated with 90s budgets, and (per their own history
+// in CLAUDE.md) observed holding a Puppeteer page slot anywhere from 33s to 120s+ per
+// solve — the two longest, least predictable consumers of browser.js's shared page pool.
+// Under real concurrent search load this was starving the MVP-scope scrapers that also
+// need that pool (asicInsolvency, courts_federal, atoDebt), which is a materially worse
+// outcome than these two non-MVP checks themselves being briefly unavailable.
+//
+// `enabled` below was a dead field before this — present on every SCRAPERS entry but
+// never read anywhere. This wires it to a comma-separated env var instead of a hardcoded
+// per-entry value so it can be toggled by a Railway variable change + restart, not a code
+// change + PR + deploy each time (same operational shape as PUPPETEER_MAX_CONCURRENT_
+// PAGES). searchOrchestrator.js skips invoking a disabled key entirely and sends an
+// honest `completeness: 'unavailable'` result — never a silently-empty "checked, clean"
+// one, matching this codebase's convention everywhere else a check can't run.
+const DISABLED_SCRAPER_KEYS = new Set(
+  (process.env.DISABLED_SCRAPER_KEYS || '')
+    .split(',')
+    .map((k) => k.trim())
+    .filter(Boolean)
+);
+
 const SCRAPERS = [
   { key: 'abn', label: 'ABR — Business Register', jurisdiction: 'national', bucket: 2, sourceType: 'live-api', cadence: null, timeoutMs: 20_000, mvpScope: true },
   { key: 'asic', label: 'ASIC Connect — Company Search', jurisdiction: 'national', bucket: 4, sourceType: 'live-scrape-captcha', cadence: null, timeoutMs: 90_000, mvpScope: true },
@@ -78,7 +100,7 @@ const SCRAPERS = [
 ].map((entry) => ({
   ...entry,
   breaker: DEFAULT_BREAKER,
-  enabled: true,
+  enabled: !DISABLED_SCRAPER_KEYS.has(entry.key),
 }));
 
 const byKey = new Map(SCRAPERS.map((s) => [s.key, s]));
