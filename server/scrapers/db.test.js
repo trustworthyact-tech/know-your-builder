@@ -41,3 +41,22 @@ test('getPool — returns null when DATABASE_URL is not configured', () => {
   assert.equal(getPool(), null);
   assert.equal(isConfigured(), false);
 });
+
+// Regression guard for the 2026-09-15 production incident: a real search showed every
+// mvpScope key that depends on the database (directly, or via the shared resolveDirectors()
+// dependency chain) timing out at exactly its own runScraper() ceiling — the classic
+// signature of an unbounded wait upstream that only ever gets rescued by an unrelated
+// caller's own timeout. pg's own default for connectionTimeoutMillis is 0 (wait forever)
+// — every fail-open catch/disk-fallback path in this codebase assumes a stuck connection
+// attempt eventually rejects; none of that mattered while nothing ever bounded the wait.
+test('getPool — connectionTimeoutMillis is set, so a stuck connection attempt fails fast instead of hanging forever', () => {
+  process.env.DATABASE_URL = 'postgresql://fake:fake@localhost:5432/fake';
+  _resetForTests();
+  try {
+    const pool = getPool();
+    assert.ok(pool.options.connectionTimeoutMillis > 0);
+  } finally {
+    _resetForTests();
+    delete process.env.DATABASE_URL;
+  }
+});
