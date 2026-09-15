@@ -28,6 +28,19 @@ function getPool() {
     // rejectUnauthorized: false skips validating the cert chain against Node's default
     // trust store rather than requiring a specific provider's CA to be installed.
     ssl: process.env.DATABASE_URL.includes('sslmode=disable') ? false : { rejectUnauthorized: false },
+    // Found live in production (2026-09-14): pg's own default for this is 0 — wait
+    // forever for a connection to free up. Every one of this codebase's DB-touching
+    // functions (queryDataset, replaceDatasetRecords, healthHistory's logEvent/getRollup)
+    // already has a fail-open catch or disk fallback — but every one of those is
+    // defeated if the .connect()/.query() call they're wrapping never settles at all.
+    // Observed symptom: a real search where every DB-touching (or resolveDirectors()-
+    // dependent, since that itself does a dataset lookup) mvpScope key timed out at
+    // exactly its own runScraper() ceiling (10s/20s/45s) — non-mvp keys sharing the same
+    // dependency just hung silently with no ceiling to report against at all. A bounded
+    // connection-acquisition timeout turns "hang forever, only rescued by an unrelated
+    // caller's timeout" into "fail fast," which is what every existing fallback path here
+    // was already written assuming would happen.
+    connectionTimeoutMillis: 5_000,
   });
   // REQUIRED — without this, pg's Pool crashes the entire process on any idle-client
   // connection error (a dropped connection, an auth hiccup, a network blip): Node treats
