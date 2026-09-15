@@ -600,6 +600,16 @@ function searchActJudgments(companyName, directors = []) {
     source: 'ACT Courts & ACAT',
     sourcesKey: 'act',
     searchUrlFor: (term) => `https://www.courts.act.gov.au/judgment?query=${encodeURIComponent(term)}`,
+    // Found 2026-09-15: this ran the per-term loop sequentially (the default), which is
+    // a different question from fetchActAndAcatTermResults' own court-then-ACAT sequencing
+    // above (that's about not double-hitting ScraperAPI for the *same* term at once).
+    // With WS3 director discovery now reliably surfacing 1-2 extra names per search, a
+    // real request here is commonly 2-3 terms — live-measured: 3 terms sequential took
+    // 47.3s against this key's 45s manifest budget, i.e. it was failing by construction,
+    // not from any site-side problem. concurrent:true (same as Federal/NT below) cut that
+    // to ~16-20s, since ScraperAPI is a remote proxy, not a shared local resource these
+    // terms would contend over.
+    concurrent: true,
   });
 }
 

@@ -32,7 +32,12 @@ const SCRAPERS = [
   { key: 'abn', label: 'ABR — Business Register', jurisdiction: 'national', bucket: 2, sourceType: 'live-api', cadence: null, timeoutMs: 20_000, mvpScope: true },
   { key: 'asic', label: 'ASIC Connect — Company Search', jurisdiction: 'national', bucket: 4, sourceType: 'live-scrape-captcha', cadence: null, timeoutMs: 90_000, mvpScope: true },
   { key: 'asicDisqualified', label: 'ASIC — Disqualified Persons Register', jurisdiction: 'national', bucket: 1, sourceType: 'bulk-dataset', cadence: '12h', timeoutMs: 10_000, mvpScope: true },
-  { key: 'asicInsolvency', label: 'ASIC Published Notices — Insolvency', jurisdiction: 'national', bucket: 2, sourceType: 'live-source', cadence: null, timeoutMs: 20_000, mvpScope: true },
+  // timeoutMs was 20_000 — live-measured 2026-09-15 (see CLAUDE.md): a genuine, correct
+  // run against this ASP.NET/WAF-gated multi-step form (clear the WAF challenge, type
+  // into the field, __doPostBack, wait for a full page navigation, sometimes a second
+  // navigation for archived results) takes ~28s on a warm shared browser, structurally
+  // more than 20s could ever cover — not a site block, just an under-budgeted timeout.
+  { key: 'asicInsolvency', label: 'ASIC Published Notices — Insolvency', jurisdiction: 'national', bucket: 2, sourceType: 'live-source', cadence: null, timeoutMs: 60_000, mvpScope: true },
   { key: 'atoDebt', label: 'ASIC Published Notices — ATO Tax Debt', jurisdiction: 'national', bucket: 2, sourceType: 'live-source', cadence: null, timeoutMs: 20_000, mvpScope: true },
   { key: 'courts_federal', label: 'Federal Courts', jurisdiction: 'national', bucket: 2, sourceType: 'live-fulltext-search', cadence: null, timeoutMs: 45_000, mvpScope: true },
   { key: 'courts_qld', label: 'QLD Courts & Tribunals', jurisdiction: 'qld', bucket: 3, sourceType: 'manual-link', cadence: null, timeoutMs: 10_000, mvpScope: false },
@@ -41,7 +46,11 @@ const SCRAPERS = [
   { key: 'courts_wa', label: 'WA Courts & Tribunals', jurisdiction: 'wa', bucket: 3, sourceType: 'manual-link', cadence: null, timeoutMs: 10_000, mvpScope: false },
   { key: 'courts_sa', label: 'SA Courts & Tribunals', jurisdiction: 'sa', bucket: 3, sourceType: 'manual-link', cadence: null, timeoutMs: 10_000, mvpScope: false },
   { key: 'courts_nt', label: 'NT Courts & Tribunals', jurisdiction: 'nt', bucket: 2, sourceType: 'live-fulltext-search', cadence: null, timeoutMs: 45_000, mvpScope: false },
-  { key: 'courts_act', label: 'ACT Courts & Tribunals', jurisdiction: 'act', bucket: 2, sourceType: 'live-fulltext-search-proxy', cadence: null, timeoutMs: 45_000, mvpScope: true },
+  // timeoutMs was 45_000 — live-measured 2026-09-15 (see CLAUDE.md): with the per-term
+  // loop now concurrent (courtRecords.js), 3 terms through ScraperAPI's proxy measured
+  // ~16-20s each dominating factor; 60s keeps a real margin for ScraperAPI's own
+  // response-time variance rather than sitting right at the edge.
+  { key: 'courts_act', label: 'ACT Courts & Tribunals', jurisdiction: 'act', bucket: 2, sourceType: 'live-fulltext-search-proxy', cadence: null, timeoutMs: 60_000, mvpScope: true },
   { key: 'courts_tas', label: 'TAS Courts & Tribunals', jurisdiction: 'tas', bucket: 3, sourceType: 'manual-link', cadence: null, timeoutMs: 10_000, mvpScope: false },
   { key: 'paymentTimes', label: 'Payment Times Reporting Register', jurisdiction: 'national', bucket: 1, sourceType: 'bulk-dataset', cadence: '8h', timeoutMs: 10_000, mvpScope: true },
   // bucket 2 / live-scrape / 20s, NOT bucket 1 — modernSlavery.js is a plain live axios+cheerio
