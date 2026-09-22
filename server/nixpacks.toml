@@ -32,6 +32,22 @@ nixPkgs = [
   "expat",
   "libdrm",
   "mesa",
+  # Belt-and-braces fix for a recurrence of the 2026-08-28 build failure (see the
+  # PUPPETEER_SKIP_DOWNLOAD comment below): confirmed live on 2026-09-22 that Railway's
+  # Nixpacks builder now also runs its own auto-detected apt-based Chromium setup step
+  # (`apt-get install ... chromium`) for any package.json that depends on `puppeteer`,
+  # ahead of / independent from this file's own nixPkgs and [variables] — and on that
+  # build, PUPPETEER_SKIP_DOWNLOAD was not actually in effect by the time `npm ci` ran
+  # (the exact same "tar.exe or unzip not found" failure as before), even though nothing
+  # in this file changed and the config Railway reports for the build is identical to a
+  # working production deploy. Rather than keep chasing why the skip variable isn't
+  # taking effect in every build, make the actual failure impossible: with tar/unzip on
+  # PATH, puppeteer's postinstall download-and-extract succeeds even if the skip
+  # variable is ignored. The download is still wasted bandwidth/time when this happens,
+  # but it no longer fails the build — PUPPETEER_SKIP_DOWNLOAD stays below as the
+  # preferred, faster path when it does apply.
+  "gnutar",
+  "unzip",
 ]
 
 [variables]
