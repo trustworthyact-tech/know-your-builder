@@ -202,8 +202,16 @@ async function runSearchRequest({ abn, acn, companyName, tradingName, directors 
     asicEnforceableUndertakings: async () => searchAsicEnforceableUndertakings(companyName, await resolveDirectors()),
   };
 
-  const mvpEntries = SCRAPERS.filter((s) => s.mvpScope);
-  const nonMvpEntries = SCRAPERS.filter((s) => !s.mvpScope);
+  // Launch scope (see manifest.js's ENABLED_JURISDICTIONS / CLAUDE.md "Launch scope") is
+  // applied first, before the mvpScope split below — an out-of-scope key is filtered out
+  // entirely here and never reaches either Promise.all loop, so it's never invoked, never
+  // holds a resource (Puppeteer page slot, etc.), and — deliberately, unlike a
+  // DISABLED_SCRAPER_KEYS entry — never gets a `send()` call at all. The web UI's own
+  // scope filter (web/lib/scope.ts) must match this set, or the progress bar will hang
+  // waiting for a result that will never arrive.
+  const inScopeEntries = SCRAPERS.filter((s) => s.inScope);
+  const mvpEntries = inScopeEntries.filter((s) => s.mvpScope);
+  const nonMvpEntries = inScopeEntries.filter((s) => !s.mvpScope);
 
   // A key disabled via DISABLED_SCRAPER_KEYS (manifest.js) never gets invoked at all —
   // not run-and-ignored, genuinely skipped, so it can't hold a Puppeteer page slot or any

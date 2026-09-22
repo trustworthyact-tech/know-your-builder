@@ -84,9 +84,11 @@ async function sectionA() {
   for (const key of MVP_KEYS) openBreaker(key);
 
   const { byKey, send } = collector();
-  // Fire and forget — the 13 non-mvp keys still make real (possibly slow or hung, per
-  // CLAUDE.md's documented history) network calls, but every mvpScope key should short-
-  // circuit near-instantly since its breaker is already open, so we don't need to wait for
+  // Fire and forget. As of the launch-scope filter (manifest.js's ENABLED_JURISDICTIONS —
+  // see CLAUDE.md "Launch scope"), the 13 non-mvp keys are now also out of scope by
+  // default and are filtered out before invocation entirely — they never make a network
+  // call at all, let alone a slow/hung one. Every mvpScope key should short-circuit
+  // near-instantly since its breaker is already open, so we don't need to wait for
   // runSearchRequest's own returned promise (which only resolves once *all* 29 keys are
   // done) — just wait long enough for the 16 fast ones to have reported in.
   runSearchRequest(

@@ -50,6 +50,29 @@ const DISABLED_SCRAPER_KEYS = new Set(
     .filter(Boolean)
 );
 
+// Launch scope (2026-09): Know Your Builder is released covering national registers plus
+// NSW and ACT courts/licensing only — see CLAUDE.md "Launch scope". This is a distinct
+// concept from `mvpScope` above (which decides breaker/timeout routing) even though they
+// happen to select the same 16 keys today — `inScope` decides whether a key is invoked at
+// all. Every jurisdiction outside this set keeps its full, working scraper file; nothing
+// is deleted. `ENABLED_JURISDICTIONS` is env-var-driven (same operational shape as
+// DISABLED_SCRAPER_KEYS/PUPPETEER_MAX_CONCURRENT_PAGES above) so re-enabling a state for a
+// future release is a Railway variable change, not a code change — though the web side
+// (web/lib/scope.ts) also needs updating to match, since it independently filters what the
+// live progress list and report UI expect to see.
+//
+// Deliberately jurisdiction-based, not key-based like DISABLED_SCRAPER_KEYS: an
+// out-of-scope key here is a permanent (for this release), planned absence — reported
+// honestly by never streaming a result for it at all — not a temporary/reversible
+// single-key decommission due to an operational problem. Conflating the two would mean a
+// state re-enable and an incident-driven disable read identically in the report.
+const ENABLED_JURISDICTIONS = new Set(
+  (process.env.ENABLED_JURISDICTIONS || 'national,nsw,act')
+    .split(',')
+    .map((j) => j.trim())
+    .filter(Boolean)
+);
+
 const SCRAPERS = [
   { key: 'abn', label: 'ABR — Business Register', jurisdiction: 'national', bucket: 2, sourceType: 'live-api', cadence: null, timeoutMs: 20_000, mvpScope: true },
   { key: 'asic', label: 'ASIC Connect — Company Search', jurisdiction: 'national', bucket: 4, sourceType: 'live-scrape-captcha', cadence: null, timeoutMs: 90_000, mvpScope: true },
@@ -104,6 +127,7 @@ const SCRAPERS = [
   ...entry,
   breaker: DEFAULT_BREAKER,
   enabled: !DISABLED_SCRAPER_KEYS.has(entry.key),
+  inScope: ENABLED_JURISDICTIONS.has(entry.jurisdiction),
 }));
 
 const byKey = new Map(SCRAPERS.map((s) => [s.key, s]));

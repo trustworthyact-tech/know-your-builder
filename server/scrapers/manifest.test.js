@@ -121,3 +121,47 @@ test('DISABLED_SCRAPER_KEYS — tolerates stray whitespace and empty segments', 
   assert.equal(byKey.get('waLicenceRegister'), false);
   assert.equal(byKey.get('tasLicenceRegister'), false);
 });
+
+// ENABLED_JURISDICTIONS — launch-scope filter (see CLAUDE.md "Launch scope"). Same
+// require-cache-busting trick as loadManifestWithEnv above, for the same reason.
+function loadManifestWithJurisdictions(jurisdictionsCsv) {
+  const prev = process.env.ENABLED_JURISDICTIONS;
+  if (jurisdictionsCsv === undefined) delete process.env.ENABLED_JURISDICTIONS;
+  else process.env.ENABLED_JURISDICTIONS = jurisdictionsCsv;
+  delete require.cache[require.resolve('./manifest')];
+  try {
+    return require('./manifest').SCRAPERS;
+  } finally {
+    if (prev === undefined) delete process.env.ENABLED_JURISDICTIONS;
+    else process.env.ENABLED_JURISDICTIONS = prev;
+    delete require.cache[require.resolve('./manifest')];
+  }
+}
+
+test('ENABLED_JURISDICTIONS unset — defaults to exactly the mvpScope set', () => {
+  // The launch-scope default (national/nsw/act) happens to select the same 16 keys as
+  // mvpScope today, even though the two flags mean different things (see manifest.js's
+  // own comment) — this test pins that coincidence so a future change to either one that
+  // breaks it is caught here rather than discovered live.
+  const scrapers = loadManifestWithJurisdictions(undefined);
+  for (const s of scrapers) {
+    assert.equal(s.inScope, s.mvpScope, `${s.key}: inScope/mvpScope default disagree`);
+  }
+});
+
+test('ENABLED_JURISDICTIONS — narrows to exactly the listed jurisdictions', () => {
+  const scrapers = loadManifestWithJurisdictions('national');
+  const byKey = new Map(scrapers.map((s) => [s.key, s.inScope]));
+  assert.equal(byKey.get('abn'), true);
+  assert.equal(byKey.get('courts_nsw'), false);
+  assert.equal(byKey.get('actLicences'), false);
+});
+
+test('ENABLED_JURISDICTIONS — tolerates stray whitespace and empty segments', () => {
+  const scrapers = loadManifestWithJurisdictions(' national , nsw ,,act,');
+  const byKey = new Map(scrapers.map((s) => [s.key, s.inScope]));
+  assert.equal(byKey.get('abn'), true);
+  assert.equal(byKey.get('courts_nsw'), true);
+  assert.equal(byKey.get('actLicences'), true);
+  assert.equal(byKey.get('courts_qld'), false);
+});
