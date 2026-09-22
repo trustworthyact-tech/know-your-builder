@@ -13,6 +13,23 @@ tooling that isn't there — see "What's genuinely missing" at the end of this d
 
 ---
 
+## 0. Launch scope — which checks actually run right now
+
+Know Your Builder's initial release only runs national registers plus NSW and ACT courts and
+licensing — 16 checks in total. The other 13 (QLD/VIC/WA/SA/TAS/NT court and licence
+registers, and QBCC) have real, working code behind them — nothing was deleted — but the
+server is currently configured to skip them entirely: they are never called, and a report
+for a builder based outside NSW/ACT will not show a licence or court section for their own
+state. See `CLAUDE.md`'s "Launch scope" section for the technical detail and how to bring a
+state back into scope.
+
+This matters for the rest of this runbook: Section 2's dashboard and Section 6's daily test
+suite both still exercise (or reference) the other 13 checks even though they're not part of
+the live product right now — that's deliberate (it means drift is caught early, before
+re-enabling a state), not a sign something is broken.
+
+---
+
 ## 1. Is the site actually working right now?
 
 1. Open `https://<your production URL>/api/health` in a browser (ask whoever set up Railway
@@ -28,14 +45,16 @@ tooling that isn't there — see "What's genuinely missing" at the end of this d
 
 ## 2. Is a specific check (scraper) currently broken?
 
-This is the one thing we do have real visibility into — but it only covers the 16 checks
-that have been given the "circuit breaker" treatment so far (see `mvpScope: true` entries in
-`server/scrapers/manifest.js` if you want the exact list — as of this writing: ABR, ASIC
-Connect, ASIC Disqualified Persons, ASIC Insolvency, ASIC Tax Debt, Federal Courts, NSW
-Courts, ACT Courts, Payment Times, Modern Slavery, Fair Work Ombudsman, NSW Fair Trading, ACT
-Licences, ACT Disciplinary, ASIC Director History, ASIC Enforceable Undertakings). The other
-13 checks (QBCC, VIC, WA, SA, TAS, NT registers) aren't wired into this yet, so this tool
-will always show them as `"no-data"` regardless of whether they're actually working.
+This is the one thing we do have real visibility into — and it happens to line up exactly
+with what's actually running right now (see Section 0): the 16 checks that have been given
+the "circuit breaker" treatment (see `mvpScope: true` entries in `server/scrapers/manifest.js`
+if you want the exact list — as of this writing: ABR, ASIC Connect, ASIC Disqualified
+Persons, ASIC Insolvency, ASIC Tax Debt, Federal Courts, NSW Courts, ACT Courts, Payment
+Times, Modern Slavery, Fair Work Ombudsman, NSW Fair Trading, ACT Licences, ACT Disciplinary,
+ASIC Director History, ASIC Enforceable Undertakings) are also the only 16 currently in
+launch scope. The other 13 checks (QBCC, VIC, WA, SA, TAS, NT registers) are not run at all
+for a live search right now, so this tool will always show them as `"no-data"` — that's
+expected, not a sign anything's broken.
 
 **One-time setup** (only needed once, or after adding a new environment):
 
@@ -175,15 +194,21 @@ government sites — independent of whether anyone has searched a real entity th
    connection — not because the code broke. To rule that out: click **Run workflow**
    (top-right of the Register Health Check page) to manually re-trigger it, and see if the
    same test fails again. If it passes on a re-run, it was noise, not a real break.
+5. **This suite tests all 29 checks, including the 13 outside launch scope** (see Section 0)
+   — that's intentional, so a QLD/VIC/WA/SA/TAS/NT register drifting while it's out of scope
+   still gets caught before it's ever brought back. A red run on one of those 13 is not
+   urgent the way a red run on one of the 16 live checks is — no user-facing report is
+   affected today — but it's still worth a look before re-enabling that state.
 
 ---
 
 ## What's genuinely missing (don't pretend these exist)
 
 - **7-day success rate only covers the 16 `mvpScope: true` checks** — the same list named in
-  Section 2. The other 13 (QBCC, VIC, WA, SA, TAS, NT registers) don't log history yet, so
-  they'll always show "no history yet" on the dashboard regardless of how they're actually
-  performing.
+  Section 2, and (as of the launch-scope change — see Section 0) the same 16 that are
+  actually invoked at all. The other 13 (QBCC, VIC, WA, SA, TAS, NT registers) don't log
+  history and will always show "no history yet" on the dashboard, but that's expected now —
+  they're not being run, not silently failing to report.
 - **History only exists from 2026-09-11 onward** — the dashboard can't tell you anything
   about a check's behaviour before this was built, only what's happened since.
 - **No single-check manual refresh or reset.** Sections 3 and 4 both only have the

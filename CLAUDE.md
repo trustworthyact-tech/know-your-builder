@@ -70,9 +70,64 @@ HomeScreen → SearchingScreen → ReportScreen
 ### Adding a new scraper
 
 1. `server/scrapers/mySource.js` — async function returning the standard shape
-2. Add to `searches` array in `server/index.js` with a unique `key`
-3. Add matching entry to `INITIAL_SEARCHES` in `web/app/search/SearchContent.tsx`
+2. Add an entry to `SCRAPERS` in `server/scrapers/manifest.js` (key, label, jurisdiction, bucket, timeoutMs, mvpScope) and an invocation closure keyed by that same `key` in `searchOrchestrator.js`'s `invocations` map — `server/index.js` no longer has its own `searches` array; that was extracted into `searchOrchestrator.js` by WS4.1 (see "Incomplete work" below). Also decide its `jurisdiction`'s launch-scope status — see "Launch scope" below.
+3. Add matching entry to `INITIAL_SEARCHES` in `web/app/search/SearchContent.tsx` — `server/scrapers/manifest.test.js` cross-checks all three of these stay in sync.
 4. Render in `ReportContent.tsx` via a synthetic SearchResult + `<ReportSection>`
+
+---
+
+## Launch scope
+
+Know Your Builder's initial release covers **national registers plus NSW and ACT courts and
+licensing only** — 16 of the 29 keys in `server/scrapers/manifest.js`. This is a deliberate,
+reversible scope decision, not a capability gap: every jurisdiction's scraper file, dataset
+refresh job, and test still exists and still works, it's just not invoked for a live search
+right now.
+
+**How it's enforced — two independent filters that must agree:**
+- **Server**: `manifest.js`'s `ENABLED_JURISDICTIONS` env var (default `national,nsw,act`)
+  computes an `inScope` flag per entry from its `jurisdiction`. `searchOrchestrator.js`'s
+  `runSearchRequest` filters `SCRAPERS` by `inScope` before either of its two `Promise.all`
+  loops — an out-of-scope key is never invoked (no network call, no Puppeteer page slot
+  held) and never gets a `send()` call at all. This is deliberately a different mechanism
+  from `DISABLED_SCRAPER_KEYS` (a temporary, single-key, incident-driven kill switch that
+  reports `completeness: 'unavailable'`) even though `inScope` and `mvpScope` happen to
+  select the same 16 keys today — launch scope is a planned, permanent-for-this-release
+  absence, not an operational failure, and the two must not be conflated or a state
+  re-enable and an incident disable would read identically in a report.
+- **Web**: `web/lib/scope.ts`'s `IN_SCOPE_JURISDICTIONS` (also `national`/`nsw`/`act` by
+  default) independently filters `SearchContent.tsx`'s live progress list to match what the
+  server will actually stream, and gates `ReportContent.tsx`'s synthetic section objects for
+  the 6 out-of-scope keys (`vicBpc`, `vicVbaLicence`, `waBuildingEnergy`,
+  `ntBuildingPractitioners`, `waLicenceRegister`, `tasLicenceRegister`) on the underlying key
+  actually being present in the results, so an absent key renders nothing rather than a
+  false "done, no records found" row. `CoverageNotice` (shown on the report when the
+  project's declared state is outside NSW/ACT) and the report footer/email copy were all
+  written against this same scope.
+- These two lists are **not cross-checked by a test** — they're independent env-var/const
+  defaults that happen to agree. Changing one without the other means the progress bar hangs
+  (web expects a key the server will never send) or a key silently never displays (server
+  sends a key the web has filtered out of its rendering). Keep them in sync by hand.
+
+**What re-enabling a jurisdiction (e.g. VIC) actually requires:**
+1. Add it to `ENABLED_JURISDICTIONS` (Railway env var) and to
+   `IN_SCOPE_JURISDICTIONS`/`IN_SCOPE_STATE_LABELS` in `web/lib/scope.ts`.
+2. If it has a dataset refresh job gated on scope (`vicBpc`'s is, in `server/index.js`) — start gating it back to unconditional, or confirm its own `inScope` check now passes.
+3. Re-run `server/scrapers/manifest.test.js`, `server/tests/test-launch-scope.js`, and `npx tsc --noEmit` in `web/`.
+4. Revert the copy changes made when this state was taken out of scope (landing page checklist, report footer/labels, transactional email checklists) — none of these are derived from the scope list automatically; they were hand-edited to describe national+NSW+ACT and need hand-editing back.
+5. Consider whether that jurisdiction's `mvpScope`/circuit-breaker treatment should also change — it's a separate flag and doesn't follow automatically from `inScope`.
+
+**Verifying scope is actually being enforced**: `node server/tests/test-launch-scope.js` (also
+wired into `server/tests/run-all.sh`) forces every in-scope `mvpScope` key's breaker open and
+asserts none of the 13 out-of-scope keys ever receives a `send()` call while all 16 in-scope
+keys still report — network-independent, no credentials needed.
+
+**What still runs against out-of-scope registers, deliberately**: the daily GitHub Actions
+register-health-check workflow (`.github/workflows/register-health-check.yml`) and
+`server/tests/run-all.sh` both still test all 29 keys' scraper functions directly, bypassing
+`runSearchRequest`'s scope filter — so drift in an out-of-scope register (a site changing its
+markup, an API moving) is still caught before that state is ever brought back into scope,
+rather than being discovered only at re-enable time.
 
 ---
 
