@@ -20,11 +20,11 @@ interface Props {
 }
 
 const CHECKLIST = [
-  'Verify the QBCC licence is current and covers your project type',
+  'Verify the builder’s licence (NSW Fair Trading or ACT Access Canberra) is current and covers your project type',
   'Review all court and tribunal findings in the report',
   'Confirm no insolvency or ATO debt notices are on file',
   'Check payment times compliance status',
-  'Consider Home Warranty Insurance (HWI) — mandatory for most QLD residential contracts over $3,300',
+  'Consider Home Building Compensation / warranty insurance — check your state’s requirement and threshold',
   'Share this report with your solicitor or building inspector before signing',
 ];
 

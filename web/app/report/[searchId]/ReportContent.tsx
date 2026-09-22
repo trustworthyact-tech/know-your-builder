@@ -7,6 +7,7 @@ import { ReportSection } from '@/components/ReportSection';
 import { RiskBadge, RiskLevel } from '@/components/RiskBadge';
 import { worstCompleteness } from '@/components/CompletenessBadge';
 import { RiskSummaryPanel } from '@/components/RiskSummaryPanel';
+import { CoverageNotice } from '@/components/CoverageNotice';
 import { ProjectTimeline } from '@/components/ProjectTimeline';
 import { riskGrouper } from '@/lib/riskGrouper';
 import { SERVER_URL } from '@/lib/api';
@@ -59,6 +60,7 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
   const [riskGroups, setRiskGroups] = useState<RiskGroupResult[]>([]);
   const [loadError, setLoadError] = useState('');
   const [reportCreatedAt, setReportCreatedAt] = useState<string | null>(null);
+  const [projectState, setProjectState] = useState<string | null>(null);
   const [watchlisted, setWatchlisted] = useState(false);
   const [watchlistEnabled, setWatchlistEnabled] = useState(false);
   const [watchlistLoading, setWatchlistLoading] = useState(false);
@@ -79,6 +81,7 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
           const parsed: SearchResult[] = JSON.parse(rawResults);
           setResults(parsed);
           setInput(JSON.parse(rawInput));
+          setProjectState(sessionStorage.getItem('kyb_preview_project_state'));
           const findingsMap: Record<string, SearchResult> = {};
           for (const r of parsed) findingsMap[r.key] = r;
           setRiskGroups(riskGrouper(findingsMap));
@@ -100,6 +103,7 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
         const findings = data.reportJson as Record<string, SearchResult>;
         setResults(Object.values(findings));
         if (data.createdAt) setReportCreatedAt(data.createdAt);
+        if (data.projectState) setProjectState(data.projectState);
         setInput({
           companyName: data.entityName ?? '',
           abn: data.entityAbn ?? '',
@@ -453,7 +457,11 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
   ).length;
   const courtSearch: SearchResult = {
     key: 'courts',
-    label: 'Australian Courts & Tribunals',
+    // Launch scope is Federal + NSW + ACT (see CLAUDE.md "Launch scope") — courtResults
+    // only ever contains those three keys for a live search, so this label states that
+    // directly rather than implying nationwide court coverage. Older saved reports that
+    // do carry the other 6 jurisdictions' results still aggregate and display them here.
+    label: 'Federal, NSW & ACT Courts & Tribunals',
     status: courtResults.some((r) => r.status === 'done') ? 'done' : 'error',
     source: 'NSW Caselaw and other official court sources',
     searchUrl: results.find((r) => r.key === 'courts_nsw')?.searchUrl,
@@ -743,6 +751,7 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
 
         {/* Risk Summary panel */}
         <RiskSummaryPanel groups={riskGroups} searchResults={results ?? []} />
+        <CoverageNotice state={projectState} />
 
         {/* 8.1 Identity & Corporate Structure */}
         <ReportSection
@@ -765,16 +774,22 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
           title="8.2 Licences & Registrations"
           icon="🏗"
           searchResults={[
+            // Out-of-scope for this release (see CLAUDE.md "Launch scope") — the server
+            // never emits these keys for a live search, so `results` won't contain them.
+            // Guarded the same way the QBCC-split pattern already guards `licenceSearch`
+            // above: an absent key must not render a synthetic "done, no records found"
+            // row, which would silently read as a check that ran and found nothing. Older
+            // saved reports that do carry this data (pre-launch-scope) still render it.
             ...(qbcc ? [licenceSearch] : []),
-            vicBpcSearch,
-            vicVbaLicenceSearch,
-            waBuildingEnergySearch,
+            ...(vicBpc ? [vicBpcSearch] : []),
+            ...(vicVbaLicence ? [vicVbaLicenceSearch] : []),
+            ...(waBuildingEnergy ? [waBuildingEnergySearch] : []),
             nswFairTradingSearch,
-            ntBuildingPractitionersSearch,
+            ...(ntBuildingPractitioners ? [ntBuildingPractitionersSearch] : []),
             actLicencesSearch,
             actDisciplinarySearch,
-            waLicenceRegisterSearch,
-            tasLicenceRegisterSearch,
+            ...(waLicenceRegister ? [waLicenceRegisterSearch] : []),
+            ...(tasLicenceRegister ? [tasLicenceRegisterSearch] : []),
           ]}
           riskLevel={s82Risk}
           resultsOverride={licenceItems}
@@ -825,8 +840,9 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
             before making any commercial decision.
           </p>
           <p className="text-xs text-text-muted leading-relaxed">
-            Sources: ABR, ASIC Connect, NSW Caselaw, Payment Times Reporting Register, Modern
-            Slavery Register, QBCC, and linked government databases. Generated {now}.
+            Sources: ABR, ASIC Connect, NSW Caselaw, ACT Courts &amp; ACAT, Payment Times
+            Reporting Register, Modern Slavery Register, NSW Fair Trading, ACT Access
+            Canberra, and linked government databases. Generated {now}.
           </p>
         </div>
 

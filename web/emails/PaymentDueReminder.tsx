@@ -77,7 +77,7 @@ export function PaymentDueReminder({
           <Section>
             <Text style={sectionTitle}>Payment protection checklist</Text>
             {[
-              'Confirm the QBCC licence is still current — a suspended licence means work should stop',
+              'Confirm the builder’s licence is still current — a suspended licence means work should stop',
               'Check for any new insolvency or administration notices filed since your last search',
               'Verify the stage of work matches what the payment schedule requires',
               'Book an independent stage inspection if this is a major milestone (slab, frame, lockup)',

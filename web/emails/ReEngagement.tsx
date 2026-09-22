@@ -63,8 +63,8 @@ export function ReEngagement({ entityName, entityAbn, reportUrl }: Props) {
               under a minute.
             </Text>
             {[
-              'QBCC licence status and history',
-              'Court and tribunal proceedings across all jurisdictions',
+              'Licence status and history (NSW/ACT)',
+              'Court and tribunal proceedings (Federal, NSW & ACT)',
               'ASIC insolvency and administration notices',
               'Payment Times Register compliance',
               'Modern Slavery Act reporting status',

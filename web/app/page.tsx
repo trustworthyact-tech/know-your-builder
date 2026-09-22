@@ -1,13 +1,17 @@
 import Image from 'next/image';
 import { HomeSearch } from '@/components/HomeSearch';
 
+// Launch scope is national registers plus NSW and ACT courts/licensing (see CLAUDE.md
+// "Launch scope") — this list must describe only what's actually searched. The
+// infrastructure for other states still exists and is not represented here; see
+// web/lib/scope.ts.
 const CHECKLIST = [
   ['🏛', 'ABR business register & ASIC company notices'],
   ['💳', 'Payment Times Reporting Register'],
-  ['⚖️', 'NSW courts & tribunals, plus links to check other states'],
-  ['🏗', 'QBCC, NSW Fair Trading & most state licence registers'],
-  ['🔍', 'Modern Slavery Register, plus a direct WGEA link'],
-  ['📋', '40+ court, tribunal & regulatory databases'],
+  ['⚖️', 'Federal, NSW & ACT courts and tribunals'],
+  ['🏗', 'NSW Fair Trading & ACT builder licence registers'],
+  ['🔍', 'Modern Slavery Statements Register'],
+  ['📋', 'ASIC disqualified persons, insolvency notices & enforceable undertakings'],
 ] as const;
 
 export default function HomePage() {
@@ -26,8 +30,8 @@ export default function HomePage() {
           />
           <h1 className="text-3xl font-bold text-primary mb-2">Know Your Builder</h1>
           <p className="text-sm text-text-secondary max-w-xs mx-auto">
-            Automated due diligence across 40+ Australian government databases, from the team
-            at Trustworthy
+            Automated due diligence across national Australian government registers, plus
+            NSW and ACT courts and licensing, from the team at Trustworthy
           </p>
         </div>
 

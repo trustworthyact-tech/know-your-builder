@@ -62,7 +62,7 @@ export function RiskSummaryPanel({ groups, searchResults }: Props) {
           </div>
         )}
         <p className="text-xs text-text-muted mt-3 leading-relaxed">
-          Review the sections below and the additional databases listed in section 8.6 before making any final decision.
+          Review the sections below before making any final decision.
         </p>
       </div>
     );

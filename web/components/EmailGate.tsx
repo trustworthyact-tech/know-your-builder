@@ -4,8 +4,7 @@ import { useState } from 'react';
 import { Persona } from '@/src/types';
 import { PaymentModal } from '@/components/PaymentModal';
 import { trackEvent } from '@/lib/analytics';
-
-const AU_STATES = ['QLD', 'NSW', 'VIC', 'WA', 'SA', 'TAS', 'NT', 'ACT'] as const;
+import { AU_STATES, isStateInScope, COVERAGE_NOTE } from '@/lib/scope';
 
 const PROJECT_TYPES = [
   { value: 'new_build', label: 'New build' },
@@ -174,6 +173,9 @@ export function EmailGate({ persona, entityName, isRecheck = false, freeChecks =
                   <option key={s} value={s}>{s}</option>
                 ))}
               </select>
+              {projectState && !isStateInScope(projectState) && (
+                <p className="text-xs text-text-muted mt-1 leading-snug">{COVERAGE_NOTE}</p>
+              )}
             </div>
 
             <div>

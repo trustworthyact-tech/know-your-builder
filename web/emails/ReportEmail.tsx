@@ -115,13 +115,15 @@ export function ReportEmail({
   );
 }
 
+// Launch scope is national registers plus NSW and ACT courts/licensing — see
+// CLAUDE.md "Launch scope" and web/lib/scope.ts.
 const SEARCHED = [
-  'Australian Business Register (ABR)',
+  'Australian Business Register (ABR) & ASIC company notices',
   'Payment Times Reporting Register',
   'Modern Slavery Statements Register',
-  'QBCC Licence & Adjudication Register',
-  'NSW Caselaw and other official court sources',
-  '35+ additional government databases (links provided)',
+  'NSW Fair Trading & ACT builder licence registers',
+  'Federal, NSW & ACT courts and tribunals',
+  'ASIC disqualified persons, insolvency notices & enforceable undertakings',
 ];
 
 // ── Styles ────────────────────────────────────────────────────────────────────
