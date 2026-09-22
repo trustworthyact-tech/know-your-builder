@@ -7,39 +7,54 @@ import { SearchProgressItem } from '@/components/SearchProgressItem';
 import { PersonaSelector } from '@/components/PersonaSelector';
 import { EmailGate, EmailGateData } from '@/components/EmailGate';
 import { BuilderInput, Persona, SearchResult } from '@/src/types';
+import { isJurisdictionInScope } from '@/lib/scope';
 
-// Base searches — must mirror the keys emitted by server/index.js exactly. Order sets display order.
-const INITIAL_SEARCHES: SearchResult[] = [
-  { key: 'abn',               label: 'ABR — Business Register',               status: 'idle' },
-  { key: 'asic',              label: 'ASIC Connect — Company Search',          status: 'idle' },
-  { key: 'asicDisqualified',  label: 'ASIC — Disqualified Persons Register',   status: 'idle' },
-  { key: 'asicInsolvency',   label: 'ASIC Published Notices — Insolvency',    status: 'idle' },
-  { key: 'atoDebt',          label: 'ASIC Published Notices — ATO Tax Debt',  status: 'idle' },
-  { key: 'paymentTimes',      label: 'Payment Times Reporting Register',       status: 'idle' },
-  { key: 'modernSlavery',  label: 'Modern Slavery Statements Register',      status: 'idle' },
-  { key: 'qbcc',           label: 'QBCC — Licence Register',                 status: 'idle' },
-  { key: 'courts_federal', label: 'Federal Courts',                          status: 'idle' },
-  { key: 'courts_qld',    label: 'QLD Courts & Tribunals',                   status: 'idle' },
-  { key: 'courts_nsw',    label: 'NSW Courts & Tribunals',                   status: 'idle' },
-  { key: 'courts_vic',    label: 'VIC Courts & Tribunals',                   status: 'idle' },
-  { key: 'courts_wa',     label: 'WA Courts & Tribunals',                    status: 'idle' },
-  { key: 'courts_sa',     label: 'SA Courts & Tribunals',                    status: 'idle' },
-  { key: 'courts_nt',     label: 'NT Courts & Tribunals',                    status: 'idle' },
-  { key: 'courts_act',    label: 'ACT Courts & Tribunals',                   status: 'idle' },
-  { key: 'courts_tas',        label: 'TAS Courts & Tribunals',                       status: 'idle' },
-  { key: 'fwo',              label: 'Fair Work Ombudsman — Enforcement Outcomes',   status: 'idle' },
-  { key: 'vicBpc',                  label: 'VIC Building Authority — Disciplinary Register',      status: 'idle' },
-  { key: 'vicVbaLicence',           label: 'VIC Building Authority — Licence Register',            status: 'idle' },
-  { key: 'waBuildingEnergy',        label: 'WA Building and Energy — Enforcement',                status: 'idle' },
-  { key: 'nswFairTrading',          label: 'NSW Fair Trading — Contractor Licence Register',      status: 'idle' },
-  { key: 'ntBuildingPractitioners', label: 'NT Building Practitioners Board — Licence Register',  status: 'idle' },
-  { key: 'actLicences',             label: 'ACT Access Canberra — Builder Licence Register',      status: 'idle' },
-  { key: 'actDisciplinary',         label: 'ACT Access Canberra — Register of Disciplinary Actions', status: 'idle' },
-  { key: 'waLicenceRegister',       label: 'WA Building Services — Contractor Licence Register',  status: 'idle' },
-  { key: 'tasLicenceRegister',      label: 'TAS Occupational Licensing — Licence Register',       status: 'idle' },
-  { key: 'asicExtract',      label: 'ASIC — Director Company History',              status: 'idle' },
-  { key: 'asicEnforceableUndertakings', label: 'ASIC — Court Enforceable Undertakings Register', status: 'idle' },
+// Base searches — must mirror the keys emitted by server/index.js exactly (all 29 —
+// server/scrapers/manifest.test.js cross-checks this array's keys against manifest.js's
+// full SCRAPERS list, not just the in-scope subset). Order sets display order. `scope`
+// mirrors manifest.js's own `jurisdiction` field per key and is used below to filter what
+// actually renders — see web/lib/scope.ts and CLAUDE.md "Launch scope". Out-of-scope
+// entries are never invoked by the server (searchOrchestrator.js filters them out before
+// streaming), so they must also never appear in the live progress list here or `total`
+// would never reach 100%.
+const INITIAL_SEARCHES: (SearchResult & { scope: string })[] = [
+  { key: 'abn',               label: 'ABR — Business Register',               status: 'idle', scope: 'national' },
+  { key: 'asic',              label: 'ASIC Connect — Company Search',          status: 'idle', scope: 'national' },
+  { key: 'asicDisqualified',  label: 'ASIC — Disqualified Persons Register',   status: 'idle', scope: 'national' },
+  { key: 'asicInsolvency',   label: 'ASIC Published Notices — Insolvency',    status: 'idle', scope: 'national' },
+  { key: 'atoDebt',          label: 'ASIC Published Notices — ATO Tax Debt',  status: 'idle', scope: 'national' },
+  { key: 'paymentTimes',      label: 'Payment Times Reporting Register',       status: 'idle', scope: 'national' },
+  { key: 'modernSlavery',  label: 'Modern Slavery Statements Register',      status: 'idle', scope: 'national' },
+  { key: 'qbcc',           label: 'QBCC — Licence Register',                 status: 'idle', scope: 'qld' },
+  { key: 'courts_federal', label: 'Federal Courts',                          status: 'idle', scope: 'national' },
+  { key: 'courts_qld',    label: 'QLD Courts & Tribunals',                   status: 'idle', scope: 'qld' },
+  { key: 'courts_nsw',    label: 'NSW Courts & Tribunals',                   status: 'idle', scope: 'nsw' },
+  { key: 'courts_vic',    label: 'VIC Courts & Tribunals',                   status: 'idle', scope: 'vic' },
+  { key: 'courts_wa',     label: 'WA Courts & Tribunals',                    status: 'idle', scope: 'wa' },
+  { key: 'courts_sa',     label: 'SA Courts & Tribunals',                    status: 'idle', scope: 'sa' },
+  { key: 'courts_nt',     label: 'NT Courts & Tribunals',                    status: 'idle', scope: 'nt' },
+  { key: 'courts_act',    label: 'ACT Courts & Tribunals',                   status: 'idle', scope: 'act' },
+  { key: 'courts_tas',        label: 'TAS Courts & Tribunals',                       status: 'idle', scope: 'tas' },
+  { key: 'fwo',              label: 'Fair Work Ombudsman — Enforcement Outcomes',   status: 'idle', scope: 'national' },
+  { key: 'vicBpc',                  label: 'VIC Building Authority — Disciplinary Register',      status: 'idle', scope: 'vic' },
+  { key: 'vicVbaLicence',           label: 'VIC Building Authority — Licence Register',            status: 'idle', scope: 'vic' },
+  { key: 'waBuildingEnergy',        label: 'WA Building and Energy — Enforcement',                status: 'idle', scope: 'wa' },
+  { key: 'nswFairTrading',          label: 'NSW Fair Trading — Contractor Licence Register',      status: 'idle', scope: 'nsw' },
+  { key: 'ntBuildingPractitioners', label: 'NT Building Practitioners Board — Licence Register',  status: 'idle', scope: 'nt' },
+  { key: 'actLicences',             label: 'ACT Access Canberra — Builder Licence Register',      status: 'idle', scope: 'act' },
+  { key: 'actDisciplinary',         label: 'ACT Access Canberra — Register of Disciplinary Actions', status: 'idle', scope: 'act' },
+  { key: 'waLicenceRegister',       label: 'WA Building Services — Contractor Licence Register',  status: 'idle', scope: 'wa' },
+  { key: 'tasLicenceRegister',      label: 'TAS Occupational Licensing — Licence Register',       status: 'idle', scope: 'tas' },
+  { key: 'asicExtract',      label: 'ASIC — Director Company History',              status: 'idle', scope: 'national' },
+  { key: 'asicEnforceableUndertakings', label: 'ASIC — Court Enforceable Undertakings Register', status: 'idle', scope: 'national' },
 ];
+
+// What the server will actually stream results for this release — everything else in
+// INITIAL_SEARCHES stays defined above (so the manifest sync test still covers it) but is
+// filtered out of the live progress list so `total`/the progress bar match reality.
+const VISIBLE_INITIAL_SEARCHES: SearchResult[] = INITIAL_SEARCHES.filter((s) =>
+  isJurisdictionInScope(s.scope)
+).map(({ scope: _scope, ...rest }) => rest);
 
 type Step = 'persona' | 'email-gate' | 'server-check' | 'running' | 'saving' | 'done' | 'error';
 
@@ -74,7 +89,7 @@ export function SearchContent() {
   const [step, setStep] = useState<Step>('persona');
   const [persona, setPersona] = useState<Persona | null>(null);
   const [gateData, setGateData] = useState<EmailGateData | null>(null);
-  const [searches, setSearches] = useState<SearchResult[]>(INITIAL_SEARCHES);
+  const [searches, setSearches] = useState<SearchResult[]>(VISIBLE_INITIAL_SEARCHES);
   const [errorMsg, setErrorMsg] = useState('');
   const [packBalanceInfo, setPackBalanceInfo] = useState<{
     freeChecks: number;
@@ -206,6 +221,7 @@ export function SearchContent() {
         // Re-check payment webhook not yet processed — serve preview so user still sees results
         sessionStorage.setItem('kyb_preview_results', JSON.stringify(resultsRef.current));
         sessionStorage.setItem('kyb_preview_input', JSON.stringify(input));
+        if (gate.projectState) sessionStorage.setItem('kyb_preview_project_state', gate.projectState);
         setStep('done');
         router.push('/report/preview');
         return;
@@ -219,6 +235,7 @@ export function SearchContent() {
       // Fallback: navigate to preview using sessionStorage so the report is still viewable
       sessionStorage.setItem('kyb_preview_results', JSON.stringify(resultsRef.current));
       sessionStorage.setItem('kyb_preview_input', JSON.stringify(input));
+      if (gate.projectState) sessionStorage.setItem('kyb_preview_project_state', gate.projectState);
       setStep('done');
       router.push('/report/preview');
     }

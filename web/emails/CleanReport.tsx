@@ -92,8 +92,9 @@ export function CleanReport({ entityName, entityAbn, reportUrl, persona }: Props
 
             <Text style={paragraph}>
               Your Know Your Builder search returned no significant findings. The databases
-              searched include the QBCC licence register, court and tribunal records, insolvency
-              notices, payment times reporting, and the modern slavery register.
+              searched include national ASIC and business registers, Federal/NSW/ACT court and
+              tribunal records, NSW and ACT licence registers, insolvency notices, payment times
+              reporting, and the modern slavery register.
             </Text>
 
             <Text style={paragraph}>

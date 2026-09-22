@@ -67,7 +67,7 @@ export function RecheckReminder({ entityName, entityAbn, reportUrl, dayCount }: 
           <Section>
             <Text style={sectionTitle}>What&apos;s checked in a re-check?</Text>
             {[
-              'QBCC licence status and any recent disciplinary actions',
+              'Licence status and any recent disciplinary actions (NSW/ACT)',
               'New court and tribunal proceedings since your last search',
               'ASIC insolvency and external administration notices',
               'ATO tax debt disclosures',

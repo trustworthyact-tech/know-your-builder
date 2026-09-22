@@ -140,7 +140,7 @@ export function DuringBuild({ entityName, entityAbn, reportUrl, monitoringUrl, s
 const WATCH_ITEMS = [
   {
     title: 'Licence status',
-    desc: 'Confirm the QBCC licence remains current before each stage payment. A suspended licence means the builder cannot legally continue work.',
+    desc: 'Confirm the builder’s licence remains current before each stage payment. A suspended licence means the builder cannot legally continue work.',
   },
   {
     title: 'Insolvency notices',

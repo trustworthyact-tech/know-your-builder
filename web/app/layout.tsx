@@ -14,7 +14,7 @@ const dmSans = DM_Sans({
 export const metadata: Metadata = {
   title: 'Know Your Builder | Trustworthy',
   description:
-    'Australian builder due diligence — free instant check. A Trustworthy product.',
+    'Builder due diligence for NSW and ACT — free instant check against national and state registers. A Trustworthy product.',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
