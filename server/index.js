@@ -186,6 +186,15 @@ app.listen(PORT, () => console.log(`Know Your Builder server running on http://l
 
 startPaymentTimesRefresh();
 startAsicDpnDatasetRefresh();
-startVicBpcDatasetRefresh();
+// vicBpc is out of launch scope by default (see manifest.js's ENABLED_JURISDICTIONS /
+// CLAUDE.md "Launch scope") — its refresh job drives a Cloudflare-clearing Puppeteer
+// session every 24h (see vicBpcDataset.js), a real cost with no payoff while nothing
+// ever queries the cache it fills. Gated on the manifest's own inScope flag rather than a
+// second hardcoded check, so re-enabling VIC (env var + web/lib/scope.ts) also resumes
+// this without a further code change. The other three refresh jobs all back
+// always-in-scope national/ACT keys, so they stay unconditional.
+if (SCRAPERS.find((s) => s.key === 'vicBpc')?.inScope) {
+  startVicBpcDatasetRefresh();
+}
 startAsicEuDatasetRefresh();
 startActLicencesDatasetRefresh();

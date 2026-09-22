@@ -89,13 +89,17 @@ run_test "admin-scraper-health"   "server/tests/test-admin-scraper-health.js" &
 # entry point. Section B waits up to ~50s (live network, informational) so this is the
 # slowest test in the suite — still safe to run alongside everything else here.
 run_test "ws4-fault-injection"    "server/tests/test-ws4-fault-injection.js" &
+# Launch scope (national + NSW + ACT only) — proves the 13 out-of-scope keys are never
+# invoked/streamed. Network-independent (forces mvpScope breakers open, same technique as
+# ws4-fault-injection's Section A) — no CAPTCHA_API_KEY/live credentials needed.
+run_test "launch-scope"           "server/tests/test-launch-scope.js" &
 
 wait
 echo ""
 
 # Print output for any failed tests
 OVERALL=0
-for label in vicbpc wa-building asic-eu qbcc-excluded qbcc-licensee nsw-fairtrading vic-vba-licence wa-be-licence act-licence tas-cbos-licence act-licences act-disciplinary nsw-fairtrading-scraper nt-building-practitioners wa-licence-register vic-vba-licence-scraper asic-insolvency ato-debt payment-times modern-slavery qbcc-adjudication court-records fwo ws2-live-hardening ws3-director-discovery asic-director-fallback; do
+for label in vicbpc wa-building asic-eu qbcc-excluded qbcc-licensee nsw-fairtrading vic-vba-licence wa-be-licence act-licence tas-cbos-licence act-licences act-disciplinary nsw-fairtrading-scraper nt-building-practitioners wa-licence-register vic-vba-licence-scraper asic-insolvency ato-debt payment-times modern-slavery qbcc-adjudication court-records fwo ws2-live-hardening ws3-director-discovery asic-director-fallback admin-scraper-health ws4-fault-injection launch-scope; do
   exit_code=$(cat "$LOG_DIR/${label}.exit" 2>/dev/null || echo 1)
   if [ "$exit_code" != "0" ]; then
     OVERALL=1
@@ -109,7 +113,7 @@ done
 
 # Always print full output for all tests (verbose mode)
 if [ "${VERBOSE:-}" = "1" ]; then
-  for label in vicbpc wa-building asic-eu qbcc-excluded qbcc-licensee nsw-fairtrading vic-vba-licence wa-be-licence act-licence tas-cbos-licence act-licences act-disciplinary nsw-fairtrading-scraper nt-building-practitioners wa-licence-register vic-vba-licence-scraper asic-insolvency ato-debt payment-times modern-slavery qbcc-adjudication court-records fwo ws2-live-hardening ws3-director-discovery asic-director-fallback; do
+  for label in vicbpc wa-building asic-eu qbcc-excluded qbcc-licensee nsw-fairtrading vic-vba-licence wa-be-licence act-licence tas-cbos-licence act-licences act-disciplinary nsw-fairtrading-scraper nt-building-practitioners wa-licence-register vic-vba-licence-scraper asic-insolvency ato-debt payment-times modern-slavery qbcc-adjudication court-records fwo ws2-live-hardening ws3-director-discovery asic-director-fallback admin-scraper-health ws4-fault-injection launch-scope; do
     echo "──────────────────────────────────────────────────────────"
     echo "  Output: $label"
     echo "──────────────────────────────────────────────────────────"
