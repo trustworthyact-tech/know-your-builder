@@ -119,11 +119,21 @@ function associatedNamesFromDetails(cd) {
 // lookup (fetchNswCompanyLookup, below — what resolveDirectors() depends on) and the
 // per-director enrichment loop in searchNSWFairTrading, so there's exactly one place that
 // knows how to turn a raw licence hit into a ResultItem.
-async function fetchAndBuildResultsForQuery(query, seen) {
+//
+// `failed` distinguishes "this query genuinely returned zero licences" from "the search
+// call itself errored" (e.g. a ScraperAPI proxy failure) — found live 2026-09-22 when
+// ScraperAPI's monthly credits were exhausted: every fetchLicences() call here started
+// throwing a 403, but the bare `catch { // non-fatal }` this replaced swallowed it with no
+// log and no signal, so a real licensed company (Universal Property Group, licence 85273C)
+// silently reported "No NSW Fair Trading contractor licence records found" — a false-clean
+// result, exactly the shape this codebase's own scraper conventions exist to prevent (see
+// CLAUDE.md's captcha-gated-check convention). Callers roll `failed` up into `completeness`.
+async function fetchAndBuildResultsForQuery(query, seen, _fetchLicences = fetchLicences) {
   const items = [];
   const associatedNames = [];
+  let failed = false;
   try {
-    const hits = await fetchLicences(query);
+    const hits = await _fetchLicences(query);
     for (const hit of hits) {
       const licensee = hit.licensee || '';
       if (!nameMatchesEntity(licensee, query)) continue;
@@ -172,10 +182,11 @@ async function fetchAndBuildResultsForQuery(query, seen) {
         },
       });
     }
-  } catch {
-    // non-fatal
+  } catch (err) {
+    failed = true;
+    console.error(`[nswFairTrading] search failed for query "${query}":`, err.message || err);
   }
-  return { items, associatedNames };
+  return { items, associatedNames, failed };
 }
 
 function stripCompanySuffix(companyName) {
@@ -188,10 +199,14 @@ function stripCompanySuffix(companyName) {
 // resolveDirectors()'s output as an input without creating a circular dependency. Returns
 // `seen` too, so searchNSWFairTrading below can reuse it directly instead of re-running this
 // same query a second time.
-async function fetchNswCompanyLookup(companyName) {
+async function fetchNswCompanyLookup(companyName, _fetchLicences = fetchLicences) {
   const seen = new Set();
-  const { items, associatedNames } = await fetchAndBuildResultsForQuery(stripCompanySuffix(companyName), seen);
-  return { items, associatedNames, seen };
+  const { items, associatedNames, failed } = await fetchAndBuildResultsForQuery(
+    stripCompanySuffix(companyName),
+    seen,
+    _fetchLicences
+  );
+  return { items, associatedNames, seen, failed };
 }
 
 // `preFetchedPrimary` is fetchNswCompanyLookup()'s already-resolved result (from index.js's
@@ -199,33 +214,66 @@ async function fetchNswCompanyLookup(companyName) {
 // skipped entirely rather than re-fetched, since it's the exact same request. The per-director
 // loop still makes its own live calls — those are genuinely different queries, not something
 // Phase A could have already covered.
-async function searchNSWFairTrading(companyName, abn, directors, preFetchedPrimary) {
+async function searchNSWFairTrading(companyName, abn, directors, preFetchedPrimary, _fetchLicences = fetchLicences) {
   const allResults = [];
   const seen = preFetchedPrimary?.seen ?? new Set();
+  let queryCount = 0;
+  let failedCount = 0;
 
   if (preFetchedPrimary) {
     allResults.push(...preFetchedPrimary.items);
+    queryCount += 1;
+    if (preFetchedPrimary.failed) failedCount += 1;
   } else {
-    const { items } = await fetchAndBuildResultsForQuery(stripCompanySuffix(companyName), seen);
+    const { items, failed } = await fetchAndBuildResultsForQuery(stripCompanySuffix(companyName), seen, _fetchLicences);
     allResults.push(...items);
+    queryCount += 1;
+    if (failed) failedCount += 1;
   }
 
   for (const directorQuery of (directors || []).filter(Boolean)) {
-    const { items } = await fetchAndBuildResultsForQuery(directorQuery, seen);
+    const { items, failed } = await fetchAndBuildResultsForQuery(directorQuery, seen, _fetchLicences);
     allResults.push(...items);
+    queryCount += 1;
+    if (failed) failedCount += 1;
   }
 
   const searchUrl = `${REGISTER_BASE}/home/trades`;
+
+  // Every query failed — an honest "search failed", not a fabricated "checked, clean".
+  // Mirrors courtRecords.js's runJurisdictionSearch allFailed shape (see its own comment)
+  // so this reads the same way in the UI as any other jurisdiction whose live source
+  // couldn't be reached at all.
+  if (queryCount > 0 && failedCount === queryCount) {
+    return {
+      source: 'NSW Fair Trading — Contractor Licence Register',
+      jurisdiction: 'NSW',
+      category: 'license',
+      status: 'error',
+      results: [],
+      searchUrl,
+      error: 'Search failed',
+      completeness: 'unavailable',
+      summary: 'Could not complete the NSW Fair Trading search — try again or search manually',
+    };
+  }
+
+  const incompleteNote =
+    failedCount > 0
+      ? ' (search incomplete — one or more queries could not be completed, verify manually)'
+      : '';
+
   return {
     source: 'NSW Fair Trading — Contractor Licence Register',
     jurisdiction: 'NSW',
     category: 'license',
     results: allResults,
     searchUrl,
+    completeness: failedCount > 0 ? 'partial' : 'complete',
     summary:
-      allResults.length > 0
+      (allResults.length > 0
         ? `${allResults.length} NSW contractor licence record(s) found`
-        : 'No NSW Fair Trading contractor licence records found',
+        : 'No NSW Fair Trading contractor licence records found') + incompleteNote,
   };
 }
 
