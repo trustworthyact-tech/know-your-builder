@@ -115,7 +115,16 @@ const SCRAPERS = [
   { key: 'vicBpc', label: 'VIC Building Authority — Disciplinary Register', jurisdiction: 'vic', bucket: 1, sourceType: 'bulk-dataset', cadence: '24h', timeoutMs: 10_000, mvpScope: false },
   { key: 'vicVbaLicence', label: 'VIC Building Authority — Licence Register', jurisdiction: 'vic', bucket: 2, sourceType: 'live-api', cadence: null, timeoutMs: 20_000, mvpScope: false },
   { key: 'waBuildingEnergy', label: 'WA Building and Energy — Enforcement', jurisdiction: 'wa', bucket: 2, sourceType: 'live-scrape', cadence: null, timeoutMs: 20_000, mvpScope: false },
-  { key: 'nswFairTrading', label: 'NSW Fair Trading — Contractor Licence Register', jurisdiction: 'nsw', bucket: 2, sourceType: 'live-api', cadence: null, timeoutMs: 20_000, mvpScope: true },
+  // timeoutMs was 20_000 — live-measured 2026-09-23 (see CLAUDE.md, the ScraperAPI->ScrapeOps
+  // migration): the full flow (fetchNswCompanyLookup's Phase A lookup, then
+  // searchNSWFairTrading's sequential per-director enrichment loop — 1 licence search +
+  // 1 licence-details fetch per director, each round-tripping through the ScrapeOps proxy)
+  // took 16.6s in an isolated, uncontended test — already razor-thin against a 20s budget —
+  // and a real production request (multiple scrapers competing for the same proxy's
+  // concurrency limit) timed out outright. Not a correctness bug: the isolated run found
+  // real data (licence 85273C, director, compliance history) correctly. Raised to 45_000,
+  // matching courts_federal's bucket-2 budget for a comparable multi-round-trip live case.
+  { key: 'nswFairTrading', label: 'NSW Fair Trading — Contractor Licence Register', jurisdiction: 'nsw', bucket: 2, sourceType: 'live-api', cadence: null, timeoutMs: 45_000, mvpScope: true },
   { key: 'ntBuildingPractitioners', label: 'NT Building Practitioners Board — Licence Register', jurisdiction: 'nt', bucket: 2, sourceType: 'live-scrape', cadence: null, timeoutMs: 20_000, mvpScope: false },
   { key: 'actLicences', label: 'ACT Access Canberra — Builder Licence Register', jurisdiction: 'act', bucket: 1, sourceType: 'open-data-api', cadence: null, timeoutMs: 20_000, mvpScope: true },
   { key: 'actDisciplinary', label: 'ACT Access Canberra — Register of Disciplinary Actions', jurisdiction: 'act', bucket: 1, sourceType: 'open-data-api', cadence: null, timeoutMs: 20_000, mvpScope: true },
