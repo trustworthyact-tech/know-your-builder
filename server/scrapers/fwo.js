@@ -10,6 +10,22 @@ const HEADERS = {
   Referer: 'https://www.fairwork.gov.au/',
 };
 
+// Found live 2026-09-23 investigating a real "Morris Property Group" search failure:
+// a plain curl from the production container got an instant (0.04s) HTTP/2 stream reset
+// (`INTERNAL_ERROR`) right after a clean TLS handshake — Akamai (fairwork.gov.au's CDN,
+// confirmed via the resolved edge IPs) actively blocking Railway's IP, not a slow site.
+// Same class of problem already fixed for ACT courts and NSW Fair Trading (see
+// courtRecords.js's viaProxy / nswFairTrading.js's viaProxy) — same fix. Confirmed live:
+// the identical request through ScrapeOps returned a real 200 with real search results.
+// No keep_headers=true needed here (same as courtRecords.js's plain GETs) — this request
+// carries no custom Content-Type, only a User-Agent/Accept/Referer, which ScrapeOps'
+// default header handling already passes through fine. Falls back to a direct request
+// when SCRAPEOPS_API_KEY isn't set (e.g. local dev).
+function viaProxy(url) {
+  const key = process.env.SCRAPEOPS_API_KEY;
+  return key ? `https://proxy.scrapeops.io/v1/?api_key=${key}&url=${encodeURIComponent(url)}` : url;
+}
+
 const ENFORCEMENT_KEYWORDS = [
   'penalty',
   'penalised',
@@ -168,7 +184,7 @@ async function fetchFwoResults(query, entityName) {
   const url = `${BASE}/newsroom/news-and-media-search?keys=${encodeURIComponent(query)}`;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const { data } = await axios.get(url, { headers: HEADERS, timeout: 20000, maxRedirects: 5 });
+      const { data } = await axios.get(viaProxy(url), { headers: HEADERS, timeout: 20000, maxRedirects: 5 });
       const $ = cheerio.load(data);
       return { results: parseNewsItems($, url, entityName), failed: false };
     } catch {
@@ -179,24 +195,21 @@ async function fetchFwoResults(query, entityName) {
 
 async function searchFWO(companyName, abn, directors) {
   const searchUrl = buildSearchUrl(companyName, abn);
-  const allResults = [];
-  const outcomes = [];
 
-  // Company/ABN search
-  const companyOutcome = await fetchFwoResults(
-    abn ? abn.replace(/\s/g, '') : companyName,
-    companyName
-  );
-  outcomes.push(companyOutcome);
-  allResults.push(...companyOutcome.results);
-
-  // Per-director searches
-  for (const director of (directors || [])) {
-    if (!director) continue;
-    const dirOutcome = await fetchFwoResults(director, director);
-    outcomes.push(dirOutcome);
-    allResults.push(...dirOutcome.results);
-  }
+  // Company/ABN search + every director search run concurrently, not sequentially.
+  // Found live 2026-09-23: fetchFwoResults' own retry (up to 2 attempts, each a 20s
+  // axios timeout) already means a single failing term can legitimately take up to 40s —
+  // structurally more than the runScraper manifest timeout ever budgeted (same
+  // timeout-budget mismatch already found and fixed for courts_act's per-term loop, see
+  // courtRecords.js's comment on concurrent:true). Running terms sequentially compounded
+  // that across every director name; concurrently, total time is bounded by the single
+  // slowest term instead of their sum.
+  const queries = [
+    { query: abn ? abn.replace(/\s/g, '') : companyName, entityName: companyName },
+    ...(directors || []).filter(Boolean).map((director) => ({ query: director, entityName: director })),
+  ];
+  const outcomes = await Promise.all(queries.map(({ query, entityName }) => fetchFwoResults(query, entityName)));
+  const allResults = outcomes.flatMap((o) => o.results);
 
   // Deduplicate by URL
   const seen = new Set();

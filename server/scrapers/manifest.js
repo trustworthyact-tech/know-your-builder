@@ -111,7 +111,13 @@ const SCRAPERS = [
   // live-call default of 20s like every other bucket-2 entry.
   { key: 'modernSlavery', label: 'Modern Slavery Statements Register', jurisdiction: 'national', bucket: 2, sourceType: 'live-scrape', cadence: null, timeoutMs: 20_000, mvpScope: true },
   { key: 'qbcc', label: 'QBCC — Licence Register', jurisdiction: 'qld', bucket: 2, sourceType: 'live-api', cadence: null, timeoutMs: 20_000, mvpScope: false },
-  { key: 'fwo', label: 'Fair Work Ombudsman — Enforcement Outcomes', jurisdiction: 'national', bucket: 2, sourceType: 'live-scrape', cadence: null, timeoutMs: 20_000, mvpScope: true },
+  // timeoutMs was 20_000 — found live 2026-09-23 (a real "Morris Property Group" search):
+  // fairwork.gov.au (Akamai-fronted) was actively blocking Railway's IP with an instant
+  // HTTP/2 stream reset; fixed by routing through the ScrapeOps proxy (see fwo.js's
+  // viaProxy). Even fixed, fetchFwoResults' own retry (2 attempts x 20s axios timeout)
+  // means a single term can legitimately take up to 40s in the worst case — raised to
+  // 45_000 for real margin, matching courts_act/nswFairTrading's identical reasoning.
+  { key: 'fwo', label: 'Fair Work Ombudsman — Enforcement Outcomes', jurisdiction: 'national', bucket: 2, sourceType: 'live-scrape', cadence: null, timeoutMs: 45_000, mvpScope: true },
   { key: 'vicBpc', label: 'VIC Building Authority — Disciplinary Register', jurisdiction: 'vic', bucket: 1, sourceType: 'bulk-dataset', cadence: '24h', timeoutMs: 10_000, mvpScope: false },
   { key: 'vicVbaLicence', label: 'VIC Building Authority — Licence Register', jurisdiction: 'vic', bucket: 2, sourceType: 'live-api', cadence: null, timeoutMs: 20_000, mvpScope: false },
   { key: 'waBuildingEnergy', label: 'WA Building and Energy — Enforcement', jurisdiction: 'wa', bucket: 2, sourceType: 'live-scrape', cadence: null, timeoutMs: 20_000, mvpScope: false },
