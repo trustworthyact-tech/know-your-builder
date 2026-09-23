@@ -23,14 +23,19 @@ const HEADERS = {
 // Console tab), which hung indefinitely, while the identical request from an unrelated
 // network returned instantly. Same class of issue already hit and fixed for ACT/Federal
 // courts in courtRecords.js (Railway's IP being blocked/degraded reaching a site that's
-// otherwise perfectly healthy) — same fix: route through ScraperAPI's proxy. This is what
-// was silently starving every scraper that depends on resolveDirectors() (which awaits
+// otherwise perfectly healthy) — same fix: route through a proxy's URL-wrapper API. This is
+// what was silently starving every scraper that depends on resolveDirectors() (which awaits
 // fetchNswCompanyLookup below), not a database issue — ruled out separately by finding zero
 // active queries in Postgres (pg_stat_activity) during a search where these were hanging.
-// Falls back to a direct request when SCRAPERAPI_KEY isn't set (e.g. local dev).
-function viaScraperApi(url) {
-  const key = process.env.SCRAPERAPI_KEY;
-  return key ? `http://api.scraperapi.com?api_key=${key}&url=${encodeURIComponent(url)}` : url;
+//
+// Originally ScraperAPI, switched to ScrapeOps' Proxy API Aggregator on 2026-09-23 after
+// ScraperAPI's free-tier monthly credits were exhausted (confirmed live via SSH: every
+// proxied request was getting a 403 from ScraperAPI itself) — see courtRecords.js's
+// viaProxy for the full record; same identical `?api_key=X&url=Y` shape, one-line swap.
+// Falls back to a direct request when SCRAPEOPS_API_KEY isn't set (e.g. local dev).
+function viaProxy(url) {
+  const key = process.env.SCRAPEOPS_API_KEY;
+  return key ? `https://proxy.scrapeops.io/v1/?api_key=${key}&url=${encodeURIComponent(url)}` : url;
 }
 
 function escapeRegExp(s) {
@@ -54,7 +59,7 @@ function nameMatchesEntity(text, query) {
 
 async function fetchLicences(query) {
   const { data } = await axios.post(
-    viaScraperApi(SEARCH_URL),
+    viaProxy(SEARCH_URL),
     {
       licenceGroup: 'Trades',
       search: query,
@@ -76,7 +81,7 @@ async function fetchLicences(query) {
 async function fetchLicenceDetails(licenceType, licenceId) {
   const url = `${API_BASE}/search/details/${encodeURIComponent(licenceType)}/${encodeURIComponent(licenceId)}`;
   try {
-    const { data } = await axios.get(viaScraperApi(url), { headers: HEADERS, timeout: 20000 });
+    const { data } = await axios.get(viaProxy(url), { headers: HEADERS, timeout: 20000 });
     return data?.componentData ?? null;
   } catch {
     return null; // non-fatal — callers treat a null details fetch as "unknown", not "none"

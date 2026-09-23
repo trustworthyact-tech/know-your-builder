@@ -1,7 +1,7 @@
 // Load server/.env regardless of how this file is launched. `npm start`/`npm run dev`
 // already pass --env-file=.env, but CLAUDE.md also documents plain `node index.js`,
 // which does not — without this, every scraper that needs an API key (CAPTCHA_API_KEY,
-// SCRAPERAPI_KEY) silently sees `undefined` and reports the key as missing.
+// SCRAPEOPS_API_KEY) silently sees `undefined` and reports the key as missing.
 require('dotenv').config({ path: require('path').join(__dirname, '.env') });
 
 const path = require('path');
@@ -21,8 +21,10 @@ const { startAsicEuDatasetRefresh } = require('./scrapers/asicEnforceableUnderta
 const { startActLicencesDatasetRefresh } = require('./scrapers/actLicencesDatasetRefresh');
 
 // Fail fast on missing scraper credentials rather than surfacing "missing key"
-// errors deep inside individual scraper calls at request time.
-for (const key of ['CAPTCHA_API_KEY', 'SCRAPERAPI_KEY']) {
+// errors deep inside individual scraper calls at request time. SCRAPEOPS_API_KEY
+// replaced SCRAPERAPI_KEY here 2026-09-23 — see courtRecords.js's viaProxy comment —
+// after ScraperAPI's free-tier credits were exhausted in production.
+for (const key of ['CAPTCHA_API_KEY', 'SCRAPEOPS_API_KEY']) {
   if (!process.env[key]) {
     console.error(`Fatal: ${key} is not set. Check server/.env.`);
     process.exit(1);

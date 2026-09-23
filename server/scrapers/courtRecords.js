@@ -259,21 +259,29 @@ const fetchVicTermResults = makeTermCache(async (term) => {
 // Railway's production IP specifically — confirmed live via SSH into the production
 // container: identical from plain axios and from a real headless browser given up to 55s
 // to clear it, while the exact same request worked instantly from a residential IP. Not a
-// timing issue, not fixable by waiting longer or retrying. Routed through ScraperAPI (same
-// api.scraperapi.com proxy pattern originally used for the now-retired austlii.js), which
-// cleared it cleanly in testing (confirmed live 2026-09-07). No known written policy against
+// timing issue, not fixable by waiting longer or retrying. No known written policy against
 // automation on this site (unlike JADE/AustLII/Queensland Judgments, which explicitly
 // prohibit it) — this is a generic bot-wall, the same category as Federal Court/NT Supreme
 // Court, both already Cloudflare-gated and already legitimately handled elsewhere in this
-// file. Falls back to a direct request when SCRAPERAPI_KEY isn't set (e.g. local dev).
-function viaScraperApi(url) {
-  const key = process.env.SCRAPERAPI_KEY;
-  return key ? `http://api.scraperapi.com?api_key=${key}&url=${encodeURIComponent(url)}` : url;
+// file.
+//
+// Routed through a proxy's URL-wrapper API — originally ScraperAPI (2026-09-07, same
+// api.scraperapi.com pattern used for the now-retired austlii.js), switched to ScrapeOps'
+// Proxy API Aggregator on 2026-09-23 after ScraperAPI's free-tier monthly credits were
+// exhausted (confirmed live via SSH: every proxied request was getting a 403 from
+// ScraperAPI itself, not from the target site). Neither fetcher here ever requested JS
+// rendering (no render=true), confirming the block is IP-reputation-based, not a real JS
+// challenge — so any proxy that rotates through a clean IP works, not just this one.
+// ScrapeOps uses the identical `?api_key=X&url=Y` shape, so this was a one-line swap.
+// Falls back to a direct request when SCRAPEOPS_API_KEY isn't set (e.g. local dev).
+function viaProxy(url) {
+  const key = process.env.SCRAPEOPS_API_KEY;
+  return key ? `https://proxy.scrapeops.io/v1/?api_key=${key}&url=${encodeURIComponent(url)}` : url;
 }
 
 const fetchActTermResults = makeTermCache(async (term) => {
   const searchUrl = `https://www.courts.act.gov.au/judgment?query=${encodeURIComponent(term)}`;
-  const { data } = await axios.get(viaScraperApi(searchUrl), {
+  const { data } = await axios.get(viaProxy(searchUrl), {
     timeout: 45_000,
     headers: { 'User-Agent': 'Mozilla/5.0 (compatible; know-your-builder/1.0)' },
   });
@@ -326,7 +334,7 @@ const fetchActTermResults = makeTermCache(async (term) => {
 // Queensland Judgments.
 const fetchAcatTermResults = makeTermCache(async (term) => {
   const searchUrl = `https://www.acat.act.gov.au/decisions2/search-decisions?meta_partyName=${encodeURIComponent(term)}`;
-  const { data } = await axios.get(viaScraperApi(searchUrl), {
+  const { data } = await axios.get(viaProxy(searchUrl), {
     timeout: 45_000,
     headers: { 'User-Agent': 'Mozilla/5.0 (compatible; know-your-builder/1.0)' },
   });
@@ -565,10 +573,10 @@ async function fetchActAndAcatTermResults(term) {
   // Originally sequenced this on the theory that firing both at once was tripping a
   // burst rate-limit — live SSH testing into the production container same-day showed
   // the real cause was a standing Cloudflare managed challenge on that zone against
-  // Railway's IP, unrelated to request pacing (now routed through ScraperAPI in both
-  // fetchers above, which clears it). Left sequential anyway now that ScraperAPI is in
-  // the loop — running two proxied requests in parallel needlessly risks the proxy
-  // pool's own concurrency limits for no real speed benefit.
+  // Railway's IP, unrelated to request pacing (now routed through a proxy in both
+  // fetchers above — see viaProxy's comment — which clears it). Left sequential anyway
+  // now that a proxy is in the loop — running two proxied requests in parallel
+  // needlessly risks the proxy pool's own concurrency limits for no real speed benefit.
   let courtsResult;
   try {
     courtsResult = { status: 'fulfilled', value: await fetchActTermResults(term) };
@@ -602,12 +610,12 @@ function searchActJudgments(companyName, directors = []) {
     searchUrlFor: (term) => `https://www.courts.act.gov.au/judgment?query=${encodeURIComponent(term)}`,
     // Found 2026-09-15: this ran the per-term loop sequentially (the default), which is
     // a different question from fetchActAndAcatTermResults' own court-then-ACAT sequencing
-    // above (that's about not double-hitting ScraperAPI for the *same* term at once).
+    // above (that's about not double-hitting the proxy for the *same* term at once).
     // With WS3 director discovery now reliably surfacing 1-2 extra names per search, a
     // real request here is commonly 2-3 terms — live-measured: 3 terms sequential took
     // 47.3s against this key's 45s manifest budget, i.e. it was failing by construction,
     // not from any site-side problem. concurrent:true (same as Federal/NT below) cut that
-    // to ~16-20s, since ScraperAPI is a remote proxy, not a shared local resource these
+    // to ~16-20s, since the proxy is a remote service, not a shared local resource these
     // terms would contend over.
     concurrent: true,
   });

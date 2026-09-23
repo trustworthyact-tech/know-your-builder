@@ -12,7 +12,7 @@
  * duplicated here.)
  *
  * USAGE
- *   Terminal 1: cd server && CAPTCHA_API_KEY=x SCRAPERAPI_KEY=x node index.js
+ *   Terminal 1: cd server && CAPTCHA_API_KEY=x SCRAPEOPS_API_KEY=x node index.js
  *   Terminal 2: node server/tests/load-test-ws4.js [concurrency] [perRequestTimeoutMs]
  *
  * CAVEATS (read before trusting a "clean" result)
