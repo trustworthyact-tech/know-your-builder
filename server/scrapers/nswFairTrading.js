@@ -32,10 +32,20 @@ const HEADERS = {
 // ScraperAPI's free-tier monthly credits were exhausted (confirmed live via SSH: every
 // proxied request was getting a 403 from ScraperAPI itself) — see courtRecords.js's
 // viaProxy for the full record; same identical `?api_key=X&url=Y` shape, one-line swap.
-// Falls back to a direct request when SCRAPEOPS_API_KEY isn't set (e.g. local dev).
+//
+// `keep_headers=true` is required here specifically (courtRecords.js's plain GETs don't
+// need it) — found live 2026-09-23 immediately after the swap: without it, ScrapeOps
+// substitutes its own "optimized" headers for whatever you set, so fetchLicences' POST
+// arrived at Verify NSW with the wrong Content-Type and got a 415 "Unsupported Media
+// Type" back (wrapped in a 200 from ScrapeOps itself, so it looked like a success until
+// the response body was inspected — see ScrapeOps' own POST Requests docs). With
+// keep_headers=true, the real Content-Type/Origin/Referer in HEADERS below reach Verify
+// NSW as sent. Falls back to a direct request when SCRAPEOPS_API_KEY isn't set (local dev).
 function viaProxy(url) {
   const key = process.env.SCRAPEOPS_API_KEY;
-  return key ? `https://proxy.scrapeops.io/v1/?api_key=${key}&url=${encodeURIComponent(url)}` : url;
+  return key
+    ? `https://proxy.scrapeops.io/v1/?api_key=${key}&keep_headers=true&url=${encodeURIComponent(url)}`
+    : url;
 }
 
 function escapeRegExp(s) {
