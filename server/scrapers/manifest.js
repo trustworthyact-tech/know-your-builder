@@ -86,7 +86,15 @@ const SCRAPERS = [
   // slowing down under concurrent load. Reclassified bucket 2 → 4 ("otherwise slow/
   // fragile") to match. Still not fully reliable even at 120s — see the CLAUDE.md entry.
   { key: 'asicInsolvency', label: 'ASIC Published Notices — Insolvency', jurisdiction: 'national', bucket: 4, sourceType: 'live-source', cadence: null, timeoutMs: 120_000, mvpScope: true },
-  { key: 'atoDebt', label: 'ASIC Published Notices — ATO Tax Debt', jurisdiction: 'national', bucket: 2, sourceType: 'live-source', cadence: null, timeoutMs: 20_000, mvpScope: true },
+  // timeoutMs was 20_000, bucket 2 — found live 2026-09-23 (the same "Morris Property
+  // Group" investigation that fixed fwo): this scraper shares asicInsolvency.js's exact
+  // WAF-gated ASP.NET-postback mechanism against the same site
+  // (publishednotices.asic.gov.au) but never got that file's 2026-09-15 navigation-race
+  // fix or its resulting bucket-4/120s timeout bump — moved to bucket 4 / 120_000 to
+  // match, same reasoning (WAF-clearing + form fill + postback + possible archived-results
+  // second navigation legitimately costs real time on a warm shared browser, and this
+  // mechanism's own history shows wide variance under load).
+  { key: 'atoDebt', label: 'ASIC Published Notices — ATO Tax Debt', jurisdiction: 'national', bucket: 4, sourceType: 'live-source', cadence: null, timeoutMs: 120_000, mvpScope: true },
   { key: 'courts_federal', label: 'Federal Courts', jurisdiction: 'national', bucket: 2, sourceType: 'live-fulltext-search', cadence: null, timeoutMs: 45_000, mvpScope: true },
   { key: 'courts_qld', label: 'QLD Courts & Tribunals', jurisdiction: 'qld', bucket: 3, sourceType: 'manual-link', cadence: null, timeoutMs: 10_000, mvpScope: false },
   { key: 'courts_nsw', label: 'NSW Courts & Tribunals', jurisdiction: 'nsw', bucket: 2, sourceType: 'live-fulltext-search', cadence: null, timeoutMs: 45_000, mvpScope: true },
