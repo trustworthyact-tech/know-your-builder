@@ -25,8 +25,40 @@ const { readCachedLicenceRecords, readCachedDisciplinaryRecords } = require('./a
 // against this key's 20s manifest timeout, the main cause of the breaker
 // reading "degraded" in production despite the cache being warm and correct.
 
-const PORTAL_URL = 'https://www.data.act.gov.au/Business-and-Industry/List-of-Professionals/de4w-gbt3';
 const DISCIPLINARY_PORTAL_URL = 'https://www.data.act.gov.au/Business-and-Industry/Register-Of-Disciplinary-Actions/avib-prrz';
+
+// Found live 2026-09-24 (a real user report): every licence result's `url` used to point
+// at data.act.gov.au's own dataset page (de4w-gbt3), but that's purely a dataset metadata/
+// export page (OData access, column list, "Create a visualization") with no browsable
+// grid or per-row view at all — confirmed by driving it with a real browser. Access
+// Canberra runs a genuinely live, searchable public register at
+// services.accesscanberra.act.gov.au instead, split by occupation via a `registerid`
+// param. Mapping confirmed against real data, not guessed:
+// queried de4w-gbt3's own distinct `occupation` values directly (Builder/Building
+// Assessor/Building Surveyor among others), then confirmed "Building Surveyor" licences
+// live under registerid=certifiers by loading that register and reading its own "Filter by
+// Class Description" list, which explicitly includes "General/Principal/Government
+// Building Surveyor" — Access Canberra's UI label doesn't match the dataset's occupation
+// string for this one, so this isn't a guessable 1:1 name mapping.
+//
+// This is the portal-search fallback, not a true per-individual deep link — that register
+// is a Salesforce Experience Cloud / Lightning Web Components page (Shadow DOM), and
+// confirming whether its per-row "Details" control resolves to a shareable URL needs more
+// investigation than this pass covers. Still a real improvement: a live, correctly-scoped,
+// human-searchable register beats a bulk-dataset export page with no search at all.
+const OCCUPATION_REGISTER_IDS = {
+  Builder: 'licensed-builders',
+  'Building Assessor': 'building-assessors-public-register',
+  'Building Surveyor': 'certifiers',
+};
+const REGISTERS_PORTAL_URL = 'https://services.accesscanberra.act.gov.au/s/public-registers';
+
+function registerUrlForOccupation(occupation) {
+  const registerId = OCCUPATION_REGISTER_IDS[occupation];
+  return registerId
+    ? `https://services.accesscanberra.act.gov.au/s/public-registers/construction-licences?registerid=${registerId}`
+    : REGISTERS_PORTAL_URL;
+}
 
 const BUILDING_OCCUPATIONS = new Set(['Builder', 'Building Surveyor', 'Building Assessor']);
 
@@ -65,7 +97,7 @@ function toResultItem(hit, query) {
 
   return {
     title: name,
-    url: PORTAL_URL,
+    url: registerUrlForOccupation(hit.occupation),
     date: hit.expiry_date || '',
     status: hit.licence_status || '',
     description: descParts.join(' — ') || 'ACT Licence',
@@ -141,7 +173,7 @@ async function searchACTLicences(companyName, abn, directors, _readCachedLicence
       category: 'license',
       status: 'error',
       results: [],
-      searchUrl: PORTAL_URL,
+      searchUrl: REGISTERS_PORTAL_URL,
       error: 'Search failed',
       summary: 'Could not reach the ACT licence register — try again or search manually',
     };
@@ -167,7 +199,7 @@ async function searchACTLicences(companyName, abn, directors, _readCachedLicence
     jurisdiction: 'ACT',
     category: 'license',
     results: allResults,
-    searchUrl: PORTAL_URL,
+    searchUrl: REGISTERS_PORTAL_URL,
     summary:
       allResults.length > 0
         ? `${allResults.length} ACT builder licence record(s) found`
