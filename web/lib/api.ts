@@ -50,11 +50,27 @@ export async function runDueDiligence(
   return accumulated;
 }
 
-export async function checkServer(): Promise<boolean> {
+// Retries once before giving up — found live 2026-09-24: a single dropped health-check
+// fetch (e.g. a mobile browser resuming from a backgrounded tab, where iOS/Android can
+// suspend JS execution and drop an in-flight request, or a brief WiFi/cellular handoff)
+// was enough to fail this check even though the real server was fine, sending the user
+// straight to the "server unreachable" error screen over a one-off blip. Each attempt is
+// bounded by AbortController so a hung request can't stall the check indefinitely.
+async function pingHealth(timeoutMs: number): Promise<boolean> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(`${SERVER_URL}/api/health`);
+    const res = await fetch(`${SERVER_URL}/api/health`, { signal: controller.signal });
     return res.ok;
   } catch {
     return false;
+  } finally {
+    clearTimeout(timer);
   }
+}
+
+export async function checkServer(): Promise<boolean> {
+  if (await pingHealth(8_000)) return true;
+  await new Promise((resolve) => setTimeout(resolve, 1_500));
+  return pingHealth(8_000);
 }

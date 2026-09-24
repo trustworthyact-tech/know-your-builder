@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { runDueDiligence, checkServer } from '@/lib/api';
+import { runDueDiligence, checkServer, SERVER_URL } from '@/lib/api';
 import { SearchProgressItem } from '@/components/SearchProgressItem';
 import { PersonaSelector } from '@/components/PersonaSelector';
 import { EmailGate, EmailGateData } from '@/components/EmailGate';
@@ -161,8 +161,14 @@ export function SearchContent() {
 
       if (!serverOk) {
         setStep('error');
+        // Found live 2026-09-24: this used to hardcode "localhost:3001" and local-dev
+        // start instructions unconditionally — actively wrong and misleading once
+        // SERVER_URL is the real deployed backend, which it is in production. Only show
+        // the local-dev message when SERVER_URL is actually pointed at localhost.
         setErrorMsg(
-          'Cannot reach the search server at localhost:3001.\n\nStart it with:\n  cd server && node index.js'
+          SERVER_URL.includes('localhost')
+            ? 'Cannot reach the search server at localhost:3001.\n\nStart it with:\n  cd server && node index.js'
+            : 'Cannot reach the search server right now. This is usually temporary — please try again in a moment.'
         );
         return;
       }
