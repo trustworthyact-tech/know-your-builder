@@ -96,9 +96,30 @@ async function searchAtoDebt(companyName, abn, acn) {
       await new Promise((r) => setTimeout(r, 1_000));
     }
 
+    // Found live 2026-09-23, right after adding the __doPostBack .catch() above: the WAF
+    // title-string check can pass while the page is still mid-redirect underneath it (a
+    // final async step after the title updates), so page.click()/page.type() on the search
+    // field can themselves throw "Execution context was destroyed" — confirmed via a real
+    // production log line for this exact error after the postback race was already fixed.
+    // Unlike the postback's page.evaluate() (where we don't care what it resolves to, only
+    // that it fired), a swallowed click/type here would silently submit an EMPTY search
+    // term to __doPostBack below — a false "no results found" is worse than a slower retry.
+    // waitForSelector's own polling already tolerates a settling page; retrying the
+    // click+type once (same one-retry pattern as courtRecords.js/nswFairTrading.js's
+    // per-query fetches) covers the remaining race where the context is destroyed between
+    // waitForSelector resolving and the click actually landing.
     const fieldId = '#ContentPlaceHolderDefault_INWMasterContentPlaceHolder_INWPageContentPlaceHolder_SearchNoticeList_3_txtCompanyNameOrACN';
-    await page.click(fieldId, { clickCount: 3 });
-    await page.type(fieldId, searchTerm, { delay: 30 });
+    await page.waitForSelector(fieldId, { visible: true, timeout: 10_000 });
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await page.click(fieldId, { clickCount: 3 });
+        await page.type(fieldId, searchTerm, { delay: 30 });
+        break;
+      } catch (err) {
+        if (attempt === 1 || !/Execution context was destroyed/.test(err.message || '')) throw err;
+        await new Promise((r) => setTimeout(r, 1_000));
+      }
+    }
 
     // __doPostBack causes a full page navigation (not UpdatePanel XHR) — wait for it.
     // Found 2026-09-23 (live, in production, investigating a real "Morris Property Group"
