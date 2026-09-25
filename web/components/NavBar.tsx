@@ -3,6 +3,7 @@
 import { useSession, signOut } from 'next-auth/react';
 import Link from 'next/link';
 import Image from 'next/image';
+import { ACCOUNT_BUTTONS_ENABLED } from '@/lib/scope';
 
 export function NavBar() {
   const { data: session, status } = useSession();
@@ -48,7 +49,7 @@ export function NavBar() {
                 Sign out
               </button>
             </>
-          ) : (
+          ) : ACCOUNT_BUTTONS_ENABLED ? (
             <>
               <Link
                 href="/auth/login"
@@ -63,7 +64,7 @@ export function NavBar() {
                 Register
               </Link>
             </>
-          )}
+          ) : null}
         </div>
       </div>
     </header>

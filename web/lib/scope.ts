@@ -33,3 +33,8 @@ export const COVERAGE_NOTE =
 // underlying feature (EmailGate submission, PaymentModal, server-side scrapers, report
 // rendering) is untouched — flip this back to true to restore the user-facing entry points.
 export const DEEP_CHECK_ENABLED = false;
+
+// Sign in / Register nav buttons are hidden for the MVP launch by user decision. The auth
+// pages (/auth/*), accounts and /account/* routes are untouched and still reachable by URL —
+// flip this back to true to restore the buttons.
+export const ACCOUNT_BUTTONS_ENABLED = false;
