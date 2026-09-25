@@ -28,3 +28,8 @@ export function isStateInScope(state: string | null | undefined): boolean {
 
 export const COVERAGE_NOTE =
   'Know Your Builder currently searches national registers plus NSW and ACT courts and licensing. Checks for other states and territories are not yet available in this release.';
+
+// Deep check ($15 add-on) is excluded from the MVP launch UI by user decision, but the
+// underlying feature (EmailGate submission, PaymentModal, server-side scrapers, report
+// rendering) is untouched — flip this back to true to restore the user-facing entry points.
+export const DEEP_CHECK_ENABLED = false;
