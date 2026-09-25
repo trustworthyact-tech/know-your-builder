@@ -11,6 +11,7 @@ import { CoverageNotice } from '@/components/CoverageNotice';
 import { ProjectTimeline } from '@/components/ProjectTimeline';
 import { riskGrouper } from '@/lib/riskGrouper';
 import { SERVER_URL } from '@/lib/api';
+import { DEEP_CHECK_ENABLED } from '@/lib/scope';
 
 interface Props {
   searchId: string;
@@ -678,12 +679,14 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
               >
                 Re-run $3
               </Link>
-              <Link
-                href={deepCheckUrl}
-                className="text-xs font-semibold text-white bg-warning rounded-lg px-3 py-1.5 hover:opacity-90 transition-opacity"
-              >
-                Deep check $15
-              </Link>
+              {DEEP_CHECK_ENABLED && (
+                <Link
+                  href={deepCheckUrl}
+                  className="text-xs font-semibold text-white bg-warning rounded-lg px-3 py-1.5 hover:opacity-90 transition-opacity"
+                >
+                  Deep check $15
+                </Link>
+              )}
             </div>
           </div>
         )}

@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { Persona } from '@/src/types';
 import { PaymentModal } from '@/components/PaymentModal';
 import { trackEvent } from '@/lib/analytics';
-import { AU_STATES, isStateInScope, COVERAGE_NOTE } from '@/lib/scope';
+import { AU_STATES, isStateInScope, COVERAGE_NOTE, DEEP_CHECK_ENABLED } from '@/lib/scope';
 
 const PROJECT_TYPES = [
   { value: 'new_build', label: 'New build' },
@@ -204,6 +204,19 @@ export function EmailGate({ persona, entityName, isRecheck = false, freeChecks =
             {ctaLabel}
           </button>
 
+          <p className="text-center text-xs text-text-muted mt-3">
+            By using Know Your Builder, you agree to our{' '}
+            <a
+              href="https://trustworthypayments.com/legal/#terms-and-conditions"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline hover:text-text-secondary"
+            >
+              Terms &amp; Conditions
+            </a>
+            .
+          </p>
+
           {!isRecheck && (
             <p className="text-center text-xs text-text-muted mt-3">
               Free, instant, no credit card.{' '}
@@ -212,44 +225,46 @@ export function EmailGate({ persona, entityName, isRecheck = false, freeChecks =
           )}
 
           {/* Deep check opt-in */}
-          <div className="mt-5 border-t border-border-light pt-5">
-            <label className="flex items-start gap-3 cursor-pointer group">
-              <div className="relative mt-0.5 shrink-0">
-                <input
-                  type="checkbox"
-                  checked={isDeepCheck}
-                  onChange={(e) => setIsDeepCheck(e.target.checked)}
-                  className="peer sr-only"
-                />
-                <div className="w-4 h-4 border-2 border-border rounded transition peer-checked:bg-primary peer-checked:border-primary group-hover:border-primary-light" />
-                {isDeepCheck && (
-                  <svg
-                    className="absolute inset-0 w-4 h-4 text-white pointer-events-none"
-                    viewBox="0 0 16 16"
-                    fill="none"
-                  >
-                    <path
-                      d="M3 8l3.5 3.5L13 5"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                  </svg>
-                )}
-              </div>
-              <div>
-                <p className="text-sm font-semibold text-text-primary">
-                  Include deep check{' '}
-                  <span className="text-accent font-bold">$15</span>
-                </p>
-                <p className="text-xs text-text-muted leading-snug mt-0.5">
-                  Adds full historical director list via ASIC Data API. Recommended for
-                  high-value contracts.
-                </p>
-              </div>
-            </label>
-          </div>
+          {DEEP_CHECK_ENABLED && (
+            <div className="mt-5 border-t border-border-light pt-5">
+              <label className="flex items-start gap-3 cursor-pointer group">
+                <div className="relative mt-0.5 shrink-0">
+                  <input
+                    type="checkbox"
+                    checked={isDeepCheck}
+                    onChange={(e) => setIsDeepCheck(e.target.checked)}
+                    className="peer sr-only"
+                  />
+                  <div className="w-4 h-4 border-2 border-border rounded transition peer-checked:bg-primary peer-checked:border-primary group-hover:border-primary-light" />
+                  {isDeepCheck && (
+                    <svg
+                      className="absolute inset-0 w-4 h-4 text-white pointer-events-none"
+                      viewBox="0 0 16 16"
+                      fill="none"
+                    >
+                      <path
+                        d="M3 8l3.5 3.5L13 5"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                  )}
+                </div>
+                <div>
+                  <p className="text-sm font-semibold text-text-primary">
+                    Include deep check{' '}
+                    <span className="text-accent font-bold">$15</span>
+                  </p>
+                  <p className="text-xs text-text-muted leading-snug mt-0.5">
+                    Adds full historical director list via ASIC Data API. Recommended for
+                    high-value contracts.
+                  </p>
+                </div>
+              </label>
+            </div>
+          )}
         </form>
       </div>
 
