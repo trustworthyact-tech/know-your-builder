@@ -2213,6 +2213,46 @@ minutes, rather than reducing that cost further.
 - No real-Postgres-vs-disk-cache question here (unlike the earlier fix) — this dataset
   genuinely has no bulk/open-data source, confirmed via data.gov.au's CKAN API.
 
+**Follow-up (2026-10-02): priority-tiering design principles drafted, nothing implemented.**
+Surfaced again investigating an unrelated production outage (the server had zero active
+Railway deployments — a lapsed Railway trial blocking new deploys, fixed by adding a payment
+method; nothing to do with this scraper or any code change) whose post-fix smoke test showed
+`asicInsolvency` sitting at `status: 'degraded'` in `/api/admin/scraper-health/full`
+(`consecutiveFailures: 1`, `successRate7d: 0.69`) — confirmed via server logs
+(`Timed out after 120000ms`, `Execution context was destroyed, most likely because of a
+navigation`) to be exactly this already-known fragility, not a new regression; `isOpen` was
+still `false` (1 of the 5-failure `DEFAULT_BREAKER.failureThreshold`), so no action was needed.
+
+Worked out design principles for the priority queue flagged above, still purely a design
+pass — no code, no PR:
+1. Two tiers only (`mvpScope` true/false), not a numeric priority scale.
+2. FIFO within a tier — priority only picks which tier drains next, never reorders within one.
+3. No preemption — a slot already granted to a running page can't be revoked mid-navigation;
+   priority only affects who gets the *next* freed slot.
+4. A starvation bound on the low tier is mandatory, not optional — either reserve e.g. 1 of
+   the 6 slots exclusively for non-MVP, or age a long-waiting low-tier caller to the front.
+   Strict unbounded priority is the one shape to explicitly rule out.
+5. Stays behind the single existing choke point (`attachPageGate` in `browser.js`) — the
+   priority flag travels into `acquirePageSlot()`, no scraper call site changes.
+6. `releasePageSlot()` must check the high-priority queue first, low-priority only as fallback
+   — get this wrong and tiering silently degrades back to plain FIFO.
+7. Independent lever from `MAX_CONCURRENT_PAGES` (pool size) — don't conflate "how many slots"
+   with "who goes first," they were already tuned separately in the 2026-09-15 session above.
+8. An unresolvable/missing priority flag must default low, not high — fits the existing
+   tolerated failure mode (a starved non-MVP scraper reporting `completeness: 'unavailable'`)
+   rather than risking MVP-key starvation from a bug.
+9. Wait time per tier needs to be observable (even just a log line), not just the ordering —
+   otherwise "is this actually helping" can't be distinguished from "the pool wasn't contended
+   right now," the same ambiguity WS4.4's load test ran into.
+10. Any test suite must prove the starvation bound (principle 4), not just that high-priority
+    jumps the queue — a naive strict-priority implementation passes the easy test and fails
+    the fairness one.
+
+**Not implemented.** Revisit if `asicInsolvency`/`courts_federal` start actually opening their
+breaker under load rather than just degrading, or opportunistically alongside the other two
+`browser.js`/pool-related items already flagged above (`atoDebt`'s unchecked navigation-race
+exposure, `qbcc.js`'s unreduced Puppeteer cost).
+
 ---
 
 ## Performance baseline (2026-05-21)
