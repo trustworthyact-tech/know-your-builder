@@ -76,7 +76,17 @@ const ENABLED_JURISDICTIONS = new Set(
 const SCRAPERS = [
   { key: 'abn', label: 'ABR — Business Register', jurisdiction: 'national', bucket: 2, sourceType: 'live-api', cadence: null, timeoutMs: 20_000, mvpScope: true },
   { key: 'asic', label: 'ASIC Connect — Company Search', jurisdiction: 'national', bucket: 4, sourceType: 'live-scrape-captcha', cadence: null, timeoutMs: 90_000, mvpScope: true },
-  { key: 'asicDisqualified', label: 'ASIC — Disqualified Persons Register', jurisdiction: 'national', bucket: 1, sourceType: 'bulk-dataset', cadence: '12h', timeoutMs: 10_000, mvpScope: true },
+  // timeoutMs raised 10_000 -> 45_000 (2026-10-02): still genuinely bucket 1/bulk-dataset —
+  // this key's own register read is a fast in-process lookup (see asicDpnDataset.js's
+  // memCache) — but searchOrchestrator.js's invocation closure awaits resolveDirectors()
+  // first, which can wait up to 20s on the shared live NSW lookup (nswDirectorDiscoveryPromise)
+  // — the same dependency that already justified a 45_000+ budget for
+  // courts_federal/courts_nsw/courts_act/fwo/nswFairTrading below. This key shares that exact
+  // dependency but was left at bucket-1's default 10s, which left no margin for a slow NSW
+  // response even before the register read happened — confirmed live: a real request timed
+  // out here even after the memCache fix landed, while sharing resolveDirectors() with
+  // asicEnforceableUndertakings (below, same fix) which timed out in the same request.
+  { key: 'asicDisqualified', label: 'ASIC — Disqualified Persons Register', jurisdiction: 'national', bucket: 1, sourceType: 'bulk-dataset', cadence: '12h', timeoutMs: 45_000, mvpScope: true },
   // timeoutMs raised twice on 2026-09-15 (see CLAUDE.md's "ASIC Insolvency" incomplete-work
   // entry for the full investigation): 20s → 60s once the ASP.NET/WAF-gated multi-step form
   // itself was measured at ~28s standalone; 60s → 120s once real concurrent-search-load
@@ -145,7 +155,12 @@ const SCRAPERS = [
   { key: 'waLicenceRegister', label: 'WA Building Services — Contractor Licence Register', jurisdiction: 'wa', bucket: 4, sourceType: 'live-scrape-captcha', cadence: null, timeoutMs: 90_000, mvpScope: false },
   { key: 'tasLicenceRegister', label: 'TAS Occupational Licensing — Licence Register', jurisdiction: 'tas', bucket: 4, sourceType: 'live-scrape-captcha', cadence: null, timeoutMs: 90_000, mvpScope: false },
   { key: 'asicExtract', label: 'ASIC — Director Company History', jurisdiction: 'national', bucket: 4, sourceType: 'live-scrape-captcha', cadence: null, timeoutMs: 90_000, mvpScope: true },
-  { key: 'asicEnforceableUndertakings', label: 'ASIC — Court Enforceable Undertakings Register', jurisdiction: 'national', bucket: 1, sourceType: 'static-page-dataset', cadence: '24h', timeoutMs: 10_000, mvpScope: true },
+  // timeoutMs raised 10_000 -> 45_000 (2026-10-02), still bucket 1 — same reasoning as
+  // asicDisqualified above: this key's invocation closure also awaits resolveDirectors()
+  // before its own (now fast, memCache'd) register read, and shares the exact same
+  // 20s-bounded live NSW dependency that justifies every other resolveDirectors()
+  // consumer's 45_000+ budget.
+  { key: 'asicEnforceableUndertakings', label: 'ASIC — Court Enforceable Undertakings Register', jurisdiction: 'national', bucket: 1, sourceType: 'static-page-dataset', cadence: '24h', timeoutMs: 45_000, mvpScope: true },
 ].map((entry) => ({
   ...entry,
   breaker: DEFAULT_BREAKER,

@@ -2306,6 +2306,40 @@ own live Puppeteer cost and `actLicencesDataset.js`'s identical unfiltered-`quer
 shape (flagged, not fixed — it has a 20s budget, 2x the margin, and wasn't implicated in
 this specific incident) are both out of scope for this pass.
 
+**Follow-up, same day: the memCache fix alone was not sufficient — a second, independent
+cause of the identical symptom.** After the memCache fix deployed, a real user search still
+produced `[asicDisqualified] Timed out after 10000ms` / `[asicEnforceableUndertakings]
+Timed out after 10000ms` in production, even though the register read itself was now fast
+(confirmed via a direct verification search immediately after deploy, which succeeded).
+
+Root cause: both keys' `searchOrchestrator.js` invocation closures
+(`asicDisqualified: async () => searchASICDisqualifiedFromDataset(await resolveDirectors())`,
+same for `asicEnforceableUndertakings`) must await `resolveDirectors()` before they can even
+look at the register — and `resolveDirectors()` waits on a live NSW Fair Trading lookup
+(`nswDirectorDiscoveryPromise`) bounded at **20 seconds**. Every *other* key that depends on
+`resolveDirectors()` — `courts_federal`, `courts_nsw`, `courts_act`, `fwo`, `nswFairTrading`
+itself — was already given a 45s+ budget specifically because of this dependency (see each
+entry's own comment in `manifest.js`). These two were left at bucket 1's default 10s, which
+left no margin for a slow NSW response even before the register read happened. The memCache
+fix above was real and necessary (it removed a genuine, confirmed cross-region Postgres
+bottleneck), but insufficient alone, because this second bottleneck sits earlier in the same
+call chain and was never touched by that fix.
+
+**Fixed**: raised both keys' `timeoutMs` 10,000 → 45,000 in `manifest.js`, matching the
+precedent already established for every other `resolveDirectors()`-dependent key. Bucket
+stayed at 1 (and `cadence` untouched) — the underlying fetch mechanism genuinely is still a
+fast, cached dataset read; only the orchestration-level dependency needed the larger budget,
+the same reasoning `nswFairTrading`'s own 45,000 entry already documents. `manifest.test.js`
+enforces `cadence === null` for any non-bucket-1 entry, which caught an initial attempt to
+also bump `bucket` to 2 — reverted that part, kept `bucket: 1`. 147/147 `npm test` passing,
+`test-launch-scope.js` passing.
+
+**Lesson**: when a manifest key's own fetch mechanism is fast, that alone doesn't bound its
+total latency if its invocation closure awaits a shared dependency (here, `resolveDirectors()`)
+with its own slower budget — the key's `timeoutMs` must cover the full awaited chain, not just
+its own I/O. Worth checking whether any other bucket-1 key picks up a `resolveDirectors()`
+dependency in the future without a matching timeout review.
+
 ---
 
 ## Performance baseline (2026-05-21)
