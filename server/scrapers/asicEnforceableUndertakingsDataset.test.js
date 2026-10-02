@@ -3,7 +3,13 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
-const { fetchAsicEuRecords, parseRecords, DATASET_KEY } = require('./asicEnforceableUndertakingsDataset');
+const {
+  fetchAsicEuRecords,
+  readCachedAsicEuRecords,
+  parseRecords,
+  DATASET_KEY,
+  _resetMemCacheForTests,
+} = require('./asicEnforceableUndertakingsDataset');
 const { replaceDatasetRecords, diskCachePath } = require('./datasetStore');
 
 const SAMPLE_HTML = `
@@ -117,4 +123,46 @@ test('fetchAsicEuRecords — parse below the row-count floor with no existing ca
   clearCache();
   const fakeAxios = { get: async () => ({ data: '<table class="asic-table"><tbody></tbody></table>' }) };
   await assert.rejects(() => fetchAsicEuRecords(fakeAxios, 1), /parsed only \d+ record\(s\)/);
+});
+
+// -------------------------------------------------------------------
+// readCachedAsicEuRecords — in-process memCache, same fix as asicDpnDataset.js's for
+// the 2026-10-02 production timeout (this key timed out in the same real request as
+// asicDisqualified, same root cause: a cross-region Postgres round trip on every live
+// search instead of reusing the refresh job's already-warm in-process copy).
+// -------------------------------------------------------------------
+
+test('readCachedAsicEuRecords — serves from memCache after a fetchAsicEuRecords call, with no further _queryDataset calls', async () => {
+  clearCache();
+  _resetMemCacheForTests();
+  try {
+    const fakeAxios = { get: async () => ({ data: SAMPLE_HTML }) };
+    await fetchAsicEuRecords(fakeAxios, 0); // warms memCache, mirroring the refresh job
+
+    let queryDatasetCalls = 0;
+    const explodingQueryDataset = async () => { queryDatasetCalls++; throw new Error('should not be called'); };
+    const result = await readCachedAsicEuRecords(explodingQueryDataset);
+
+    assert.equal(queryDatasetCalls, 0, 'memCache should short-circuit the Postgres fallback entirely');
+    assert.equal(result.records.length, 2);
+    assert.equal(result.stale, false);
+  } finally {
+    _resetMemCacheForTests();
+    clearCache();
+  }
+});
+
+test('readCachedAsicEuRecords — falls back to _queryDataset when memCache has not been warmed yet', async () => {
+  _resetMemCacheForTests();
+  const cachedAt = new Date('2026-09-01');
+  const fakeQueryDataset = async () => ({ rows: [{ partyText: 'Acme' }], fetchedAt: cachedAt, stale: false });
+  const result = await readCachedAsicEuRecords(fakeQueryDataset);
+  assert.equal(result.records.length, 1);
+  assert.equal(result.cachedAt, cachedAt);
+});
+
+test('readCachedAsicEuRecords — no memCache and no cached data at all throws rather than returning a false clean', async () => {
+  _resetMemCacheForTests();
+  const fakeQueryDataset = async () => ({ rows: [], fetchedAt: null });
+  await assert.rejects(() => readCachedAsicEuRecords(fakeQueryDataset), /no cached data available/);
 });

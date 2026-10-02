@@ -2253,6 +2253,59 @@ breaker under load rather than just degrading, or opportunistically alongside th
 `browser.js`/pool-related items already flagged above (`atoDebt`'s unchecked navigation-race
 exposure, `qbcc.js`'s unreduced Puppeteer cost).
 
+### ASIC Disqualified Persons Register — intermittent 10s timeout, fixed with an in-process cache (2026-10-02)
+
+**Reported**: a real search for a NSW-registered business showed the ASIC Disqualified
+Persons Register check had failed. Production logs confirmed it: `[asicDisqualified] Timed
+out after 10000ms`, and — in the exact same request — `[asicEnforceableUndertakings] Timed
+out after 10000ms` too. The admin health dashboard (`/admin/scraper-health`) showed
+`asicDisqualified` as `degraded` (1 consecutive failure) but with a 7-day success rate of
+93% (13/14) — this was intermittent, not a hard outage, which is why it hadn't been caught
+by the existing fault-injection/load tests (both of which exercise the circuit-breaker path
+with real credentials unset, not real Postgres network latency under load).
+
+**Root cause**: `readCachedDpnRows()`/`readCachedAsicEuRecords()` — the live-search hot
+path for both keys — each run an **unfiltered** `SELECT payload FROM register_record WHERE
+dataset_key = $1` against Postgres, on every single live search request. Unlike
+`paymentTimes.js` (the one `queryDataset()` caller that passes `abn`/`name` to narrow the
+query server-side), these two pull every row of the register across the wire every time,
+because their matching is fuzzy/JS-side with nothing to filter on at the SQL layer. Made
+worse by geography: Railway's app server runs in `sfo` (San Francisco); the `DATABASE_URL`
+points at Supabase's pooler in `ap-southeast-2` (Sydney) — every query pays a cross-Pacific
+round trip. Both keys are bucket 1 (`manifest.js`), budgeted only 10 seconds on the
+assumption that a bucket-1 "bulk-dataset" lookup is a fast local read — true for
+`actLicences`/`paymentTimes`, not true for these two's actual query shape. Under concurrent
+search load (both keys querying at once, confirmed by the identical timestamp in the logs),
+the combined round-trip + transfer time occasionally exceeded the 10s budget.
+
+**Fixed**: added an in-process `memCache` to both `asicDpnDataset.js` and
+`asicEnforceableUndertakingsDataset.js`, populated by their respective `doFetch*()`
+functions (i.e. by the existing 12h/24h refresh job that already runs in the same
+long-lived server process — see `asicDpnDatasetRefresh.js`/
+`asicEnforceableUndertakingsDatasetRefresh.js`). `readCachedDpnRows()`/
+`readCachedAsicEuRecords()` now serve from this in-process copy first, falling back to the
+Postgres read only during the few-second window after boot before the first refresh cycle
+completes (the same resilience path that already existed, just no longer the common case).
+This eliminates the Postgres round trip — and the cross-region latency — from the live
+search path entirely in the steady state, which is the actual fix for the intermittent
+timeout, rather than just raising the 10s budget to paper over it.
+
+Both `memCache`s are written only by the fetch functions, never by the read functions
+themselves, specifically so a test injecting a fake `_queryDataset` can't leave stale
+module-level state behind for a later test in the same file — `_resetMemCacheForTests()` is
+exported from both modules for tests that need to force the Postgres-fallback path
+deliberately. Added 6 new regression tests (3 per module, `asicDpnDataset.test.js`/
+`asicEnforceableUndertakingsDataset.test.js`) covering: memCache short-circuits
+`_queryDataset` entirely once warmed, falls back correctly when not yet warmed, and still
+throws (never a false clean) when neither memCache nor the DB/disk fallback has anything.
+147/147 `npm test` passing.
+
+**Not changed**: `manifest.js`'s 10s timeout for either key — left as-is, since the fix
+removes the slow path from the common case rather than needing more budget for it. `qbcc`'s
+own live Puppeteer cost and `actLicencesDataset.js`'s identical unfiltered-`queryDataset()`
+shape (flagged, not fixed — it has a 20s budget, 2x the margin, and wasn't implicated in
+this specific incident) are both out of scope for this pass.
+
 ---
 
 ## Performance baseline (2026-05-21)

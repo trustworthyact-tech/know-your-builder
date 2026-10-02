@@ -121,10 +121,39 @@ async function readCachedRows() {
 // fallback both empty) — callers must treat that as "couldn't check," not a
 // false-clean.
 const CACHE_SLA_MS = 12 * 60 * 60 * 1000;
+
+// In-process copy of the last successful fetch, populated only by doFetchDpnRows below
+// (i.e. by the refresh job's periodic cycle, or any direct fetchDpnRows() call) — never
+// written by readCachedDpnRows itself, so a test injecting a fake _queryDataset can't
+// leave stale state behind for a later test in the same file. Found live in production
+// 2026-10-02: asicDisqualified and asicEnforceableUndertakings (identical shape) both
+// timed out at exactly their 10s manifest budget in the same request — root cause was
+// this function paying a real Postgres round trip (unfiltered `SELECT * WHERE
+// dataset_key = $1`, no name/ABN filter to narrow it server-side, unlike paymentTimes.js)
+// on every single live search, across a cross-Pacific hop (Railway's app server runs in
+// sfo; the Supabase pooler is in ap-southeast-2/Sydney). The refresh job already holds a
+// warm copy in this same long-lived process (see asicDpnDatasetRefresh.js) — reusing it
+// here means a live search only ever touches Postgres during the few-second window after
+// boot before the first refresh cycle completes.
+let memCache = null;
+
 async function readCachedDpnRows(_queryDataset = queryDataset) {
+  if (memCache) {
+    return {
+      rows: memCache.rows,
+      stale: Date.now() - memCache.cachedAt.getTime() > CACHE_SLA_MS,
+      cachedAt: memCache.cachedAt,
+    };
+  }
   const cached = await _queryDataset(DATASET_KEY, { slaMs: CACHE_SLA_MS });
   if (!cached.fetchedAt) throw new Error(`ASIC DPN: no cached data available for "${DATASET_KEY}"`);
   return { rows: cached.rows, stale: Boolean(cached.stale), cachedAt: cached.fetchedAt };
+}
+
+// Test-only: clears the in-process cache so a test can force readCachedDpnRows back onto
+// its _queryDataset fallback path.
+function _resetMemCacheForTests() {
+  memCache = null;
 }
 
 // ── Fetch ────────────────────────────────────────────────────────────────────
@@ -143,6 +172,14 @@ async function readCachedDpnRows(_queryDataset = queryDataset) {
  * without needing a 100-row fixture, and so the guard's threshold isn't hardcoded
  * into every call site.
  */
+// Populates the in-process memCache (see readCachedDpnRows above) alongside every
+// successful return from doFetchDpnRows, so the refresh job's own fetch result is what
+// a live search reads back, with zero extra Postgres round trips.
+function setMemCache(result) {
+  memCache = { rows: result.rows, cachedAt: result.cachedAt };
+  return result;
+}
+
 async function doFetchDpnRows(_axios = axios, _minRows = MIN_SANE_ROW_COUNT) {
   let url;
   try {
@@ -154,7 +191,7 @@ async function doFetchDpnRows(_axios = axios, _minRows = MIN_SANE_ROW_COUNT) {
 
   if (!url) {
     const cached = await readCachedRows();
-    if (cached) return cached;
+    if (cached) return setMemCache(cached);
     throw new Error('ASIC DPN: could not resolve current register CSV URL');
   }
 
@@ -168,7 +205,7 @@ async function doFetchDpnRows(_axios = axios, _minRows = MIN_SANE_ROW_COUNT) {
     buffer = Buffer.from(data);
   } catch (err) {
     const cached = await readCachedRows();
-    if (cached) return cached;
+    if (cached) return setMemCache(cached);
     throw err;
   }
 
@@ -183,7 +220,7 @@ async function doFetchDpnRows(_axios = axios, _minRows = MIN_SANE_ROW_COUNT) {
     console.error(`[asicDpnDataset] parsed only ${rows.length} row(s) from ${url} (expected ${_minRows}+) — refusing to promote, likely a source format change`);
     await recordIngestionFailure(DATASET_KEY, `parsed only ${rows.length} row(s) from ${url}, below the ${_minRows} sanity floor`);
     const cached = await readCachedRows();
-    if (cached) return cached;
+    if (cached) return setMemCache(cached);
     throw new Error(`ASIC DPN: parsed only ${rows.length} row(s) and no prior cache to fall back to`);
   }
 
@@ -194,7 +231,7 @@ async function doFetchDpnRows(_axios = axios, _minRows = MIN_SANE_ROW_COUNT) {
     // Ingestion write failure is non-fatal — this fetch's rows are still returned
     // fresh to the caller; the next refresh cycle gets another chance to persist.
   }
-  return { rows, stale: false, cachedAt: fetchedAt };
+  return setMemCache({ rows, stale: false, cachedAt: fetchedAt });
 }
 
 // Concurrent /api/search requests hitting a cold cache would otherwise each trigger
@@ -213,4 +250,12 @@ async function fetchDpnRows(_axios = axios, _minRows = MIN_SANE_ROW_COUNT) {
   }
 }
 
-module.exports = { fetchDpnRows, readCachedDpnRows, parseCsv, parseCsvLine, DATASET_KEY, MIN_SANE_ROW_COUNT };
+module.exports = {
+  fetchDpnRows,
+  readCachedDpnRows,
+  parseCsv,
+  parseCsvLine,
+  DATASET_KEY,
+  MIN_SANE_ROW_COUNT,
+  _resetMemCacheForTests,
+};

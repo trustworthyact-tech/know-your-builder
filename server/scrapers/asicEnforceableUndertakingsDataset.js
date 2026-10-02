@@ -111,10 +111,35 @@ async function readCachedRecords() {
 // nothing is cached — callers must treat that as "couldn't check," not a
 // false-clean.
 const CACHE_SLA_MS = 24 * 60 * 60 * 1000;
+
+// In-process copy of the last successful fetch — same fix, same root cause, as
+// asicDpnDataset.js's memCache (see its comment for the full incident record): this
+// function paid a real cross-Pacific Postgres round trip (Railway's app server in sfo,
+// the Supabase pooler in ap-southeast-2) on every single live search, with an unfiltered
+// `SELECT * WHERE dataset_key = $1` pulling the whole register across it — confirmed live
+// in production 2026-10-02 timing out at exactly its 10s manifest budget in the same
+// request that asicDisqualified also timed out in. Populated only by
+// doFetchAsicEuRecords below (the refresh job's own fetch), never by this function
+// itself, so test isolation isn't affected by which fallback path a given test exercises.
+let memCache = null;
+
 async function readCachedAsicEuRecords(_queryDataset = queryDataset) {
+  if (memCache) {
+    return {
+      records: memCache.records,
+      stale: Date.now() - memCache.cachedAt.getTime() > CACHE_SLA_MS,
+      cachedAt: memCache.cachedAt,
+    };
+  }
   const cached = await _queryDataset(DATASET_KEY, { slaMs: CACHE_SLA_MS });
   if (!cached.fetchedAt) throw new Error(`ASIC EU: no cached data available for "${DATASET_KEY}"`);
   return { records: cached.rows, stale: Boolean(cached.stale), cachedAt: cached.fetchedAt };
+}
+
+// Test-only: clears the in-process cache so a test can force readCachedAsicEuRecords back
+// onto its _queryDataset fallback path.
+function _resetMemCacheForTests() {
+  memCache = null;
 }
 
 /**
@@ -130,6 +155,13 @@ async function readCachedAsicEuRecords(_queryDataset = queryDataset) {
  * touching the network — same pattern as captcha.js's _http. _minRows is injectable so
  * tests can exercise the row-count sanity guard without a 50-record fixture.
  */
+// Populates the in-process memCache (see readCachedAsicEuRecords above) alongside every
+// successful return from doFetchAsicEuRecords, mirroring asicDpnDataset.js's setMemCache.
+function setMemCache(result) {
+  memCache = { records: result.records, cachedAt: result.cachedAt };
+  return result;
+}
+
 async function doFetchAsicEuRecords(_axios = axios, _minRows = MIN_SANE_ROW_COUNT) {
   let html;
   try {
@@ -137,7 +169,7 @@ async function doFetchAsicEuRecords(_axios = axios, _minRows = MIN_SANE_ROW_COUN
     html = data;
   } catch (err) {
     const cached = await readCachedRecords();
-    if (cached) return cached;
+    if (cached) return setMemCache(cached);
     throw err;
   }
 
@@ -150,7 +182,7 @@ async function doFetchAsicEuRecords(_axios = axios, _minRows = MIN_SANE_ROW_COUN
     console.error(`[asicEnforceableUndertakingsDataset] parsed only ${records.length} record(s) (expected ${_minRows}+) — refusing to promote, likely a page markup change`);
     await recordIngestionFailure(DATASET_KEY, `parsed only ${records.length} record(s), below the ${_minRows} sanity floor`);
     const cached = await readCachedRecords();
-    if (cached) return cached;
+    if (cached) return setMemCache(cached);
     throw new Error(`ASIC EU: parsed only ${records.length} record(s) and no prior cache to fall back to`);
   }
 
@@ -160,7 +192,7 @@ async function doFetchAsicEuRecords(_axios = axios, _minRows = MIN_SANE_ROW_COUN
     // Ingestion write failure is non-fatal — this fetch's records are still returned
     // fresh to the caller; the next refresh cycle gets another chance to persist.
   }
-  return { records, stale: false, cachedAt: new Date() };
+  return setMemCache({ records, stale: false, cachedAt: new Date() });
 }
 
 // Concurrent callers hitting a cold cache would otherwise each trigger their own fetch
@@ -178,4 +210,12 @@ async function fetchAsicEuRecords(_axios = axios, _minRows = MIN_SANE_ROW_COUNT)
   }
 }
 
-module.exports = { fetchAsicEuRecords, readCachedAsicEuRecords, parseRecords, DATASET_KEY, REGISTER_URL, MIN_SANE_ROW_COUNT };
+module.exports = {
+  fetchAsicEuRecords,
+  readCachedAsicEuRecords,
+  parseRecords,
+  DATASET_KEY,
+  REGISTER_URL,
+  MIN_SANE_ROW_COUNT,
+  _resetMemCacheForTests,
+};

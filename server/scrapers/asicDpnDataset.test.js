@@ -1,7 +1,14 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
-const { fetchDpnRows, parseCsv, parseCsvLine, DATASET_KEY } = require('./asicDpnDataset');
+const {
+  fetchDpnRows,
+  readCachedDpnRows,
+  parseCsv,
+  parseCsvLine,
+  DATASET_KEY,
+  _resetMemCacheForTests,
+} = require('./asicDpnDataset');
 const { replaceDatasetRecords, diskCachePath } = require('./datasetStore');
 
 // SAMPLE_CSV below is deliberately a 3-row illustrative fixture, well under the real
@@ -174,4 +181,52 @@ test('fetchDpnRows — parse below the row-count floor with no existing cache th
     },
   };
   await assert.rejects(() => fetchDpnRows(fakeAxios, 3), /parsed only \d+ row\(s\)/);
+});
+
+// -------------------------------------------------------------------
+// readCachedDpnRows — in-process memCache, the fix for the 2026-10-02 production
+// timeout (asicDisqualified and asicEnforceableUndertakings both exceeded their 10s
+// manifest budget on the same request — root cause was this function re-querying
+// Postgres across a cross-region hop on every live search, instead of reusing what
+// the refresh job already fetched into this same process).
+// -------------------------------------------------------------------
+
+test('readCachedDpnRows — serves from memCache after a fetchDpnRows call, with no further _queryDataset calls', async () => {
+  clearCache();
+  _resetMemCacheForTests();
+  try {
+    const fakeAxios = {
+      get: async (url) => {
+        if (url.includes('resource_show')) return { data: { result: { url: 'https://example.test/bd_per.csv' } } };
+        return { data: Buffer.from(SAMPLE_CSV, 'utf8') };
+      },
+    };
+    await fetchDpnRows(fakeAxios, NO_ROW_FLOOR); // warms memCache, mirroring the refresh job
+
+    let queryDatasetCalls = 0;
+    const explodingQueryDataset = async () => { queryDatasetCalls++; throw new Error('should not be called'); };
+    const result = await readCachedDpnRows(explodingQueryDataset);
+
+    assert.equal(queryDatasetCalls, 0, 'memCache should short-circuit the Postgres fallback entirely');
+    assert.equal(result.rows.length, 3);
+    assert.equal(result.stale, false);
+  } finally {
+    _resetMemCacheForTests();
+    clearCache();
+  }
+});
+
+test('readCachedDpnRows — falls back to _queryDataset when memCache has not been warmed yet', async () => {
+  _resetMemCacheForTests();
+  const cachedAt = new Date('2026-09-01');
+  const fakeQueryDataset = async () => ({ rows: [{ BD_PER_NAME: 'BROWN, ALICE' }], fetchedAt: cachedAt, stale: false });
+  const result = await readCachedDpnRows(fakeQueryDataset);
+  assert.equal(result.rows.length, 1);
+  assert.equal(result.cachedAt, cachedAt);
+});
+
+test('readCachedDpnRows — no memCache and no cached data at all throws rather than returning a false clean', async () => {
+  _resetMemCacheForTests();
+  const fakeQueryDataset = async () => ({ rows: [], fetchedAt: null });
+  await assert.rejects(() => readCachedDpnRows(fakeQueryDataset), /no cached data available/);
 });
