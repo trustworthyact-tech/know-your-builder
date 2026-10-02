@@ -61,7 +61,12 @@ function nameMatchesEntity(text, query) {
     // actLicences.js's nameMatchesEntity (found live 2026-09-09 against a "(ACT)"-suffixed
     // company name). Same duplicated helper, same bug, same fix.
     .map((w) => w.replace(/[^a-z0-9]/g, ''))
-    .filter((w) => (w.length > 3 || /^\d+$/.test(w)) && !/^(pty|ltd|limited|the|and|of|a)$/.test(w));
+    // > 2, not > 3 — found live 2026-10-02 via a real "CJC Management Services Pty Ltd"
+    // search: "cjc" (3 chars) was being dropped entirely, leaving only "management" and
+    // "services" as required words, which matched completely unrelated companies (e.g.
+    // "All Class Building & Management Services") and pulled an unrelated person's name
+    // into resolveDirectors(). Same bug/fix as modernSlavery.js's "BHP" fix (CLAUDE.md).
+    .filter((w) => (w.length > 2 || /^\d+$/.test(w)) && !/^(pty|ltd|limited|the|and|of|a)$/.test(w));
   if (words.length === 0) return false;
   const lower = text.toLowerCase();
   return words.every((w) => new RegExp(`\\b${escapeRegExp(w)}\\b`).test(lower));
@@ -244,4 +249,4 @@ async function searchNSWFairTrading(companyName, abn, directors, preFetchedPrima
   };
 }
 
-module.exports = { searchNSWFairTrading, fetchNswCompanyLookup };
+module.exports = { searchNSWFairTrading, fetchNswCompanyLookup, nameMatchesEntity };

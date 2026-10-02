@@ -987,6 +987,32 @@ registers, outside this product's current NSW/ACT scope; revisit if/when those j
 come back into scope, or opportunistically the next time one of these files is touched for an
 unrelated reason.
 
+**Follow-up (2026-10-02): the identical `> 3` bug found live in two more files this sweep
+missed — `nswFairTrading.js` and `actLicences.js` — and this instance actively produced a
+wrong director attribution in a real report, not just a missed match.** Reported by the user:
+a search for CJC MANAGEMENT SERVICES PTY LTD (ABN 54677177936) returned licence results for
+"Shaun West," who isn't connected to CJC. Root-caused by reproducing live against the real ACT
+Socrata licence dataset (`fetchActLicenceRecords()`): `nameMatchesEntity('ALL CLASS BUILDING &
+MANAGEMENT SERVICES PTY LIMITED', 'CJC MANAGEMENT SERVICES')` returned `true` — "cjc" (3 chars)
+was dropped by the `> 3` filter, leaving only "management"/"services" as required words, both
+of which this totally unrelated ACT licensee's name also contains. That unrelated licensee's
+`partners` field lists "SHAUN WEST" — which `resolveActAssociatedNames()` then fed into
+`resolveDirectors()`, spraying his name across every other director-dependent search
+(NSW Fair Trading's per-director loop, `asicDisqualified`, `courts_*`, etc.) as if he were a
+real CJC associate. Neither file was in the original 7-file list above — this is a new
+instance of the same copy-pasted bug, found via a real user report rather than a proactive
+sweep. **Fixed**: `> 3` → `> 2` in both `nswFairTrading.js` and `actLicences.js`, both now
+exporting `nameMatchesEntity` for testing. Live-reverified against the real ACT dataset: the
+"All Class Building & Management Services" false match is gone (0 matches, down from 1), while
+a genuine "CJC Management Services" record would still match since "cjc" is now a required
+word. Added `scrapers/actLicences.test.js` and `scrapers/nswFairTrading.test.js` (pure-function,
+no network), wired into `server/package.json`'s `test` script — 148/148 passing. Live
+`test-act-licences.js`/`test-nsw-fairtrading.js` runs unaffected (NSW's own test still finds its
+real fixture; ACT's test result is unchanged by this fix either way since this sandbox has no
+`DATABASE_URL` and therefore no ACT cache to query at all — a pre-existing, unrelated sandbox
+limitation, not a regression). The 5 non-MVP files flagged above as "not fixed" are still not
+fixed — still out of this product's current NSW/ACT scope.
+
 ### Phase 7c — asicExtract: historical directors + charges register
 
 `asicExtract.js` currently returns companies that *current* directors are associated with (phoenix detection). Missing:

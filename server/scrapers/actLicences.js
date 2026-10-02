@@ -80,7 +80,13 @@ function nameMatchesEntity(text, query) {
     // from the token (leaving the alphanumeric core, e.g. "act") lets \b anchor correctly
     // against the real word-boundary that still exists around it in the target text.
     .map((w) => w.replace(/[^a-z0-9]/g, ''))
-    .filter((w) => (w.length > 3 || /^\d+$/.test(w)) && !/^(pty|ltd|limited|the|and|of|a)$/.test(w));
+    // > 2, not > 3 — found live 2026-10-02 via a real "CJC Management Services Pty Ltd"
+    // search: "cjc" (3 chars) was being dropped entirely, leaving only "management" and
+    // "services" as required words, which matched a completely unrelated ACT licensee
+    // ("All Class Building & Management Services") and pulled its partner's name
+    // ("Shaun West") into resolveDirectors(), spraying his name across every other
+    // director-dependent search. Same bug/fix as modernSlavery.js's "BHP" fix (CLAUDE.md).
+    .filter((w) => (w.length > 2 || /^\d+$/.test(w)) && !/^(pty|ltd|limited|the|and|of|a)$/.test(w));
   if (words.length === 0) return false;
   const lower = text.toLowerCase();
   return words.every((w) => new RegExp(`\\b${escapeRegExp(w)}\\b`).test(lower));
@@ -295,4 +301,4 @@ async function searchACTDisciplinary(companyName, abn, directors, _readCachedDis
   };
 }
 
-module.exports = { searchACTLicences, searchACTDisciplinary, resolveActAssociatedNames };
+module.exports = { searchACTLicences, searchACTDisciplinary, resolveActAssociatedNames, nameMatchesEntity };
