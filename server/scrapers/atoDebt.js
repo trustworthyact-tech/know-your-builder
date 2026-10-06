@@ -1,6 +1,35 @@
 const cheerio = require('cheerio');
 const { getBrowser } = require('./browser');
 
+// Found 2026-10-06: the per-call .catch()/retry patches below (2026-09-15 postback,
+// 2026-09-23 click/type) each fixed only the line that happened to throw — the root cause
+// is that this site's AWS WAF serves a `202 x-amzn-waf-action: challenge` interstitial
+// that reloads itself into the real page, and the "Load older data" postback can take
+// 15s+ under load. networkidle2 can resolve on the interstitial, or the 25s nav wait can
+// lapse, and the next read (page.$()/page.content()) then lands mid-navigation and throws
+// "Execution context was destroyed". Reproduced locally under 6-8 concurrent pages:
+// unpatched 7/12 OK per scraper, with this fix 11/12 (the remaining failure is an honest
+// 30s "results never appeared" timeout, not a crash). Results-page marker below is present
+// on both hit and miss result pages and absent from the WAF interstitial; waitForSelector
+// keeps polling across navigations, so it rides out the self-reload.
+const RESULTS_LIST_SEL = '[id$="ucNoticeResult_lvNoticeList"]';
+async function retryOnNavRace(fn) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (attempt === 2 || !/Execution context was destroyed/.test(err.message || '')) throw err;
+      await new Promise((r) => setTimeout(r, 1_000));
+    }
+  }
+}
+function settledContent(page) {
+  return retryOnNavRace(async () => {
+    await page.waitForSelector(RESULTS_LIST_SEL, { timeout: 30_000 });
+    return page.content();
+  });
+}
+
 // insolvencynotices.asic.gov.au was merged into publishednotices.asic.gov.au.
 // ATO listed tax debt notices (Tax Administration Act s260-45) appear here.
 const BASE = 'https://publishednotices.asic.gov.au';
@@ -148,15 +177,16 @@ async function searchAtoDebt(companyName, abn, acn) {
     // appears. Same navigation-races-the-caller's-own-promise risk as the postback above —
     // page.click() also triggers this button's postback navigation directly.
     const archivedBtnSel = '[id*="ucNoticeResult_btnLoadArchived"]';
-    const hasArchivedBtn = await page.$(archivedBtnSel);
+    await settledContent(page);
+    const hasArchivedBtn = await retryOnNavRace(() => page.$(archivedBtnSel));
     if (hasArchivedBtn) {
       await Promise.all([
-        page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 25_000 }).catch(() => {}),
+        page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 45_000 }).catch((e) => console.warn('[atoDebt] "Load older data" navigation wait:', e.message)),
         page.click(archivedBtnSel).catch(() => {}),
       ]);
     }
 
-    const html = await page.content();
+    const html = await settledContent(page);
     const $ = cheerio.load(html);
     results = parseResults($, SEARCH_URL);
   } finally {

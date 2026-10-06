@@ -2365,7 +2365,17 @@ Same pass: `runScraper.js` now logs `err.stack` instead of `err.message` — a b
 "Execution context was destroyed" from `asicInsolvency`/`atoDebt` didn't say which
 Puppeteer call threw. (Locally reproduced under concurrent load: both throw at their final
 `page.content()` after the postback, caused by the AWS WAF challenge page self-reloading /
-slow "Load older data" navigation. That fix is not in this change.)
+slow "Load older data" navigation.) **Fixed in the same branch**: both scrapers now wait for
+the results-page marker (`[id$="ucNoticeResult_lvNoticeList"]` — on hit and miss pages, not
+on the WAF interstitial) before any read, retry reads up to 3x on "context destroyed", give
+the "Load older data" navigation 45s (logged, not swallowed, if it lapses), and
+`asicInsolvency` gained `atoDebt`'s click/type retry. Benchmarked locally, 6 concurrent pages,
+alternating rounds: unpatched 7/12 OK per scraper, fixed 11/12 (remaining failure = an honest
+30s "results never appeared" timeout), plus a 6/6 confirmation run on the committed files.
+This replaces the per-line patching of 2026-09-15/09-23, which only ever moved the throw to
+the next unguarded call. **Still open**: the same company sometimes returns 2 insolvency
+notices and sometimes 10 (both before and after this fix) — unclear which is correct or what
+decides it; not investigated.
 
 ---
 
