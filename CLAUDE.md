@@ -2340,6 +2340,33 @@ with its own slower budget — the key's `timeoutMs` must cover the full awaited
 its own I/O. Worth checking whether any other bucket-1 key picks up a `resolveDirectors()`
 dependency in the future without a matching timeout review.
 
+### ACT licence/disciplinary registers — same 20s timeout gap, same fix (2026-10-06)
+
+`actLicences` and `actDisciplinary` both timed out at exactly 20s in the same production
+request — the exact case the 2026-10-02 entry above's closing lesson warned about. Both
+invocation closures await `resolveDirectors()` (NSW director lookup, itself capped at 20s,
+plus ACT's own director discovery) before reading their register, inside a 20s budget.
+Live-measured from the Railway container via `railway ssh`, no other load: NSW lookup
+3.5-7.7s; the unfiltered ~32k-row `act_licences` Postgres read (sfo -> Sydney) 0.6-2.8s,
+paid **twice** by `actLicences` (`resolveActAssociatedNames` + `searchACTLicences`). The
+disciplinary register's own read is 0.3s, which is why its simultaneous timeout pointed at
+the shared `resolveDirectors()` dependency, not its own I/O.
+
+**Fixed**, mirroring 2026-10-02 exactly: `timeoutMs` 20,000 -> 45,000 for both (bucket
+stays 1), and an in-process memCache in `actLicencesDataset.js` (one per dataset, written
+only by `fetchActLicenceRecords`/`fetchActDisciplinaryRecords` — i.e. by
+`actLicencesDatasetRefresh.js` — never by the read functions; `_resetMemCacheForTests`
+exported). A stale-fallback fetch keeps its memCache copy marked `stale`. 4 new tests in
+`actLicencesDataset.test.js` (two confirmed to fail with the memCache lookup removed);
+151/151 `npm test`. This closes the `actLicencesDataset.js` "flagged, not fixed" item from
+the 2026-10-02 entry.
+
+Same pass: `runScraper.js` now logs `err.stack` instead of `err.message` — a bare
+"Execution context was destroyed" from `asicInsolvency`/`atoDebt` didn't say which
+Puppeteer call threw. (Locally reproduced under concurrent load: both throw at their final
+`page.content()` after the postback, caused by the AWS WAF challenge page self-reloading /
+slow "Load older data" navigation. That fix is not in this change.)
+
 ---
 
 ## Performance baseline (2026-05-21)

@@ -150,8 +150,15 @@ const SCRAPERS = [
   // matching courts_federal's bucket-2 budget for a comparable multi-round-trip live case.
   { key: 'nswFairTrading', label: 'NSW Fair Trading — Contractor Licence Register', jurisdiction: 'nsw', bucket: 2, sourceType: 'live-api', cadence: null, timeoutMs: 45_000, mvpScope: true },
   { key: 'ntBuildingPractitioners', label: 'NT Building Practitioners Board — Licence Register', jurisdiction: 'nt', bucket: 2, sourceType: 'live-scrape', cadence: null, timeoutMs: 20_000, mvpScope: false },
-  { key: 'actLicences', label: 'ACT Access Canberra — Builder Licence Register', jurisdiction: 'act', bucket: 1, sourceType: 'open-data-api', cadence: null, timeoutMs: 20_000, mvpScope: true },
-  { key: 'actDisciplinary', label: 'ACT Access Canberra — Register of Disciplinary Actions', jurisdiction: 'act', bucket: 1, sourceType: 'open-data-api', cadence: null, timeoutMs: 20_000, mvpScope: true },
+  // timeoutMs raised 20_000 -> 45_000 (2026-10-06), still bucket 1 — same fix as
+  // asicDisqualified/asicEnforceableUndertakings (2026-10-02): both invocation closures
+  // await resolveDirectors() before their own register read, and that waits on the NSW
+  // director lookup (bounded at 20s by itself — the whole old budget) plus ACT's own
+  // director discovery. Both timed out at exactly 20s in the same production request;
+  // live-measured from the Railway container, NSW alone took 3.5-7.7s with no other load.
+  // Matches every other resolveDirectors()-dependent key's 45s budget.
+  { key: 'actLicences', label: 'ACT Access Canberra — Builder Licence Register', jurisdiction: 'act', bucket: 1, sourceType: 'open-data-api', cadence: null, timeoutMs: 45_000, mvpScope: true },
+  { key: 'actDisciplinary', label: 'ACT Access Canberra — Register of Disciplinary Actions', jurisdiction: 'act', bucket: 1, sourceType: 'open-data-api', cadence: null, timeoutMs: 45_000, mvpScope: true },
   { key: 'waLicenceRegister', label: 'WA Building Services — Contractor Licence Register', jurisdiction: 'wa', bucket: 4, sourceType: 'live-scrape-captcha', cadence: null, timeoutMs: 90_000, mvpScope: false },
   { key: 'tasLicenceRegister', label: 'TAS Occupational Licensing — Licence Register', jurisdiction: 'tas', bucket: 4, sourceType: 'live-scrape-captcha', cadence: null, timeoutMs: 90_000, mvpScope: false },
   { key: 'asicExtract', label: 'ASIC — Director Company History', jurisdiction: 'national', bucket: 4, sourceType: 'live-scrape-captcha', cadence: null, timeoutMs: 90_000, mvpScope: true },
