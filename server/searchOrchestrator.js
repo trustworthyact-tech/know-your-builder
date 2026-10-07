@@ -13,6 +13,11 @@
 const { searchABN } = require('./scrapers/abn');
 const { searchCourtRecords, buildManualFallback } = require('./scrapers/courtRecords');
 const { SCRAPERS } = require('./scrapers/manifest');
+
+// courts_act's own deadline is derived from its manifest budget rather than hardcoded, so
+// raising/lowering timeoutMs in manifest.js keeps the two in step (see the courts_act closure).
+const COURTS_ACT_TIMEOUT_MS = SCRAPERS.find((s) => s.key === 'courts_act').timeoutMs;
+const COURTS_ACT_DEADLINE_MARGIN_MS = 3_000;
 const { runScraper, withTimeout } = require('./scrapers/runScraper');
 const scraperHealth = require('./scrapers/scraperHealth');
 const { searchPaymentTimes } = require('./scrapers/paymentTimes');
@@ -167,8 +172,13 @@ async function runSearchRequest({ abn, acn, companyName, tradingName, directors 
     courts_sa: async () => searchCourtRecords(companyName, await resolveExtraSearchTerms(), 'sa'),
     courts_nt: async () => searchCourtRecords(companyName, await resolveExtraSearchTerms(), 'nt'),
     courts_act: async () => {
+      // Deadline taken *before* awaiting resolveDirectors(), since runScraper's manifest
+      // timeout starts when this closure is called, not when the court fetches begin. The
+      // margin leaves time for searchActJudgments to assemble and return an honest
+      // partial/unavailable result before runScraper's outer timeout would discard it.
+      const deadline = Date.now() + COURTS_ACT_TIMEOUT_MS - COURTS_ACT_DEADLINE_MARGIN_MS;
       const [dirs, terms] = await Promise.all([resolveDirectors(), resolveExtraSearchTerms()]);
-      return markPartialIfNoDirectors(await searchCourtRecords(companyName, terms, 'act'), dirs.length);
+      return markPartialIfNoDirectors(await searchCourtRecords(companyName, terms, 'act', { deadline }), dirs.length);
     },
     courts_tas: async () => searchCourtRecords(companyName, await resolveExtraSearchTerms(), 'tas'),
     paymentTimes: async () => searchPaymentTimes(companyName, await resolveAbn(), acn),

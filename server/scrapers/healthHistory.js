@@ -35,7 +35,10 @@ async function logEvent(key, outcome, error, pool = getPool()) {
 // Returns { [scraperKey]: { attempts, successes, successRate } } for the trailing
 // `windowDays`, or null (not an empty object) when no pool is configured — callers should
 // render "no persisted history available" rather than a misleading 0%/0 row for that case.
-// Only 'success'/'failure' count toward attempts/successRate; 'circuit_open' rows are
+// 'success'/'partial'/'failure' count toward attempts, and 'partial' (a check that ran but
+// couldn't cover everything — logged since 2026-10-06) counts as a success in successRate, the
+// same way the circuit breaker treats it, with its own `partials` count alongside so the
+// dashboard can show it separately. 'circuit_open' rows are
 // excluded from this rollup (they represent skipped calls, not attempted ones) but remain
 // in the table for the dashboard to show separately if useful later.
 async function getRollup({ windowDays = 7 } = {}, pool = getPool()) {
@@ -53,8 +56,9 @@ async function getRollup({ windowDays = 7 } = {}, pool = getPool()) {
     await ensureSchema();
     const { rows } = await pool.query(
       `SELECT scraper_key,
-              COUNT(*) FILTER (WHERE outcome = 'success') AS successes,
-              COUNT(*) FILTER (WHERE outcome IN ('success', 'failure')) AS attempts
+              COUNT(*) FILTER (WHERE outcome IN ('success', 'partial')) AS successes,
+              COUNT(*) FILTER (WHERE outcome = 'partial') AS partials,
+              COUNT(*) FILTER (WHERE outcome IN ('success', 'partial', 'failure')) AS attempts
          FROM health_check_event
         WHERE occurred_at > now() - ($1 || ' days')::interval
         GROUP BY scraper_key`,
@@ -68,6 +72,7 @@ async function getRollup({ windowDays = 7 } = {}, pool = getPool()) {
       result[row.scraper_key] = {
         attempts,
         successes,
+        partials: Number(row.partials ?? 0),
         successRate: attempts > 0 ? successes / attempts : null,
       };
     }
@@ -89,6 +94,7 @@ function mergeHistory(report, rollup) {
       ...row,
       historyAvailable: rollup !== null,
       attempts7d: history ? history.attempts : null,
+      partials7d: history ? history.partials : null,
       successRate7d: history ? history.successRate : null,
     };
   });

@@ -113,9 +113,12 @@ const SCRAPERS = [
   { key: 'courts_sa', label: 'SA Courts & Tribunals', jurisdiction: 'sa', bucket: 3, sourceType: 'manual-link', cadence: null, timeoutMs: 10_000, mvpScope: false },
   { key: 'courts_nt', label: 'NT Courts & Tribunals', jurisdiction: 'nt', bucket: 2, sourceType: 'live-fulltext-search', cadence: null, timeoutMs: 45_000, mvpScope: false },
   // timeoutMs was 45_000 — live-measured 2026-09-15 (see CLAUDE.md): with the per-term
-  // loop now concurrent (courtRecords.js), 3 terms through ScraperAPI's proxy measured
-  // ~16-20s each dominating factor; 60s keeps a real margin for ScraperAPI's own
-  // response-time variance rather than sitting right at the edge.
+  // loop now concurrent (courtRecords.js), 3 terms through the proxy measured ~16-20s; 60s
+  // keeps a margin for the proxy's response-time variance. Since 2026-10-06 this value also
+  // drives courts_act's internal deadline (searchOrchestrator.js derives it from here), so
+  // the ACT/ACAT fetches cap themselves to fit inside it and return an honest partial
+  // result instead of being discarded by runScraper's timeout. Proxy is now ScrapeOps
+  // (ScraperAPI's credits ran out 2026-09-23 — see courtRecords.js's viaProxy).
   { key: 'courts_act', label: 'ACT Courts & Tribunals', jurisdiction: 'act', bucket: 2, sourceType: 'live-fulltext-search-proxy', cadence: null, timeoutMs: 60_000, mvpScope: true },
   { key: 'courts_tas', label: 'TAS Courts & Tribunals', jurisdiction: 'tas', bucket: 3, sourceType: 'manual-link', cadence: null, timeoutMs: 10_000, mvpScope: false },
   { key: 'paymentTimes', label: 'Payment Times Reporting Register', jurisdiction: 'national', bucket: 1, sourceType: 'bulk-dataset', cadence: '8h', timeoutMs: 10_000, mvpScope: true },
