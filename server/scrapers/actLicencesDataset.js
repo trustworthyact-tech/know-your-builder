@@ -86,7 +86,10 @@ async function doFetchRecords(resourceUrl, datasetKey, _axios, _minRows) {
 let inFlightLicence = null;
 async function fetchActLicenceRecords(_axios = axios, _minRows = MIN_SANE_ROW_COUNT_LICENCE) {
   if (inFlightLicence) return inFlightLicence;
-  inFlightLicence = doFetchRecords(LICENCE_RESOURCE_URL, LICENCE_DATASET_KEY, _axios, _minRows);
+  inFlightLicence = doFetchRecords(LICENCE_RESOURCE_URL, LICENCE_DATASET_KEY, _axios, _minRows).then((r) => {
+    licenceMemCache = r;
+    return r;
+  });
   try {
     return await inFlightLicence;
   } finally {
@@ -97,7 +100,10 @@ async function fetchActLicenceRecords(_axios = axios, _minRows = MIN_SANE_ROW_CO
 let inFlightDisciplinary = null;
 async function fetchActDisciplinaryRecords(_axios = axios, _minRows = MIN_SANE_ROW_COUNT_DISCIPLINARY) {
   if (inFlightDisciplinary) return inFlightDisciplinary;
-  inFlightDisciplinary = doFetchRecords(DISCIPLINARY_RESOURCE_URL, DISCIPLINARY_DATASET_KEY, _axios, _minRows);
+  inFlightDisciplinary = doFetchRecords(DISCIPLINARY_RESOURCE_URL, DISCIPLINARY_DATASET_KEY, _axios, _minRows).then((r) => {
+    disciplinaryMemCache = r;
+    return r;
+  });
   try {
     return await inFlightDisciplinary;
   } finally {
@@ -121,20 +127,53 @@ async function fetchActDisciplinaryRecords(_axios = axios, _minRows = MIN_SANE_R
 // cache is right there. Throws if genuinely nothing is cached (DB and disk
 // fallback both empty) — callers must treat that as "couldn't check," not a
 // false-clean, exactly like a live-fetch failure would have.
+//
+// In-process memCache (2026-10-06): same fix as asicDpnDataset.js's 2026-10-02 memCache,
+// for the same reason. actLicences/actDisciplinary both timed out at their manifest budget
+// in the same production request; live-measured from the Railway container, this
+// function's unfiltered read of all ~32k licence rows from Postgres (sfo -> Sydney) costs
+// 0.6-2.8s, and actLicences pays it twice per search (resolveActAssociatedNames for
+// director discovery, then searchACTLicences itself). The refresh job
+// (actLicencesDatasetRefresh.js) already holds a warm copy in this same long-lived
+// process — reuse it, so a live search only touches Postgres in the window after boot
+// before the first refresh completes. Written only by the fetch functions above, never by
+// these reads, so a test injecting a fake _queryDataset can't leave state behind for a
+// later test (see _resetMemCacheForTests below).
 const CACHE_SLA_MS = 24 * 60 * 60 * 1000; // matches actLicencesDatasetRefresh.js's interval
+let licenceMemCache = null;
+let disciplinaryMemCache = null;
+
+function fromMemCache(mem) {
+  return {
+    records: mem.records,
+    stale: mem.stale || Date.now() - new Date(mem.cachedAt).getTime() > CACHE_SLA_MS,
+    cachedAt: mem.cachedAt,
+  };
+}
+
 async function readCachedLicenceRecords(_queryDataset = queryDataset) {
+  if (licenceMemCache) return fromMemCache(licenceMemCache);
   const cached = await _queryDataset(LICENCE_DATASET_KEY, { slaMs: CACHE_SLA_MS });
   if (!cached.fetchedAt) throw new Error(`ACT licences: no cached data available for "${LICENCE_DATASET_KEY}"`);
   return { records: cached.rows, stale: Boolean(cached.stale), cachedAt: cached.fetchedAt };
 }
 
 async function readCachedDisciplinaryRecords(_queryDataset = queryDataset) {
+  if (disciplinaryMemCache) return fromMemCache(disciplinaryMemCache);
   const cached = await _queryDataset(DISCIPLINARY_DATASET_KEY, { slaMs: CACHE_SLA_MS });
   if (!cached.fetchedAt) throw new Error(`ACT disciplinary: no cached data available for "${DISCIPLINARY_DATASET_KEY}"`);
   return { records: cached.rows, stale: Boolean(cached.stale), cachedAt: cached.fetchedAt };
 }
 
+// Test-only: clears both in-process caches so a test can force the read functions back
+// onto their _queryDataset fallback path.
+function _resetMemCacheForTests() {
+  licenceMemCache = null;
+  disciplinaryMemCache = null;
+}
+
 module.exports = {
+  _resetMemCacheForTests,
   fetchActLicenceRecords,
   fetchActDisciplinaryRecords,
   readCachedLicenceRecords,

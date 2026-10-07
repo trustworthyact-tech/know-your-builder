@@ -4,8 +4,11 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const {
+  _resetMemCacheForTests,
   fetchActLicenceRecords,
   fetchActDisciplinaryRecords,
+  readCachedLicenceRecords,
+  readCachedDisciplinaryRecords,
   LICENCE_DATASET_KEY,
   DISCIPLINARY_DATASET_KEY,
 } = require('./actLicencesDataset');
@@ -133,4 +136,77 @@ test('fetchActDisciplinaryRecords — uses its own floor, independent of the lic
   } finally {
     clearCache(DISCIPLINARY_DATASET_KEY);
   }
+});
+
+// -------------------------------------------------------------------
+// readCachedLicenceRecords / readCachedDisciplinaryRecords — in-process memCache, the fix
+// for the 2026-10-06 production timeout (actLicences and actDisciplinary both exceeded
+// their budget on the same request; each search re-read all ~32k licence rows from
+// Postgres across a cross-region hop, twice for actLicences). Mirrors
+// asicDpnDataset.test.js's 2026-10-02 memCache tests.
+// -------------------------------------------------------------------
+
+const explodingQueryDataset = () => {
+  const fn = async () => { fn.calls++; throw new Error('should not be called'); };
+  fn.calls = 0;
+  return fn;
+};
+
+test('readCachedLicenceRecords — serves from memCache after a fetch, with no _queryDataset calls', async () => {
+  clearCache(LICENCE_DATASET_KEY);
+  _resetMemCacheForTests();
+  try {
+    await fetchActLicenceRecords(makePaginatedAxios([[{ surname: 'A' }, { surname: 'B' }]]), 0); // warms memCache, as the refresh job does
+    const queryDataset = explodingQueryDataset();
+    const result = await readCachedLicenceRecords(queryDataset);
+    assert.equal(queryDataset.calls, 0, 'memCache should short-circuit the Postgres read entirely');
+    assert.equal(result.records.length, 2);
+    assert.equal(result.stale, false);
+  } finally {
+    _resetMemCacheForTests();
+    clearCache(LICENCE_DATASET_KEY);
+  }
+});
+
+test('readCachedDisciplinaryRecords — has its own memCache, independent of the licence one', async () => {
+  clearCache(DISCIPLINARY_DATASET_KEY);
+  _resetMemCacheForTests();
+  try {
+    await fetchActDisciplinaryRecords(makePaginatedAxios([[{ licensee_name: 'X' }]]), 0);
+    const queryDataset = explodingQueryDataset();
+    const result = await readCachedDisciplinaryRecords(queryDataset);
+    assert.equal(queryDataset.calls, 0);
+    assert.equal(result.records[0].licensee_name, 'X');
+    // The licence cache was never warmed, so it must still go to _queryDataset.
+    const cachedAt = new Date('2026-09-01');
+    const licence = await readCachedLicenceRecords(async () => ({ rows: [{ surname: 'L' }], fetchedAt: cachedAt, stale: false }));
+    assert.equal(licence.records[0].surname, 'L');
+  } finally {
+    _resetMemCacheForTests();
+    clearCache(DISCIPLINARY_DATASET_KEY);
+  }
+});
+
+test('readCachedLicenceRecords — a stale-fallback fetch keeps the memCache copy marked stale', async () => {
+  clearCache(LICENCE_DATASET_KEY);
+  _resetMemCacheForTests();
+  try {
+    await replaceDatasetRecords(LICENCE_DATASET_KEY, [{ payload: { surname: 'OLD' } }]);
+    const failingAxios = { get: async () => { throw new Error('Socrata down'); } };
+    await fetchActLicenceRecords(failingAxios); // falls back to the ingested copy
+    const result = await readCachedLicenceRecords(explodingQueryDataset());
+    assert.equal(result.stale, true, 'a fallback copy must never be presented as fresh');
+    assert.equal(result.records[0].surname, 'OLD');
+  } finally {
+    _resetMemCacheForTests();
+    clearCache(LICENCE_DATASET_KEY);
+  }
+});
+
+test('readCachedLicenceRecords — no memCache and no cached data throws rather than returning a false clean', async () => {
+  _resetMemCacheForTests();
+  await assert.rejects(
+    () => readCachedLicenceRecords(async () => ({ rows: [], fetchedAt: null })),
+    /no cached data available/
+  );
 });

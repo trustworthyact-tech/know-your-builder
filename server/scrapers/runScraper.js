@@ -58,7 +58,9 @@ async function runScraper(manifestEntry, fn, { send, health = defaultHealth, log
     health.recordFailure(key, breaker);
     const message = err && err.message ? err.message : String(err);
     logHealthEvent(key, 'failure', message).catch(() => {});
-    console.error(`[${key}]`, message);
+    // Log the full stack, not just the message — a bare "Execution context was destroyed"
+    // doesn't say which Puppeteer call in the scraper threw (asicInsolvency/atoDebt, 2026-10-06).
+    console.error(`[${key}]`, (err && err.stack) || message);
     send({ key, label, status: 'error', error: 'Search failed', results: [], completeness: 'unavailable' });
   }
 }
