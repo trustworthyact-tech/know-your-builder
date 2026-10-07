@@ -32,7 +32,7 @@ CREATE INDEX IF NOT EXISTS idx_register_record_norm_name    ON register_record(d
 CREATE TABLE IF NOT EXISTS health_check_event (
   id            BIGSERIAL PRIMARY KEY,
   scraper_key   TEXT NOT NULL,
-  outcome       TEXT NOT NULL,          -- 'success' | 'failure' | 'circuit_open'
+  outcome       TEXT NOT NULL,          -- 'success' | 'partial' | 'failure' | 'circuit_open'
   error         TEXT,
   occurred_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );

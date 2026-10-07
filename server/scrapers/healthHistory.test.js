@@ -60,10 +60,21 @@ test('getRollup — computes successRate from attempts/successes and excludes ci
 
   const result = await getRollup({ windowDays: 7 }, pool);
 
-  assert.deepEqual(result.asic, { attempts: 4, successes: 3, successRate: 0.75 });
-  assert.deepEqual(result.fwo, { attempts: 2, successes: 0, successRate: 0 });
+  // Rows without a partials column (older fake shape) default to 0, not NaN.
+  assert.deepEqual(result.asic, { attempts: 4, successes: 3, partials: 0, successRate: 0.75 });
+  assert.deepEqual(result.fwo, { attempts: 2, successes: 0, partials: 0, successRate: 0 });
   assert.match(pool.calls[0].sql, /GROUP BY scraper_key/);
-  assert.match(pool.calls[0].sql, /outcome IN \('success', 'failure'\)/);
+  assert.match(pool.calls[0].sql, /outcome IN \('success', 'partial', 'failure'\)/);
+});
+
+test('getRollup — partial outcomes count as successes and are reported separately (2026-10-06)', async () => {
+  const pool = makeFakePool({
+    queryImpl: async () => ({ rows: [{ scraper_key: 'courts_act', successes: '5', partials: '3', attempts: '6' }] }),
+  });
+  const result = await getRollup({ windowDays: 7 }, pool);
+  assert.deepEqual(result.courts_act, { attempts: 6, successes: 5, partials: 3, successRate: 5 / 6 });
+  assert.match(pool.calls[0].sql, /outcome IN \('success', 'partial'\)\) AS successes/);
+  assert.match(pool.calls[0].sql, /outcome = 'partial'\) AS partials/);
 });
 
 test('getRollup — a rejecting pool.query (e.g. table not yet created) resolves to null, does not throw', async () => {
@@ -106,6 +117,13 @@ test('mergeHistory — a key present in the rollup gets its attempts/successRate
   assert.equal(merged.scrapers[0].historyAvailable, true);
   assert.equal(merged.scrapers[0].attempts7d, 10);
   assert.equal(merged.scrapers[0].successRate7d, 0.9);
+});
+
+test('mergeHistory — partials are merged through as partials7d (null when no history)', () => {
+  const report = { generatedAt: 'x', scrapers: [{ key: 'courts_act', status: 'healthy' }, { key: 'fresh', status: 'no-data' }] };
+  const merged = mergeHistory(report, { courts_act: { attempts: 6, successes: 5, partials: 3, successRate: 5 / 6 } });
+  assert.equal(merged.scrapers[0].partials7d, 3);
+  assert.equal(merged.scrapers[1].partials7d, null);
 });
 
 test('mergeHistory — a key absent from a non-null rollup (no events yet) reports null attempts, not undefined/crash', () => {

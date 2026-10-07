@@ -2377,6 +2377,43 @@ the next unguarded call. **Still open**: the same company sometimes returns 2 in
 notices and sometimes 10 (both before and after this fix) — unclear which is correct or what
 decides it; not investigated.
 
+### courts_act — proxy latency, a silent single-source false clean, and budget-fitting (2026-10-06)
+
+After PR #18 deployed, `courts_act` timed out at its 60s budget in a real search. Not a code
+regression: ScrapeOps (the proxy every ACT courts/ACAT request goes through — Railway is still
+Cloudflare-403'd on direct requests) returns every request with a 200 but takes 2-47s,
+measured both from the Railway container and locally, at every concurrency level 1-6 (no
+429s/rejections — the long tail isn't queueing). Auditing the code against the reliability
+guardrails found two real gaps:
+
+1. **Silent false clean**: `fetchActAndAcatTermResults` swallowed a single-source failure — if
+   ACAT failed and ACT Courts answered (or vice versa), the term counted as checked and the
+   report said "No cases found in ACT courts and tribunals", `completeness: 'complete'`.
+2. **Inner budgets didn't fit the manifest budget**: 45s per request x 2 sources sequential x
+   2 attempts = ~180s per term vs a 60s `timeoutMs` (after up to 20s waiting on
+   `resolveDirectors()`), so runScraper's outer timeout always won — discarding a source that
+   had already answered and leaving proxy requests running orphaned.
+
+**Fixed**: the two sources now run in parallel (`Promise.allSettled`); a single-source failure
+returns `failedSources` and `runJurisdictionSearch` reports `partial` with the source named
+("ACAT could not be checked ..."). `searchOrchestrator.js`'s `courts_act` closure derives a
+deadline from the manifest `timeoutMs` (minus a 3s margin, taken before awaiting directors);
+`runJurisdictionSearch` accepts an optional `deadline`, gives each request all the time left
+before it, and skips a retry that couldn't finish in time — so the search always returns an
+honest result inside its budget. Other jurisdictions are unchanged (no deadline passed; plain
+arrays from their fetchers still work). A fixed 20s per-request cap was tried first and
+rejected after a live run: it cut off ACT Courts on every term. With the remaining-time
+approach, 5/5 live ScrapeOps searches came back complete in 6-35s, including the worst case
+(37s left after a 20s director lookup).
+
+Also: `runScraper` now logs a `partial` health outcome (still a breaker success), counted in
+the dashboard's success rate but shown separately ("92% (13) · 3 partial") — otherwise a
+source permanently broken behind a partial result would read as healthy. New
+`scrapers/courtRecordsAct.test.js` (11 network-free tests via injected `_fetchCourts`/
+`_fetchAcat`; reintroducing the old swallow or sequential fetch fails 3 of them) plus
+partial-outcome tests in `runScraper.test.js`/`healthHistory.test.js`; 165/165 `npm test`,
+launch-scope, fault-injection, admin-health and ws2 live-hardening all pass.
+
 ---
 
 ## Performance baseline (2026-05-21)

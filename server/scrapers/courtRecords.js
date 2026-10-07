@@ -164,10 +164,10 @@ function titleMatchesTerm(title, term) {
 // 30s window.
 function makeTermCache(fetchFn) {
   const pending = new Map();
-  return function fetchTermResults(term) {
+  return function fetchTermResults(term, opts) {
     if (pending.has(term)) return pending.get(term);
 
-    const promise = fetchFn(term).then(
+    const promise = fetchFn(term, opts).then(
       (results) => {
         // Success: keep cached for 30 s so concurrent calls for the same term share it.
         setTimeout(() => pending.delete(term), 30_000);
@@ -279,10 +279,19 @@ function viaProxy(url) {
   return key ? `https://proxy.scrapeops.io/v1/?api_key=${key}&url=${encodeURIComponent(url)}` : url;
 }
 
-const fetchActTermResults = makeTermCache(async (term) => {
+// Per-request timeout for both proxied ACT fetchers when no deadline is given (unchanged from
+// before 2026-10-06). When courts_act passes a deadline, each request instead gets all the
+// time left before it — see fetchActAndAcatTermResults. Background: with a fixed 45s each,
+// run sequentially, plus one retry, the worst case was ~180s per term against courts_act's
+// 60s manifest budget, so these inner timeouts could never fire — runScraper's outer timeout
+// always won, discarding everything (including a source that had already answered) and
+// leaving the in-flight proxy requests running orphaned.
+const ACT_PROXY_REQUEST_TIMEOUT_MS = 45_000;
+
+const fetchActTermResults = makeTermCache(async (term, { timeoutMs = ACT_PROXY_REQUEST_TIMEOUT_MS } = {}) => {
   const searchUrl = `https://www.courts.act.gov.au/judgment?query=${encodeURIComponent(term)}`;
   const { data } = await axios.get(viaProxy(searchUrl), {
-    timeout: 45_000,
+    timeout: timeoutMs,
     headers: { 'User-Agent': 'Mozilla/5.0 (compatible; know-your-builder/1.0)' },
   });
   const $ = cheerio.load(data);
@@ -332,10 +341,10 @@ const fetchActTermResults = makeTermCache(async (term) => {
 // ACT Government web content is published under Creative Commons Attribution 4.0 by default
 // (act.gov.au/copyright) — no scraping/automated-access restriction, unlike JADE/AustLII/
 // Queensland Judgments.
-const fetchAcatTermResults = makeTermCache(async (term) => {
+const fetchAcatTermResults = makeTermCache(async (term, { timeoutMs = ACT_PROXY_REQUEST_TIMEOUT_MS } = {}) => {
   const searchUrl = `https://www.acat.act.gov.au/decisions2/search-decisions?meta_partyName=${encodeURIComponent(term)}`;
   const { data } = await axios.get(viaProxy(searchUrl), {
-    timeout: 45_000,
+    timeout: timeoutMs,
     headers: { 'User-Agent': 'Mozilla/5.0 (compatible; know-your-builder/1.0)' },
   });
   const $ = cheerio.load(data);
@@ -438,7 +447,22 @@ const fetchNtTermResults = makeTermCache(async (term) => {
 // would just add redundant wall-clock latency without reducing total Puppeteer load.
 // NSW/ACT (plain axios, no shared resource to queue for) stay sequential — there's no
 // gate downstream for a sequential loop to be redundant with.
-async function runJurisdictionSearch(companyName, directors, { fetchFn, jurisdiction, source, searchUrlFor, sourcesKey, concurrent = false }) {
+// A retry is only attempted if at least this much of the deadline remains after the backoff
+// — a retry with less time than this can't realistically complete through the proxy.
+const MIN_ATTEMPT_MS = 5_000;
+const RETRY_BACKOFF_MS = 2_000;
+
+// `deadline` (absolute epoch ms, optional): when set, every fetch is capped to the time left
+// before it and a retry is skipped if it couldn't finish in time, so this function returns
+// an honest partial/unavailable result *before* runScraper's outer manifest timeout discards
+// everything. Without it (every jurisdiction except ACT today), behaviour is unchanged.
+//
+// `fetchFn(term, { deadline, timeoutMs })` may return either a plain results array (every
+// existing fetcher) or `{ results, failedSources }` — the latter for a term that queries more
+// than one source (ACT: courts + ACAT) where one source can fail while the other succeeds.
+// A non-empty failedSources marks the search partial and names the source in the summary,
+// rather than silently presenting one source's results as a complete check.
+async function runJurisdictionSearch(companyName, directors, { fetchFn, jurisdiction, source, searchUrlFor, sourcesKey, concurrent = false, deadline }) {
   const strippedCompanyName = stripCompanySuffix(companyName);
   const terms = [strippedCompanyName, ...(directors || []).filter(Boolean).map(stripCompanySuffix)].filter(Boolean);
 
@@ -453,22 +477,29 @@ async function runJurisdictionSearch(companyName, directors, { fetchFn, jurisdic
   // history — this is exactly that failure mode.
   const fetchOne = async (term) => {
     for (let attempt = 0; attempt < 2; attempt++) {
+      const remaining = deadline ? deadline - Date.now() : Infinity;
+      if (remaining < MIN_ATTEMPT_MS) {
+        console.error(`[courtRecords:${jurisdiction}] out of time for term "${term}" (attempt ${attempt + 1}, ${Math.max(0, remaining)}ms left)`);
+        return { results: [], failed: true, failedSources: [], error: new Error('deadline reached') };
+      }
       try {
-        const results = await fetchFn(term);
-        return { results: results.filter((r) => titleMatchesTerm(r.title, term)), failed: false };
+        const out = await fetchFn(term, deadline ? { deadline } : undefined);
+        const { results, failedSources = [] } = Array.isArray(out) ? { results: out } : out;
+        return { results: results.filter((r) => titleMatchesTerm(r.title, term)), failed: false, failedSources };
       } catch (err) {
-        if (attempt === 1) {
+        const timeLeftAfterBackoff = deadline ? deadline - Date.now() - RETRY_BACKOFF_MS : Infinity;
+        if (attempt === 1 || timeLeftAfterBackoff < MIN_ATTEMPT_MS) {
           // The allFailed/anyFailed paths below return a graceful, non-throwing result —
           // without logging here, the actual cause (network error, HTTP status, selector
           // mismatch) is invisible; only the generic "Search failed" summary reaches the user.
           console.error(`[courtRecords:${jurisdiction}] fetch failed for term "${term}":`, err.message || err);
-          return { results: [], failed: true, error: err };
+          return { results: [], failed: true, failedSources: [], error: err };
         }
         // Retrying instantly into the same rate-limit/WAF window that just rejected
         // this request rarely helps (confirmed for ACT — see fetchActAndAcatTermResults)
         // and can compound it. A short backoff costs little against the search's overall
         // runtime and gives a transient block a moment to clear.
-        await new Promise((resolve) => setTimeout(resolve, 2_000));
+        await new Promise((resolve) => setTimeout(resolve, RETRY_BACKOFF_MS));
       }
     }
   };
@@ -481,7 +512,8 @@ async function runJurisdictionSearch(companyName, directors, { fetchFn, jurisdic
     for (const term of terms) gathered.push(await fetchOne(term));
   }
 
-  const anyFailed = gathered.some((g) => g.failed);
+  const failedSources = [...new Set(gathered.flatMap((g) => g.failedSources || []))];
+  const anyFailed = gathered.some((g) => g.failed) || failedSources.length > 0;
   const allFailed = terms.length > 0 && gathered.every((g) => g.failed);
 
   // De-duplicate by URL, tagging each item with its jurisdiction so ReportSection's
@@ -517,9 +549,10 @@ async function runJurisdictionSearch(companyName, directors, { fetchFn, jurisdic
     };
   }
 
-  const incompleteNote = anyFailed
-    ? ' (search incomplete — one or more name variants could not be checked after retrying)'
-    : '';
+  const incompleteNotes = [];
+  if (gathered.some((g) => g.failed)) incompleteNotes.push('one or more name variants could not be checked after retrying');
+  if (failedSources.length > 0) incompleteNotes.push(`${failedSources.join(' and ')} could not be checked for one or more name variants`);
+  const incompleteNote = incompleteNotes.length > 0 ? ` (search incomplete — ${incompleteNotes.join('; ')})` : '';
 
   return {
     source,
@@ -560,64 +593,75 @@ function searchVicSupremeCourt(companyName, directors = []) {
 }
 
 // Combines the two independent ACT sources (courts.act.gov.au for Supreme/Magistrates Court,
-// acat.act.gov.au for ACAT). Uses allSettled rather than Promise.all so that one source
-// having a bad moment doesn't discard perfectly good results from the other — runJurisdictionSearch's
-// retry/failure tracking operates per-term, and a hard throw here would mark the whole term
-// failed (and, after both retries, drop even the successful source's results) over a transient
-// hiccup in just one of the two. Only throws if both sources fail, matching this function's
-// contract of "reject only when nothing could be fetched for this term".
-async function fetchActAndAcatTermResults(term) {
-  // Sequential, not Promise.all/allSettled in parallel: courts.act.gov.au and
-  // acat.act.gov.au are the *same* backend (identical `x-slug: actssict-web` header,
-  // same Cloudflare zone, same session-cookie shape — confirmed live 2026-09-07).
-  // Originally sequenced this on the theory that firing both at once was tripping a
-  // burst rate-limit — live SSH testing into the production container same-day showed
-  // the real cause was a standing Cloudflare managed challenge on that zone against
-  // Railway's IP, unrelated to request pacing (now routed through a proxy in both
-  // fetchers above — see viaProxy's comment — which clears it). Left sequential anyway
-  // now that a proxy is in the loop — running two proxied requests in parallel
-  // needlessly risks the proxy pool's own concurrency limits for no real speed benefit.
-  let courtsResult;
-  try {
-    courtsResult = { status: 'fulfilled', value: await fetchActTermResults(term) };
-  } catch (err) {
-    courtsResult = { status: 'rejected', reason: err };
+// acat.act.gov.au for ACAT). One source having a bad moment must not discard good results
+// from the other, so this only throws when *both* fail (runJurisdictionSearch then retries
+// the term if the deadline allows). When exactly one fails, it returns that source's name
+// in `failedSources` so the search is reported as partial and names what wasn't checked.
+//
+// History: until 2026-10-06 a single-source failure was swallowed here — the term returned
+// the other source's results as if complete, so a failed ACAT request read as "No cases found
+// in ACT courts and tribunals", completeness 'complete' (a silent false clean). The two
+// requests also ran sequentially: originally (2026-09-07) on a burst-rate-limit theory that
+// was disproven the same day, then kept as a precaution about proxy concurrency limits.
+// Measured 2026-10-06 from the Railway container: ScrapeOps returned every request at 1-6
+// concurrent with a 200, no rejections, and its slow outliers appeared at every concurrency
+// level — so the two now run in parallel, making a term's worst case the slower of the two
+// rather than their sum. The fetchers are injectable (same convention as captcha.js's _http)
+// so this logic is unit-testable without the network.
+async function fetchActAndAcatTermResults(term, { deadline } = {}, _fetchCourts = fetchActTermResults, _fetchAcat = fetchAcatTermResults) {
+  // With a deadline, each request may use all the time left before it rather than a short
+  // fixed cap. Measured 2026-10-06 through ScrapeOps (both from the Railway container and
+  // locally): every request eventually returned a 200 — no errors, no rejections at 1-6
+  // concurrent — but took anywhere from 2s to 47s, for both sources and at every concurrency
+  // level. A 20s cap was tried first and cut off ACT Courts on every term in a live run
+  // (honest "partial", but losing results that would have arrived), so one long attempt beats
+  // two short ones here. runJurisdictionSearch still retries a fast failure if time remains.
+  const timeoutMs = deadline ? Math.max(1, deadline - Date.now()) : ACT_PROXY_REQUEST_TIMEOUT_MS;
+  const [courts, acat] = await Promise.allSettled([
+    _fetchCourts(term, { timeoutMs }),
+    _fetchAcat(term, { timeoutMs }),
+  ]);
+
+  if (courts.status === 'rejected' && acat.status === 'rejected') {
+    throw new Error(`ACT Courts: ${courts.reason?.message || courts.reason}; ACAT: ${acat.reason?.message || acat.reason}`);
   }
 
-  let acatResult;
-  try {
-    acatResult = { status: 'fulfilled', value: await fetchAcatTermResults(term) };
-  } catch (err) {
-    acatResult = { status: 'rejected', reason: err };
+  const failedSources = [];
+  if (courts.status === 'rejected') {
+    console.error(`[courtRecords:ACT] ACT Courts fetch failed for term "${term}":`, courts.reason?.message || courts.reason);
+    failedSources.push('ACT Courts');
+  }
+  if (acat.status === 'rejected') {
+    console.error(`[courtRecords:ACT] ACAT fetch failed for term "${term}":`, acat.reason?.message || acat.reason);
+    failedSources.push('ACAT');
   }
 
-  if (courtsResult.status === 'rejected' && acatResult.status === 'rejected') {
-    throw courtsResult.reason;
-  }
-
-  return [
-    ...(courtsResult.status === 'fulfilled' ? courtsResult.value : []),
-    ...(acatResult.status === 'fulfilled' ? acatResult.value : []),
-  ];
+  return {
+    results: [
+      ...(courts.status === 'fulfilled' ? courts.value : []),
+      ...(acat.status === 'fulfilled' ? acat.value : []),
+    ],
+    failedSources,
+  };
 }
 
-function searchActJudgments(companyName, directors = []) {
+// `deadline` (absolute epoch ms) is passed in by searchOrchestrator.js's courts_act closure,
+// derived from this key's manifest timeoutMs — see runJurisdictionSearch. `_fetchCourts`/
+// `_fetchAcat` are test-only injection points.
+function searchActJudgments(companyName, directors = [], { deadline, _fetchCourts, _fetchAcat } = {}) {
   return runJurisdictionSearch(companyName, directors, {
-    fetchFn: fetchActAndAcatTermResults,
+    fetchFn: (term, opts) => fetchActAndAcatTermResults(term, opts, _fetchCourts, _fetchAcat),
     jurisdiction: 'ACT',
     source: 'ACT Courts & ACAT',
     sourcesKey: 'act',
     searchUrlFor: (term) => `https://www.courts.act.gov.au/judgment?query=${encodeURIComponent(term)}`,
-    // Found 2026-09-15: this ran the per-term loop sequentially (the default), which is
-    // a different question from fetchActAndAcatTermResults' own court-then-ACAT sequencing
-    // above (that's about not double-hitting the proxy for the *same* term at once).
-    // With WS3 director discovery now reliably surfacing 1-2 extra names per search, a
-    // real request here is commonly 2-3 terms — live-measured: 3 terms sequential took
-    // 47.3s against this key's 45s manifest budget, i.e. it was failing by construction,
-    // not from any site-side problem. concurrent:true (same as Federal/NT below) cut that
-    // to ~16-20s, since the proxy is a remote service, not a shared local resource these
-    // terms would contend over.
+    // Found 2026-09-15: this ran the per-term loop sequentially (the default). With WS3
+    // director discovery now reliably surfacing 1-2 extra names per search, a real request
+    // here is commonly 2-3 terms — live-measured: 3 terms sequential took 47.3s against this
+    // key's then-45s manifest budget, i.e. it was failing by construction, not from any
+    // site-side problem. concurrent:true (same as Federal/NT below) cut that to ~16-20s.
     concurrent: true,
+    deadline,
   });
 }
 
@@ -665,9 +709,10 @@ function buildManualFallback(jurisdiction) {
   };
 }
 
-async function searchCourtRecords(companyName, directors = [], jurisdiction = 'federal') {
+// `options` is currently only used by ACT ({ deadline } — see searchActJudgments).
+async function searchCourtRecords(companyName, directors = [], jurisdiction = 'federal', options = {}) {
   if (jurisdiction === 'nsw') return searchNswCaselaw(companyName, directors);
-  if (jurisdiction === 'act') return searchActJudgments(companyName, directors);
+  if (jurisdiction === 'act') return searchActJudgments(companyName, directors, options);
   if (jurisdiction === 'federal') return searchFederalCourtJudgments(companyName, directors);
   if (jurisdiction === 'nt') return searchNtSupremeCourt(companyName, directors);
   if (jurisdiction === 'vic') return searchVicSupremeCourt(companyName, directors);

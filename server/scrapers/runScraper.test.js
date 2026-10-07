@@ -163,3 +163,16 @@ test('runScraper — WS0.8: a rejecting logHealthEvent never surfaces as an unha
   );
   assert.equal(sent[1].status, 'done');
 });
+
+test('runScraper — a partial result logs "partial", still counts as a breaker success, and is sent as done', async () => {
+  const { sent, send } = collector();
+  const { events, logHealthEvent } = loggerSpy();
+  const fakeHealth = { isOpen: () => false, recordSuccess: (k) => fakeHealth.successes.push(k), recordFailure: () => assert.fail('must not record a failure'), successes: [] };
+
+  await runScraper(entry('t_log_partial'), async () => ({ results: [], summary: 'ok (search incomplete)', completeness: 'partial' }), { send, logHealthEvent, health: fakeHealth });
+
+  assert.deepEqual(events, [{ key: 't_log_partial', outcome: 'partial', error: null }]);
+  assert.deepEqual(fakeHealth.successes, ['t_log_partial']);
+  assert.equal(sent.at(-1).status, 'done');
+  assert.equal(sent.at(-1).completeness, 'partial');
+});

@@ -154,7 +154,10 @@
   function fmtRate(row) {
     if (!row.historyAvailable) return 'no history yet';
     if (row.attempts7d == null || row.attempts7d === 0) return 'no attempts';
-    return Math.round(row.successRate7d * 100) + '% (' + row.attempts7d + ')';
+    var rate = Math.round(row.successRate7d * 100) + '% (' + row.attempts7d + ')';
+    // Partial = the check ran but couldn't cover every source/name variant (counted as a
+    // success above). Shown separately so a persistently partial key doesn't look healthy.
+    return row.partials7d ? rate + ' · ' + row.partials7d + ' partial' : rate;
   }
 
   function render(report) {

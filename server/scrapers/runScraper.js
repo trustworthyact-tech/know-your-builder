@@ -50,10 +50,14 @@ async function runScraper(manifestEntry, fn, { send, health = defaultHealth, log
 
   send({ key, label, status: 'searching' });
   try {
-    const result = await withTimeout(fn(), timeoutMs);
+    const result = assertValidResult(key, await withTimeout(fn(), timeoutMs));
+    // A partial result still counts as a success for the circuit breaker (the check ran and
+    // returned something honest), but is logged as its own outcome (2026-10-06) so the
+    // dashboard can show it — otherwise a source that's permanently broken behind a partial
+    // result (e.g. ACAT failing while ACT Courts works) would read as a fully healthy key.
     health.recordSuccess(key);
-    logHealthEvent(key, 'success', null).catch(() => {});
-    send({ key, label, status: 'done', ...assertValidResult(key, result) });
+    logHealthEvent(key, result.completeness === 'partial' ? 'partial' : 'success', null).catch(() => {});
+    send({ key, label, status: 'done', ...result });
   } catch (err) {
     health.recordFailure(key, breaker);
     const message = err && err.message ? err.message : String(err);
