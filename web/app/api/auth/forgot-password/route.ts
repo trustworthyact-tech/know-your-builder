@@ -65,12 +65,15 @@ export async function POST(req: NextRequest) {
     const appUrl = process.env.NEXTAUTH_URL ?? 'http://localhost:3000';
     const resetUrl = `${appUrl}/auth/reset-password?token=${token}&email=${encodeURIComponent(email)}`;
     const html = await render(PasswordReset({ name: user.name || email, resetUrl }));
-    await getResend().emails.send({
+    // Resend returns API failures (e.g. unverified sender domain) as `error`
+    // rather than throwing — surface them so the catch below logs them.
+    const { error: sendError } = await getResend().emails.send({
       from: process.env.FROM_EMAIL ?? 'noreply@knowyourbuilder.com.au',
       to: email,
       subject: 'Reset your Know Your Builder password',
       html,
     });
+    if (sendError) throw new Error(`Resend rejected send: ${sendError.name}: ${sendError.message}`);
   } catch (err) {
     console.error('[forgot-password] Email send error:', err);
   }

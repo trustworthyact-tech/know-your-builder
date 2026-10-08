@@ -162,12 +162,15 @@ export async function POST(req: NextRequest) {
         })
       );
 
-      await getResend().emails.send({
+      // Resend returns API failures (e.g. unverified sender domain) as `error`
+      // rather than throwing — surface them so the catch below logs them.
+      const { error: sendError } = await getResend().emails.send({
         from: process.env.FROM_EMAIL ?? 'noreply@knowyourbuilder.com.au',
         to: email,
         subject: `Your Know Your Builder report — ${entityName}`,
         html,
       });
+      if (sendError) throw new Error(`Resend rejected send: ${sendError.name}: ${sendError.message}`);
     } catch (err) {
       console.error('[reports/save] Email send error:', err);
     }
