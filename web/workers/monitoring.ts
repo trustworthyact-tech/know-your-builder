@@ -254,12 +254,15 @@ async function processJob(job: Job<MonitoringJobData>): Promise<void> {
           })
         );
 
-        await resend.emails.send({
+        // Resend returns API failures (e.g. unverified sender domain) as `error`
+        // rather than throwing — surface them so the catch below logs them.
+        const { error: sendError } = await resend.emails.send({
           from: process.env.FROM_EMAIL ?? 'noreply@knowyourbuilder.com.au',
           to: user.email,
           subject: `Monitoring alert — ${entityName}`,
           html,
         });
+        if (sendError) throw new Error(`Resend rejected send: ${sendError.name}: ${sendError.message}`);
 
         console.log(`[monitoring] Alert email sent to ${user.email} for ${entityName}`);
       }

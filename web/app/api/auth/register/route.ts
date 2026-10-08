@@ -62,12 +62,15 @@ export async function POST(req: NextRequest) {
     const appUrl = process.env.NEXTAUTH_URL ?? 'http://localhost:3000';
     const verifyUrl = `${appUrl}/auth/verify-email?token=${token}&email=${encodeURIComponent(email)}`;
     const html = await render(VerifyEmail({ name: name || email, verifyUrl }));
-    await getResend().emails.send({
+    // Resend returns API failures (e.g. unverified sender domain) as `error`
+    // rather than throwing — surface them so the catch below logs them.
+    const { error: sendError } = await getResend().emails.send({
       from: process.env.FROM_EMAIL ?? 'noreply@knowyourbuilder.com.au',
       to: email,
       subject: 'Verify your Know Your Builder account',
       html,
     });
+    if (sendError) throw new Error(`Resend rejected send: ${sendError.name}: ${sendError.message}`);
   } catch (err) {
     console.error('[auth/register] Email send error:', err);
   }

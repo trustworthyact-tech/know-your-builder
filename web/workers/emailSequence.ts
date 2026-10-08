@@ -186,12 +186,15 @@ async function processJob(job: Job<EmailSequenceJobData>): Promise<void> {
         entityName, entityAbn, reportUrl, monitoringUrl, sequenceKey, step, persona, riskGroups,
         milestoneLabel, milestoneDateFormatted, amountFormatted,
       });
-      await resend.emails.send({
+      // Resend returns API failures (e.g. unverified sender domain) as `error`
+      // rather than throwing — surface them so the catch below logs them.
+      const { error: sendError } = await resend.emails.send({
         from: FROM_EMAIL,
         to: user.email,
         subject: stepDef.subject,
         html,
       });
+      if (sendError) throw new Error(`Resend rejected send: ${sendError.name}: ${sendError.message}`);
       console.log(`[emailSequence] Email sent to ${user.email}: "${stepDef.subject}"`);
     } catch (err) {
       console.error(`[emailSequence] Email send error for job ${job.id}:`, err);
