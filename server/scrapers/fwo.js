@@ -1,5 +1,6 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
+const { proxied, proxyUrl } = require('./proxyLimiter');
 
 const BASE = 'https://www.fairwork.gov.au';
 
@@ -21,10 +22,11 @@ const HEADERS = {
 // carries no custom Content-Type, only a User-Agent/Accept/Referer, which ScrapeOps'
 // default header handling already passes through fine. Falls back to a direct request
 // when SCRAPEOPS_API_KEY isn't set (e.g. local dev).
-function viaProxy(url) {
-  const key = process.env.SCRAPEOPS_API_KEY;
-  return key ? `https://proxy.scrapeops.io/v1/?api_key=${key}&url=${encodeURIComponent(url)}` : url;
-}
+//
+// Every proxied call also goes through proxyLimiter.js's shared semaphore
+// (LICENCE_MATCHING_PLAN.md Phase 1.3) — this file, nswFairTrading.js and courtRecords.js share one
+// ScrapeOps account capped at 5 concurrent requests.
+const viaProxy = (url) => proxyUrl(url);
 
 const ENFORCEMENT_KEYWORDS = [
   'penalty',
@@ -184,7 +186,10 @@ async function fetchFwoResults(query, entityName) {
   const url = `${BASE}/newsroom/news-and-media-search?keys=${encodeURIComponent(query)}`;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const { data } = await axios.get(viaProxy(url), { headers: HEADERS, timeout: 20000, maxRedirects: 5 });
+      const { data } = await proxied(
+        () => axios.get(viaProxy(url), { headers: HEADERS, timeout: 20000, maxRedirects: 5 }),
+        { label: 'fwo' }
+      );
       const $ = cheerio.load(data);
       return { results: parseNewsItems($, url, entityName), failed: false };
     } catch {

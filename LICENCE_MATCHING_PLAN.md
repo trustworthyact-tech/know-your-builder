@@ -1,6 +1,6 @@
 # Licence matching plan: identifier-first NSW/ACT licence and people discovery
 
-Status: **planned, not started** (drafted 2026-10-09). Work through the phases in order and
+Status: **Phase 1 done (2026-10-09, branch `fix/licence-matching-phase1`); Phases 2–3 not started** (drafted 2026-10-09). Work through the phases in order and
 tick items off here as they land, so a fresh session can pick up mid-way. The permanent rules
 this plan implements (and that every future state/territory licence register must follow) are
 in CLAUDE.md under "Scraper conventions" → "Licence-register entity matching".
@@ -74,24 +74,73 @@ in CLAUDE.md under "Scraper conventions" → "Licence-register entity matching".
 
 ## Phase 1: urgent fixes (one PR, independent of Phase 2)
 
-- [ ] **1.1 NSW role detection.** In `associatedNamesFromDetails`
+- [x] **1.1 NSW role detection.** In `associatedNamesFromDetails`
   (`server/scrapers/nswFairTrading.js`), classify each party by `party.role`
   (`Director` / `Nominated Supervisor`), not by `roleGroup.name`. Regression test using a
   details payload with a `"Directors"` group containing 2 parties (shape is in finding 2).
-- [ ] **1.2 Report failed NSW lookups.** `fetchAndBuildResultsForQuery` returns a `failed`
+- [x] **1.2 Report failed NSW lookups.** `fetchAndBuildResultsForQuery` returns a `failed`
   flag per query, and when any query failed, `searchNSWFairTrading` /
   `fetchNswCompanyLookup` set `completeness: 'partial'` with summary text naming the failure.
   This is the captcha-gated-check pattern in CLAUDE.md "Scraper conventions", applied to a
   plain HTTP check. A failed details fetch already leaves `ComplianceHistory` unset; keep
   that behaviour.
-- [ ] **1.3 Shared proxy limiter.** New `server/scrapers/proxyLimiter.js`: one process-wide
+  - **Every search failed → `status: 'error'`, `completeness: 'unavailable'`**; only some
+    failed → `partial`. This matches `courtRecords.js`'s allFailed/anyFailed split, which
+    `validateResult.js` and the report's `isAllErrored()` already rely on.
+  - **Also fixed (found while implementing, not in the original plan):** the orchestrator's
+    20s discovery-timeout fallback was a truthy empty object, so `searchNSWFairTrading`
+    reused it as a finished company query and reported "no licence records found" whenever
+    NSW was slow. Now the orchestrator keeps the raw lookup promise (`nswCompanyLookupPromise`):
+    discovery bounds it at 20s, and the `nswFairTrading` key awaits the *same* request inside
+    its 45s budget (no duplicate proxy credit). Only a lookup that genuinely failed is
+    re-queried, once.
+- [x] **1.3 Shared proxy limiter.** New `server/scrapers/proxyLimiter.js`: one process-wide
   semaphore (default 5, env `PROXY_MAX_CONCURRENCY`) plus one retry with backoff on HTTP 429.
   Route all three `viaProxy` callers (`nswFairTrading.js`, `courtRecords.js`, `fwo.js`)
   through it. Optionally also dedupe the three copies of `viaProxy` into it. Unit-test with
   a fake `_http`, using the injectable-dependency convention.
-- [ ] Verify: `npm test` + `server/tests/run-all.sh` (they cover different files; run both).
+- [x] Verify: `npm test` (169/169) + `server/tests/run-all.sh` (same 5 pre-existing failures
+  as `main`: act-licence, tas-cbos-licence, vicbpc, wa-be-licence, ws3-director-discovery).
+  Live: TURNKEY CREATIONS now yields Constable + Walmsley as Directors. **Still to do after
+  deploy:** ScrapeOps `used_api_credits` before/after one Turnkey search, and check logs for
+  429s and `[proxyLimiter] ... waited` lines.
 
 ## Phase 2: identifier-first matching (second PR)
+
+**Reliability-framework constraints (from the 2026-10-09 consistency review against
+CLAUDE.md, `manifest.js`, `runScraper.js` and `validateResult.js`).** These apply to every
+Phase 2/3 item below:
+
+- **Bound the identity lookup and fail open.** `abnPromise` has no timeout of its own (each
+  ABR call is 15s, and there are several), so "build identity from `abnPromise`" must be
+  `withTimeout(...)` with a fallback to the typed name — otherwise a slow ABR call eats the
+  20s discovery window and re-creates the "one slow upstream serialises 13 scrapers" problem
+  fixed on 2026-09-08. The discovery 20s now has to cover ABN + limiter queue + NSW (a).
+- **No new manifest keys.** All of Phases 2–3 changes how existing keys (`nswFairTrading`,
+  `actLicences`, `actDisciplinary`, `courts_act`) search, not which keys exist. A new key
+  would also need `searchOrchestrator.js` `invocations`, `INITIAL_SEARCHES`, a launch-scope
+  decision and `manifest.test.js`.
+- **The 10-name cap must also cover `fwo`.** FWO is proxy-backed and gets
+  `resolveExtraSearchTerms()` (all business names, uncapped, all concurrent) — the same
+  exposure as `courts_act`, which the cap decision says to cover ("any proxy-backed per-name
+  search"). NSW Caselaw (direct, free) and Federal (Puppeteer, no proxy) stay uncapped.
+- **NSW's "at most 3 concurrent" (2.3) is a per-scraper sub-limit on top of
+  `proxyLimiter.js`'s global 5**, not a change to the global limiter.
+- **Keep the completeness split:** all identifier/name queries failed → `status: 'error'` /
+  `unavailable`; some failed → `partial`; "no licence linked to this ABN found" is a
+  completed check and stays `complete` (the summary carries the caution, `riskGrouper` raises
+  nothing). Never resolve a failure into an empty `complete` result.
+- **`riskGrouper` stays completeness-agnostic** (WS0.5 decision); 3.3 only filters out
+  `MatchedBy: 'Name only — verify'` items. Saved reports keep their frozen `riskSummary`.
+- **ACT matching changes stay on the read side** (`actLicences.js` against the memCache /
+  `datasetStore` rows). Don't touch `actLicencesDataset.js` ingestion or its row-count floors.
+- **Unit tests go in `server/package.json`'s `test` list; live fixtures in `run-all.sh`**
+  (which the daily GitHub Actions health check also runs, without `SCRAPEOPS_API_KEY`, so
+  NSW goes direct from GitHub's runner IPs there).
+- **Health dashboard blind spot:** `runScraper` records breaker *success* for any resolved
+  result, including `status: 'error'` from all-failed NSW/courts searches. ScrapeOps credit
+  exhaustion would therefore show as failing reports but a "healthy" dashboard. Not changed
+  here; check ScrapeOps usage directly (see Decisions).
 
 - [ ] **2.1 Shared module `server/scrapers/licenceMatching.js`.** This is how the logic
   carries over to future registers: every licence scraper uses it rather than re-implementing
