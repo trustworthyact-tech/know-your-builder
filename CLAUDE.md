@@ -304,6 +304,42 @@ redundant download.
 
 ## Incomplete work
 
+### ScrapeOps proxy credits run out within days for companies with many business names — OPEN, decision pending (2026-10-09)
+
+**Measured in production, 2026-10-09**, right after licence-matching Phase 1 deployed: one
+`/api/search` for TURNKEY CREATIONS PTY LTD (ABN 67155832732, 11 ABR business names) used
+**55 ScrapeOps credits** (`used_api_credits` 758 → 813 of the free plan's 1,000/month,
+read via `railway ssh` from `https://proxy.scrapeops.io/v1/account`). That leaves ~187
+credits — about 3 more searches of that size — before NSW licences, ACT courts and FWO all
+fail together for the rest of the month. `LICENCE_MATCHING_PLAN.md`'s budget estimate (about
++6 credits for this company) was far too low.
+
+**Where the credits go**: `courts_act` (2 proxy requests per search term — courts + ACAT)
+and `fwo` (1 per term) both search under the company name, every person found, and **every
+ABR business/trading name, uncapped** (`resolveExtraSearchTerms()` in
+`searchOrchestrator.js`) — ~14 terms here, so ~28 + ~14 requests. NSW licences are a
+handful. This predates Phase 1; Phase 1's limiter only made it visible (0 HTTP 429s in that
+run). Failed requests aren't charged by ScrapeOps.
+
+**Same run also showed a Phase 1 regression, fixed on branch
+`fix/proxy-limiter-nsw-priority`**: those ~42 court/FWO requests filled the 5 shared proxy
+slots, NSW's requests waited up to 25s, and `nswFairTrading` timed out at 45s (reported
+honestly as `unavailable`, not "no licence"). NSW requests now take priority in
+`proxyLimiter.js`. **Not yet re-verified in production** — doing so costs another ~55
+credits.
+
+**Options (user decision pending)**:
+- **Lower business-name cap for `courts_act` and `fwo`** (e.g. 3, rather than the 10 decided
+  in `LICENCE_MATCHING_PLAN.md`), or stop searching business names in proxy-backed checks.
+  Free, but less coverage for multi-brand builders. The plan's cap of 10 alone only cuts
+  this search from ~14 terms to ~13.
+- **Upgrade ScrapeOps.** From the pricing page (checked 2026-10-09): $9 = 25k credits, $15 =
+  50k, $19 = 100k — **but all three allow only 1 concurrent request** (worse than the free
+  plan's 5; NSW/courts/FWO would time out on most searches). **$29 = 250k credits, 5
+  concurrent** is the first tier that's an improvement; $54 = 500k, 25 concurrent.
+- The health dashboard won't flag credit exhaustion (see `LICENCE_MATCHING_PLAN.md`'s Phase 2
+  constraints) — check `used_api_credits` directly until something monitors it.
+
 ### Licence matching misses trading-name searches and multi-director NSW companies — planned (2026-10-09)
 
 Not started. Full plan, evidence, user decisions and test fixtures: **`LICENCE_MATCHING_PLAN.md`**

@@ -101,9 +101,12 @@ in CLAUDE.md under "Scraper conventions" → "Licence-register entity matching".
   a fake `_http`, using the injectable-dependency convention.
 - [x] Verify: `npm test` (169/169) + `server/tests/run-all.sh` (same 5 pre-existing failures
   as `main`: act-licence, tas-cbos-licence, vicbpc, wa-be-licence, ws3-director-discovery).
-  Live: TURNKEY CREATIONS now yields Constable + Walmsley as Directors. **Still to do after
-  deploy:** ScrapeOps `used_api_credits` before/after one Turnkey search, and check logs for
-  429s and `[proxyLimiter] ... waited` lines.
+  Live: TURNKEY CREATIONS now yields Constable + Walmsley as Directors.
+  **Production check (2026-10-09):** one Turnkey search used 55 credits (758 → 813), 0
+  HTTP 429s, but `nswFairTrading` timed out queued behind ~42 FWO/ACT court requests — fixed
+  with NSW priority in `proxyLimiter.js` (branch `fix/proxy-limiter-nsw-priority`). The
+  credit cost makes the Budget targets below wrong for many-business-name companies; see
+  CLAUDE.md's "ScrapeOps proxy credits run out" entry before starting Phase 2.
 
 ## Phase 2: identifier-first matching (second PR)
 
