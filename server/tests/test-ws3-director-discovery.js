@@ -51,6 +51,7 @@
 const path = require('path');
 const { searchNSWFairTrading, fetchNswCompanyLookup } = require(path.join(__dirname, '../scrapers/nswFairTrading'));
 const { resolveActAssociatedNames } = require(path.join(__dirname, '../scrapers/actLicences'));
+const { fetchActLicenceRecords } = require(path.join(__dirname, '../scrapers/actLicencesDataset'));
 const { withTimeout } = require(path.join(__dirname, '../scrapers/runScraper'));
 const { pass, fail, step, header, summary } = require('./lib/helpers');
 
@@ -91,6 +92,10 @@ const { pass, fail, step, header, summary } = require('./lib/helpers');
   // ── Pilot 2: ACT partners/nominees extraction + composite-string parsing ─────
   step('Pilot 2: resolveActAssociatedNames for "Geocon Constructors (ACT) Pty Ltd"...');
   {
+    // resolveActAssociatedNames only reads the cached ACT dataset (memCache → Postgres → disk),
+    // which the server's refresh job warms on boot. Standalone, with no DATABASE_URL, nothing
+    // has warmed it and the lookup returns [] — so fetch the dataset first, as the server would.
+    await fetchActLicenceRecords();
     const names = await resolveActAssociatedNames('Geocon Constructors (ACT) Pty Ltd');
     const partner = names.find((n) => n.role === 'Partner');
     const nominee = names.find((n) => n.role === 'Nominee');
