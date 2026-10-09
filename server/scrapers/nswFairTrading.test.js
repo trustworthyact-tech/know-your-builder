@@ -80,13 +80,21 @@ function fakeHttp({ searchResults = {}, failQueries = [], details = null } = {})
   };
 }
 
-test('searchNSWFairTrading — a failed search is reported as partial, not "no licence"', async () => {
+test('searchNSWFairTrading — every search failing is an error/unavailable, not "no licence"', async () => {
   const http = fakeHttp({ failQueries: ['Acme Builders'] });
   const result = await searchNSWFairTrading('Acme Builders Pty Ltd', '', [], undefined, http);
-  assert.equal(result.completeness, 'partial');
+  assert.equal(result.status, 'error');
+  assert.equal(result.completeness, 'unavailable');
   assert.equal(result.results.length, 0);
-  assert.match(result.summary, /failed for 1 of 1 search/);
   assert.doesNotMatch(result.summary, /No NSW Fair Trading contractor licence records found/);
+});
+
+test('searchNSWFairTrading — some searches failing with nothing found is partial', async () => {
+  const http = fakeHttp({ failQueries: ['Jane Citizen'] });
+  const result = await searchNSWFairTrading('Acme Builders Pty Ltd', '', ['Jane Citizen'], undefined, http);
+  assert.equal(result.status, undefined);
+  assert.equal(result.completeness, 'partial');
+  assert.equal(result.summary, 'NSW licence lookup failed for 1 of 2 search(es) — verify manually');
 });
 
 test('searchNSWFairTrading — a genuine empty result stays complete', async () => {

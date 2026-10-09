@@ -290,6 +290,18 @@ async function searchNSWFairTrading(companyName, abn, directors, preFetchedPrima
         : 'No NSW Fair Trading contractor licence records found',
   };
 
+  // Same split as courtRecords.js's runJurisdictionSearch: every search failed → nothing was
+  // actually checked, so status 'error' / 'unavailable' (validateResult.js and the report's
+  // isAllErrored() both key off status); only some failed → 'partial'.
+  if (failedQueries > 0 && failedQueries === queries) {
+    return {
+      ...result,
+      status: 'error',
+      error: 'Search failed',
+      completeness: 'unavailable',
+      summary: 'Could not complete the NSW licence search — try again or search the register manually',
+    };
+  }
   if (failedQueries > 0) {
     const failureNote = `NSW licence lookup failed for ${failedQueries} of ${queries} search(es) — verify manually`;
     result.completeness = 'partial';

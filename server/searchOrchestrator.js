@@ -69,9 +69,15 @@ async function runSearchRequest({ abn, acn, companyName, tradingName, directors 
   // the 2026-09-08 ASIC-dependency removal fixed for this same function; reintroducing an
   // unbounded network dependency here would undo that fix. ACT reads an already-local dataset
   // cache (WS1), so resolveActAssociatedNames only needs a fail-open catch, not a timeout.
-  // The fallback carries `failed: true` so searchNSWFairTrading re-runs the company query
-  // itself rather than reporting this empty object as "no licence records found".
-  const nswDirectorDiscoveryPromise = withTimeout(fetchNswCompanyLookup(companyName), 20_000).catch(
+  //
+  // The raw lookup is kept separately: when discovery's 20s bound fires, the underlying request
+  // is still running (withTimeout doesn't cancel it), so the nswFairTrading key awaits that same
+  // request inside its own 45s budget instead of paying for a second proxied query. The
+  // discovery fallback carries `failed: true` so it can never be mistaken for "no licence".
+  // .catch(() => {}) mirrors abnPromise/asicPromise: nothing may be left without a handler.
+  const nswCompanyLookupPromise = fetchNswCompanyLookup(companyName);
+  nswCompanyLookupPromise.catch(() => {});
+  const nswDirectorDiscoveryPromise = withTimeout(nswCompanyLookupPromise, 20_000).catch(
     () => ({ items: [], associatedNames: [], seen: new Set(), failed: true })
   );
   const actDirectorDiscoveryPromise = resolveActAssociatedNames(companyName).catch(() => []);
@@ -181,10 +187,13 @@ async function runSearchRequest({ abn, acn, companyName, tradingName, directors 
     vicVbaLicence: async () => searchVicVbaLicence(companyName, abn, await resolveDirectors()),
     waBuildingEnergy: async () => searchWABuildingEnergy(companyName, abn, await resolveDirectors()),
     nswFairTrading: async () => {
-      // Reuses nswDirectorDiscoveryPromise's already-fetched company-name query instead of
-      // re-running it — see fetchNswCompanyLookup's doc comment in nswFairTrading.js.
+      // Reuses the company-name lookup discovery already started (see nswCompanyLookupPromise
+      // above) instead of re-running it. If that lookup itself failed, searchNSWFairTrading
+      // retries it once. A rejection (not expected — fetchNswCompanyLookup catches its own
+      // errors) becomes a failed primary, so it's re-queried rather than read as "no licence".
       const dirs = await resolveDirectors();
-      const result = await searchNSWFairTrading(companyName, abn, dirs, await nswDirectorDiscoveryPromise);
+      const primary = await nswCompanyLookupPromise.catch(() => ({ failed: true }));
+      const result = await searchNSWFairTrading(companyName, abn, dirs, primary);
       return markPartialIfNoDirectors(result, dirs.length);
     },
     ntBuildingPractitioners: async () => searchNTBuildingPractitioners(companyName, abn, await resolveDirectors()),
