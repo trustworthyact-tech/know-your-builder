@@ -126,3 +126,58 @@ test('proxyUrl — wraps with the ScrapeOps API, keep_headers only when asked', 
     else process.env.SCRAPEOPS_API_KEY = saved;
   }
 });
+
+// ---- priority tiers ----
+
+// Occupies the only slot until `release()` is called, so every later call queues.
+function holdOnlySlot() {
+  process.env.PROXY_MAX_CONCURRENCY = '1';
+  let release;
+  const held = proxied(() => new Promise((r) => { release = r; }), { _enabled: true });
+  return { held, release: () => release() };
+}
+
+const tick = () => new Promise((r) => setImmediate(r));
+
+test('proxied — a high-priority request takes the next slot ahead of queued normal ones', async () => {
+  const { held, release } = holdOnlySlot();
+  const order = [];
+  const queued = [
+    proxied(async () => order.push('normal-1'), { _enabled: true }),
+    proxied(async () => order.push('normal-2'), { _enabled: true }),
+    proxied(async () => order.push('high'), { _enabled: true, priority: 'high' }),
+  ];
+  await tick();
+  release();
+  await Promise.all([held, ...queued]);
+  assert.deepEqual(order, ['high', 'normal-1', 'normal-2']);
+});
+
+test('proxied — requests stay FIFO within a tier', async () => {
+  const { held, release } = holdOnlySlot();
+  const order = [];
+  const queued = ['h1', 'h2', 'h3'].map((id) =>
+    proxied(async () => order.push(id), { _enabled: true, priority: 'high' })
+  );
+  await tick();
+  release();
+  await Promise.all([held, ...queued]);
+  assert.deepEqual(order, ['h1', 'h2', 'h3']);
+});
+
+test('proxied — normal requests are not starved by a steady stream of high ones', async () => {
+  const { held, release } = holdOnlySlot();
+  const order = [];
+  const queued = [
+    proxied(async () => order.push('normal'), { _enabled: true }),
+    ...Array.from({ length: 8 }, (_, i) =>
+      proxied(async () => order.push(`high-${i}`), { _enabled: true, priority: 'high' })
+    ),
+  ];
+  await tick();
+  release();
+  await Promise.all([held, ...queued]);
+  // MAX_HIGH_STREAK (4) high grants, then the waiting normal request, then the rest.
+  assert.equal(order.indexOf('normal'), 4);
+  assert.equal(order.length, 9);
+});
