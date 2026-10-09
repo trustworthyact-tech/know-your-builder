@@ -73,6 +73,7 @@ HomeScreen → SearchingScreen → ReportScreen
 2. Add an entry to `SCRAPERS` in `server/scrapers/manifest.js` (key, label, jurisdiction, bucket, timeoutMs, mvpScope) and an invocation closure keyed by that same `key` in `searchOrchestrator.js`'s `invocations` map — `server/index.js` no longer has its own `searches` array; that was extracted into `searchOrchestrator.js` by WS4.1 (see "Incomplete work" below). Also decide its `jurisdiction`'s launch-scope status — see "Launch scope" below.
 3. Add matching entry to `INITIAL_SEARCHES` in `web/app/search/SearchContent.tsx` — `server/scrapers/manifest.test.js` cross-checks all three of these stay in sync.
 4. Render in `ReportContent.tsx` via a synthetic SearchResult + `<ReportSection>`
+5. **If it's a licence or disciplinary register** (any state/territory), follow "Licence-register entity matching" under "Scraper conventions" below — identifier-first matching via the shared `licenceMatching.js` helpers, not a typed-name search.
 
 ---
 
@@ -227,6 +228,36 @@ rather than being discovered only at re-enable time.
 
 ## Scraper conventions
 
+**Licence-register entity matching** (established 2026-10-09 for NSW/ACT; applies to every
+licence or disciplinary register added for any state/territory). Full evidence and the
+implementation plan: `LICENCE_MATCHING_PLAN.md` (until its phases land, `nswFairTrading.js`/
+`actLicences.js` don't yet follow all of this).
+- **Never search a register under the typed name alone.** Resolve identity once from the
+  ABN lookup: ABR legal name, ABN, ACN (user-supplied, or last 9 digits of a *company's*
+  ABN), entity type, business names, and for trusts the trust's own name ("The Trustee for X"
+  → "X"). The typed name is a fallback only when there's no ABN.
+- **Don't assume a register is keyed or searchable by ABN.** Verify per register, live:
+  NSW Verify is searchable by ABN only where NSW recorded one, and by ACN; ACT has no ABN
+  field at all. Search/match every identifier the register supports, digits only (spaced
+  formats fail), and compare any 9- or 11-digit value against *both* ABN and ACN — registers
+  put ABNs in ACN fields and vice versa.
+- **Always also search by name** (legal name, business names — capped at 10 for any
+  proxy-backed per-name search — and trust name): a material share of records carry no
+  identifier at all (mostly legacy NSW records, trusts, partnerships, "P/L"-style names).
+  Normalise suffixes (P/L, Pty Limited, Proprietary Limited → Pty Ltd), bracketed words, and
+  `&`/and before matching.
+- **Classify every hit**: identifiers match → confirmed; identifiers present but different
+  → reject even if the name matches; no identifiers + name match → keep as **"matched by
+  name only — verify"**, which is shown but never drives a `riskGrouper` finding.
+- **Take affiliated people from each licence's own record**, classified by each person's
+  role field, not a group label (NSW labels the group "Director" or "Directors" depending on
+  count); prefer licences the register already links to a person over re-searching by name.
+- **A failed lookup is `partial`, never "no licence"**, and "nothing found by identifier or
+  name" is reported as "no licence linked to this ABN found", not a clean pass.
+- **Proxy-backed registers share one account-wide budget** (ScrapeOps: 5 concurrent,
+  monthly credit cap) — route through the shared limiter, order identifier queries first,
+  and check the credit cost per search before adding queries.
+
 **`nameMatchesEntity` / `isEntityMatch` guards all register scrapers** (modernSlavery, FWO, VIC BPC, WA B&E): every significant word of the company name must appear in the result text to prevent false positives.
 
 **Share link upsert always updates `expiresAt`**: re-sharing extends the window to a full 30 days. Never use `update: {}` in the share route.
@@ -272,6 +303,18 @@ redundant download.
 ---
 
 ## Incomplete work
+
+### Licence matching misses trading-name searches and multi-director NSW companies — planned (2026-10-09)
+
+Not started. Full plan, evidence, user decisions and test fixtures: **`LICENCE_MATCHING_PLAN.md`**
+(repo root) — work it phase by phase and tick items off there. In short: licence searches
+use the typed name verbatim (a TURNKEY CREATIONS PTY LTD search entered as one of its ABR
+business names found no licences and no people); NSW silently drops all directors when the
+role group is labelled "Directors"; failed NSW lookups read as "no licence"; NSW, ACT courts
+and FWO share a free-tier ScrapeOps account (1,000 credits/mo, 5 concurrent) with no shared
+limiter. Decided: no ScrapeOps upgrade for now; business-name cap 10 for NSW licences and ACT
+courts; name-only matches are "verify" only. Phase 1 (role fix, partial-on-failure, proxy
+limiter) is independent and should ship first.
 
 ### Reliability plan — WS0 foundations + WS1 ingestion landed (2026-09-09); Modern Slavery bulk ingestion investigated and deferred
 
