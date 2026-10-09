@@ -2377,6 +2377,38 @@ the next unguarded call. **Still open**: the same company sometimes returns 2 in
 notices and sometimes 10 (both before and after this fix) — unclear which is correct or what
 decides it; not investigated.
 
+### Email-sequence and monitoring workers are not deployed — follow-up emails never send (2026-10-09)
+
+Found while fixing a user-reported localhost report link. `web/workers/emailSequence.ts` and
+`web/workers/monitoring.ts` (`npm run worker:emailSequence` / `worker:monitoring`) are
+long-lived BullMQ processes, but **nothing runs them in production**: Vercel can't host a
+long-lived worker, and the only Railway service is `know-your-builder-server` (the scraper
+API). The web app still *enqueues* jobs into the production Redis — `reports/save`
+(`RECHECK_30D`/`RECHECK_90D`), `api/timeline` (`PAYMENT_DUE`), `api/monitoring`
+(`enqueueInitialMonitoringJobs`) — so they sit in Redis unprocessed. Net effect, silently:
+no 30/90-day re-check reminders, no payment-due reminders, and **no monitoring runs or
+alerts, including for paying `MONITORING_MONTHLY` subscribers**. The immediate "your
+report is ready" email is unaffected — it's sent inline from `reports/save`, not via a
+worker.
+
+To complete: deploy both workers (most likely as a second Railway service from `web/`,
+start command `npm run worker:emailSequence` / `worker:monitoring`, or one service per
+worker), with `REDIS_URL`, `DATABASE_URL`, `RESEND_API_KEY`, `FROM_EMAIL`, `NEXTAUTH_URL`
+(= `https://check.trustworthypayments.com` — both workers build links from it and fall
+back to localhost), and `SCRAPING_SERVICE_URL` (monitoring). Per "Worker / queue
+conventions" above, each worker needs its own Redis connection. Before starting them,
+inspect the backlog: jobs enqueued months ago will fire immediately on first start (stale
+re-check reminders, monitoring baselines) — decide whether to drain/clear them first.
+Not checked: whether production Redis is still reachable or has evicted the backlog.
+
+**Related, fixed same day**: Vercel Production's `NEXTAUTH_URL` had been
+`http://localhost:3000` since initial setup (~143 days), so every link the web app built —
+report emails, share links, PDF generation's server-side fetch, verification/reset emails —
+pointed at localhost (confirmed via `/api/auth/providers` returning localhost
+sign-in URLs). Set to `https://check.trustworthypayments.com` and redeployed; `lib/env.ts`
+now rejects a missing or localhost `NEXTAUTH_URL` at boot when `VERCEL_ENV=production`.
+Links in emails sent before 2026-10-09 remain broken.
+
 ---
 
 ## Performance baseline (2026-05-21)
