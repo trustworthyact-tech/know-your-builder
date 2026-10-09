@@ -1,4 +1,5 @@
 const axios = require('axios');
+const { proxied, proxyUrl } = require('./proxyLimiter');
 
 // NSW contractor licence register via the Verify NSW public register API.
 // The old OneGov SPA (www.onegov.nsw.gov.au/publicregister) has been retired —
@@ -41,12 +42,11 @@ const HEADERS = {
 // the response body was inspected — see ScrapeOps' own POST Requests docs). With
 // keep_headers=true, the real Content-Type/Origin/Referer in HEADERS below reach Verify
 // NSW as sent. Falls back to a direct request when SCRAPEOPS_API_KEY isn't set (local dev).
-function viaProxy(url) {
-  const key = process.env.SCRAPEOPS_API_KEY;
-  return key
-    ? `https://proxy.scrapeops.io/v1/?api_key=${key}&keep_headers=true&url=${encodeURIComponent(url)}`
-    : url;
-}
+//
+// Every proxied call also goes through proxyLimiter.js's shared semaphore
+// (LICENCE_MATCHING_PLAN.md Phase 1.3) — this file, courtRecords.js and fwo.js share one
+// ScrapeOps account capped at 5 concurrent requests.
+const viaProxy = (url) => proxyUrl(url, { keepHeaders: true });
 
 function escapeRegExp(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -67,18 +67,23 @@ function nameMatchesEntity(text, query) {
   return words.every((w) => new RegExp(`\\b${escapeRegExp(w)}\\b`).test(lower));
 }
 
-async function fetchLicences(query) {
-  const { data } = await axios.post(
-    viaProxy(SEARCH_URL),
-    {
-      licenceGroup: 'Trades',
-      search: query,
-      autoComplete: false,
-      pageNumber: 0,
-      pageSize: 20,
-      licenceTypes: [],
-    },
-    { headers: HEADERS, timeout: 20000 }
+// `_http` is injectable (defaults to axios) so tests can simulate failures without the network.
+async function fetchLicences(query, _http = axios) {
+  const { data } = await proxied(
+    () =>
+      _http.post(
+        viaProxy(SEARCH_URL),
+        {
+          licenceGroup: 'Trades',
+          search: query,
+          autoComplete: false,
+          pageNumber: 0,
+          pageSize: 20,
+          licenceTypes: [],
+        },
+        { headers: HEADERS, timeout: 20000 }
+      ),
+    { label: 'nswFairTrading search' }
   );
   return Array.isArray(data?.results) ? data.results : [];
 }
@@ -88,10 +93,12 @@ async function fetchLicences(query) {
 // only show up on the per-licence details endpoint, so it's fetched once per hit and shared
 // by complianceFromDetails() and associatedNamesFromDetails() below, rather than fetching
 // the same URL twice for two different purposes.
-async function fetchLicenceDetails(licenceType, licenceId) {
+async function fetchLicenceDetails(licenceType, licenceId, _http = axios) {
   const url = `${API_BASE}/search/details/${encodeURIComponent(licenceType)}/${encodeURIComponent(licenceId)}`;
   try {
-    const { data } = await axios.get(viaProxy(url), { headers: HEADERS, timeout: 20000 });
+    const { data } = await proxied(() => _http.get(viaProxy(url), { headers: HEADERS, timeout: 20000 }), {
+      label: 'nswFairTrading details',
+    });
     return data?.componentData ?? null;
   } catch {
     return null; // non-fatal — callers treat a null details fetch as "unknown", not "none"
@@ -115,17 +122,32 @@ function complianceFromDetails(cd) {
 // "Nominated Supervisor" is the licence's required qualified-person role, which may or may
 // not also be a company officer — both are returned, but tagged by role so downstream
 // consumers/reports can tell them apart rather than treating them as equally certain.
-const ASSOCIATED_ROLES = new Set(['director', 'nominated supervisor']);
+//
+// Each person is classified by their own `party.role`, not the group's label: Verify NSW names
+// the group "Director" for one director but "Directors" for several, and matching the group
+// label exactly silently dropped every director of a multi-director company (found 2026-10-09
+// on TURNKEY CREATIONS PTY LTD — LICENCE_MATCHING_PLAN.md finding 2). The group label is only a
+// fallback for a party with no role of its own. Roles are returned in canonical form.
+const ROLE_LABELS = {
+  director: 'Director',
+  directors: 'Director',
+  'nominated supervisor': 'Nominated Supervisor',
+  'nominated supervisors': 'Nominated Supervisor',
+};
 function associatedNamesFromDetails(cd) {
   if (!cd || !Array.isArray(cd.associatedRoles)) return [];
   const names = [];
   for (const roleGroup of cd.associatedRoles) {
-    if (!ASSOCIATED_ROLES.has((roleGroup.name || '').toLowerCase())) continue;
-    for (const party of roleGroup.parties || []) {
-      if (party?.name) names.push({ name: party.name, role: roleGroup.name });
+    for (const party of roleGroup?.parties || []) {
+      const role = ROLE_LABELS[(party?.role || roleGroup.name || '').trim().toLowerCase()];
+      if (role && party?.name) names.push({ name: party.name, role });
     }
   }
   return names;
+}
+
+function namesWithRole(associated, role) {
+  return [...new Set(associated.filter((a) => a.role === role).map((a) => a.name))].join('; ');
 }
 
 // Runs one query (company name or a director's name) against the licence search, dedupes
@@ -134,63 +156,72 @@ function associatedNamesFromDetails(cd) {
 // lookup (fetchNswCompanyLookup, below — what resolveDirectors() depends on) and the
 // per-director enrichment loop in searchNSWFairTrading, so there's exactly one place that
 // knows how to turn a raw licence hit into a ResultItem.
-async function fetchAndBuildResultsForQuery(query, seen) {
+//
+// Returns `failed: true` when the search request itself failed (network error, proxy 429
+// after the limiter's retry, timeout). This used to be swallowed into an empty result, which
+// read exactly like "checked, no licence" — and hid proxy 429s in testing (LICENCE_MATCHING_PLAN.md
+// finding 5). Same distinction as CLAUDE.md's captcha-gated-check convention. A failed
+// *details* fetch is not a failed query: it only leaves ComplianceHistory unset, as before.
+async function fetchAndBuildResultsForQuery(query, seen, _http = axios) {
   const items = [];
   const associatedNames = [];
+  let hits;
   try {
-    const hits = await fetchLicences(query);
-    for (const hit of hits) {
-      const licensee = hit.licensee || '';
-      if (!nameMatchesEntity(licensee, query)) continue;
-      const key = `${hit.licenceNumber}|${licensee}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-
-      const url = hit.licenceId && hit.licenceType
-        ? `${REGISTER_BASE}/details/${encodeURIComponent(hit.licenceType)}/${encodeURIComponent(hit.licenceId)}`
-        : `${REGISTER_BASE}/home/trades`;
-
-      const details = hit.licenceId && hit.licenceType
-        ? await fetchLicenceDetails(hit.licenceType, hit.licenceId)
-        : null;
-      const compliance = complianceFromDetails(details);
-      const associated = associatedNamesFromDetails(details);
-      associatedNames.push(...associated);
-
-      const complianceSuffix = compliance?.hasComplianceIssue ? ' — compliance history on record' : '';
-      const director = associated.find((a) => a.role.toLowerCase() === 'director');
-      const supervisor = associated.find((a) => a.role.toLowerCase() === 'nominated supervisor');
-
-      items.push({
-        title: licensee,
-        url,
-        date: hit.expires || '',
-        status: hit.status || '',
-        description: `${hit.licenceTypeFriendly || 'NSW Contractor Licence'} — Licence ${hit.licenceNumber || ''}${complianceSuffix}`,
-        jurisdiction: 'NSW',
-        metadata: {
-          Source: 'NSW Fair Trading',
-          LicenceNumber: hit.licenceNumber,
-          LicenceType: hit.licenceTypeFriendly,
-          Status: hit.status,
-          Expiry: hit.expires,
-          ABN: hit.ABN,
-          ...(compliance
-            ? {
-                ComplianceHistory: compliance.hasComplianceIssue
-                  ? `Yes (${compliance.totalEvents} recorded event(s)) — see licence record for details`
-                  : 'None recorded',
-              }
-            : {}),
-          ...(director ? { Director: director.name } : {}),
-          ...(supervisor ? { NominatedSupervisor: supervisor.name } : {}),
-        },
-      });
-    }
-  } catch {
-    // non-fatal
+    hits = await fetchLicences(query, _http);
+  } catch (err) {
+    console.error(`[nswFairTrading] licence search failed for "${query}":`, err.message || err);
+    return { items, associatedNames, failed: true };
   }
-  return { items, associatedNames };
+
+  for (const hit of hits) {
+    const licensee = hit.licensee || '';
+    if (!nameMatchesEntity(licensee, query)) continue;
+    const key = `${hit.licenceNumber}|${licensee}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    const url = hit.licenceId && hit.licenceType
+      ? `${REGISTER_BASE}/details/${encodeURIComponent(hit.licenceType)}/${encodeURIComponent(hit.licenceId)}`
+      : `${REGISTER_BASE}/home/trades`;
+
+    const details = hit.licenceId && hit.licenceType
+      ? await fetchLicenceDetails(hit.licenceType, hit.licenceId, _http)
+      : null;
+    const compliance = complianceFromDetails(details);
+    const associated = associatedNamesFromDetails(details);
+    associatedNames.push(...associated);
+
+    const complianceSuffix = compliance?.hasComplianceIssue ? ' — compliance history on record' : '';
+    const director = namesWithRole(associated, 'Director');
+    const supervisor = namesWithRole(associated, 'Nominated Supervisor');
+
+    items.push({
+      title: licensee,
+      url,
+      date: hit.expires || '',
+      status: hit.status || '',
+      description: `${hit.licenceTypeFriendly || 'NSW Contractor Licence'} — Licence ${hit.licenceNumber || ''}${complianceSuffix}`,
+      jurisdiction: 'NSW',
+      metadata: {
+        Source: 'NSW Fair Trading',
+        LicenceNumber: hit.licenceNumber,
+        LicenceType: hit.licenceTypeFriendly,
+        Status: hit.status,
+        Expiry: hit.expires,
+        ABN: hit.ABN,
+        ...(compliance
+          ? {
+              ComplianceHistory: compliance.hasComplianceIssue
+                ? `Yes (${compliance.totalEvents} recorded event(s)) — see licence record for details`
+                : 'None recorded',
+            }
+          : {}),
+        ...(director ? { Director: director } : {}),
+        ...(supervisor ? { NominatedSupervisor: supervisor } : {}),
+      },
+    });
+  }
+  return { items, associatedNames, failed: false };
 }
 
 function stripCompanySuffix(companyName) {
@@ -202,36 +233,52 @@ function stripCompanySuffix(companyName) {
 // discovers director/nominated-supervisor names in the first place, so it can't itself take
 // resolveDirectors()'s output as an input without creating a circular dependency. Returns
 // `seen` too, so searchNSWFairTrading below can reuse it directly instead of re-running this
-// same query a second time.
-async function fetchNswCompanyLookup(companyName) {
+// same query a second time, and `failed` so it knows when it can't.
+async function fetchNswCompanyLookup(companyName, _http = axios) {
   const seen = new Set();
-  const { items, associatedNames } = await fetchAndBuildResultsForQuery(stripCompanySuffix(companyName), seen);
-  return { items, associatedNames, seen };
+  const { items, associatedNames, failed } = await fetchAndBuildResultsForQuery(
+    stripCompanySuffix(companyName),
+    seen,
+    _http
+  );
+  return { items, associatedNames, seen, failed };
 }
 
-// `preFetchedPrimary` is fetchNswCompanyLookup()'s already-resolved result (from index.js's
-// hoisted, timed-out, fail-open promise) — when present, the company-name query below is
-// skipped entirely rather than re-fetched, since it's the exact same request. The per-director
-// loop still makes its own live calls — those are genuinely different queries, not something
-// Phase A could have already covered.
-async function searchNSWFairTrading(companyName, abn, directors, preFetchedPrimary) {
+// `preFetchedPrimary` is fetchNswCompanyLookup()'s already-resolved result (from
+// searchOrchestrator.js's hoisted, timed-out, fail-open promise) — when present and
+// successful, the company-name query below is skipped rather than re-fetched, since it's the
+// exact same request. When it failed (including the orchestrator's 20s discovery timeout,
+// whose fallback carries `failed: true`), the company query is re-run here inside this key's
+// own, longer budget: reusing the empty fallback used to report "no licence records found" for
+// a lookup that never actually completed (LICENCE_MATCHING_PLAN.md Phase 1.2). The per-director
+// loop still makes its own live calls — those are genuinely different queries.
+async function searchNSWFairTrading(companyName, abn, directors, preFetchedPrimary, _http = axios) {
   const allResults = [];
-  const seen = preFetchedPrimary?.seen ?? new Set();
+  const reusePrimary = Boolean(preFetchedPrimary && !preFetchedPrimary.failed);
+  const seen = reusePrimary ? preFetchedPrimary.seen : new Set();
+  let queries = 0;
+  let failedQueries = 0;
 
-  if (preFetchedPrimary) {
+  const runQuery = async (query) => {
+    const { items, failed } = await fetchAndBuildResultsForQuery(query, seen, _http);
+    queries++;
+    if (failed) failedQueries++;
+    allResults.push(...items);
+  };
+
+  if (reusePrimary) {
+    queries++;
     allResults.push(...preFetchedPrimary.items);
   } else {
-    const { items } = await fetchAndBuildResultsForQuery(stripCompanySuffix(companyName), seen);
-    allResults.push(...items);
+    await runQuery(stripCompanySuffix(companyName));
   }
 
   for (const directorQuery of (directors || []).filter(Boolean)) {
-    const { items } = await fetchAndBuildResultsForQuery(directorQuery, seen);
-    allResults.push(...items);
+    await runQuery(directorQuery);
   }
 
   const searchUrl = `${REGISTER_BASE}/home/trades`;
-  return {
+  const result = {
     source: 'NSW Fair Trading — Contractor Licence Register',
     jurisdiction: 'NSW',
     category: 'license',
@@ -242,6 +289,16 @@ async function searchNSWFairTrading(companyName, abn, directors, preFetchedPrima
         ? `${allResults.length} NSW contractor licence record(s) found`
         : 'No NSW Fair Trading contractor licence records found',
   };
+
+  if (failedQueries > 0) {
+    const failureNote = `NSW licence lookup failed for ${failedQueries} of ${queries} search(es) — verify manually`;
+    result.completeness = 'partial';
+    result.summary =
+      allResults.length > 0
+        ? `${allResults.length} NSW contractor licence record(s) found; ${failureNote}`
+        : failureNote;
+  }
+  return result;
 }
 
-module.exports = { searchNSWFairTrading, fetchNswCompanyLookup };
+module.exports = { searchNSWFairTrading, fetchNswCompanyLookup, associatedNamesFromDetails };

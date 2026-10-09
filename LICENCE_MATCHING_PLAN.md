@@ -1,6 +1,6 @@
 # Licence matching plan: identifier-first NSW/ACT licence and people discovery
 
-Status: **planned, not started** (drafted 2026-10-09). Work through the phases in order and
+Status: **Phase 1 done (2026-10-09, branch `fix/licence-matching-phase1`); Phases 2–3 not started** (drafted 2026-10-09). Work through the phases in order and
 tick items off here as they land, so a fresh session can pick up mid-way. The permanent rules
 this plan implements (and that every future state/territory licence register must follow) are
 in CLAUDE.md under "Scraper conventions" → "Licence-register entity matching".
@@ -74,22 +74,31 @@ in CLAUDE.md under "Scraper conventions" → "Licence-register entity matching".
 
 ## Phase 1: urgent fixes (one PR, independent of Phase 2)
 
-- [ ] **1.1 NSW role detection.** In `associatedNamesFromDetails`
+- [x] **1.1 NSW role detection.** In `associatedNamesFromDetails`
   (`server/scrapers/nswFairTrading.js`), classify each party by `party.role`
   (`Director` / `Nominated Supervisor`), not by `roleGroup.name`. Regression test using a
   details payload with a `"Directors"` group containing 2 parties (shape is in finding 2).
-- [ ] **1.2 Report failed NSW lookups.** `fetchAndBuildResultsForQuery` returns a `failed`
+- [x] **1.2 Report failed NSW lookups.** `fetchAndBuildResultsForQuery` returns a `failed`
   flag per query, and when any query failed, `searchNSWFairTrading` /
   `fetchNswCompanyLookup` set `completeness: 'partial'` with summary text naming the failure.
   This is the captcha-gated-check pattern in CLAUDE.md "Scraper conventions", applied to a
   plain HTTP check. A failed details fetch already leaves `ComplianceHistory` unset; keep
   that behaviour.
-- [ ] **1.3 Shared proxy limiter.** New `server/scrapers/proxyLimiter.js`: one process-wide
+  - **Also fixed (found while implementing, not in the original plan):** the orchestrator's
+    20s discovery-timeout fallback was a truthy empty object, so `searchNSWFairTrading`
+    reused it as a finished company query and reported "no licence records found" whenever
+    NSW was slow. The fallback now carries `failed: true`, and a failed primary is re-queried
+    inside `nswFairTrading`'s own 45s budget.
+- [x] **1.3 Shared proxy limiter.** New `server/scrapers/proxyLimiter.js`: one process-wide
   semaphore (default 5, env `PROXY_MAX_CONCURRENCY`) plus one retry with backoff on HTTP 429.
   Route all three `viaProxy` callers (`nswFairTrading.js`, `courtRecords.js`, `fwo.js`)
   through it. Optionally also dedupe the three copies of `viaProxy` into it. Unit-test with
   a fake `_http`, using the injectable-dependency convention.
-- [ ] Verify: `npm test` + `server/tests/run-all.sh` (they cover different files; run both).
+- [x] Verify: `npm test` (169/169) + `server/tests/run-all.sh` (same 5 pre-existing failures
+  as `main`: act-licence, tas-cbos-licence, vicbpc, wa-be-licence, ws3-director-discovery).
+  Live: TURNKEY CREATIONS now yields Constable + Walmsley as Directors. **Still to do after
+  deploy:** ScrapeOps `used_api_credits` before/after one Turnkey search, and check logs for
+  429s and `[proxyLimiter] ... waited` lines.
 
 ## Phase 2: identifier-first matching (second PR)
 

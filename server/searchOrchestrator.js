@@ -69,8 +69,10 @@ async function runSearchRequest({ abn, acn, companyName, tradingName, directors 
   // the 2026-09-08 ASIC-dependency removal fixed for this same function; reintroducing an
   // unbounded network dependency here would undo that fix. ACT reads an already-local dataset
   // cache (WS1), so resolveActAssociatedNames only needs a fail-open catch, not a timeout.
+  // The fallback carries `failed: true` so searchNSWFairTrading re-runs the company query
+  // itself rather than reporting this empty object as "no licence records found".
   const nswDirectorDiscoveryPromise = withTimeout(fetchNswCompanyLookup(companyName), 20_000).catch(
-    () => ({ items: [], associatedNames: [], seen: new Set() })
+    () => ({ items: [], associatedNames: [], seen: new Set(), failed: true })
   );
   const actDirectorDiscoveryPromise = resolveActAssociatedNames(companyName).catch(() => []);
 

@@ -316,6 +316,18 @@ limiter. Decided: no ScrapeOps upgrade for now; business-name cap 10 for NSW lic
 courts; name-only matches are "verify" only. Phase 1 (role fix, partial-on-failure, proxy
 limiter) is independent and should ship first.
 
+**Phase 1 landed (2026-10-09).** NSW roles now come from each party's own `role`
+(multi-director companies keep every director, and metadata lists all of them); a failed NSW
+search is `completeness: 'partial'`, not "no licence"; the orchestrator's NSW discovery
+timeout fallback carries `failed: true` so `searchNSWFairTrading` re-queries instead of
+reporting the empty fallback as a clean result (a pre-existing silent false negative,
+found while implementing). New `server/scrapers/proxyLimiter.js` is now the only way to make
+a ScrapeOps request: `proxyUrl()` builds the URL and `proxied()` applies one process-wide
+semaphore (`PROXY_MAX_CONCURRENCY`, default 5) plus one retry on HTTP 429 —
+`nswFairTrading.js`, `courtRecords.js` (ACT courts + ACAT) and `fwo.js` all use it. Any new
+proxy-backed scraper must too. Queue time counts against callers' timeouts; queued waits are
+logged as `[proxyLimiter] <label> waited Nms`.
+
 ### Reliability plan — WS0 foundations + WS1 ingestion landed (2026-09-09); Modern Slavery bulk ingestion investigated and deferred
 
 Following the Know Your Builder Reliability Plan (search-reliability hardening for the

@@ -1,6 +1,7 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
 const { fetchWithBrowser } = require('./browser');
+const { proxied, proxyUrl } = require('./proxyLimiter');
 
 // Jurisdiction labels shown in the report and used as SearchResult.jurisdiction.
 const JURISDICTION_LABELS = {
@@ -274,17 +275,22 @@ const fetchVicTermResults = makeTermCache(async (term) => {
 // challenge — so any proxy that rotates through a clean IP works, not just this one.
 // ScrapeOps uses the identical `?api_key=X&url=Y` shape, so this was a one-line swap.
 // Falls back to a direct request when SCRAPEOPS_API_KEY isn't set (e.g. local dev).
-function viaProxy(url) {
-  const key = process.env.SCRAPEOPS_API_KEY;
-  return key ? `https://proxy.scrapeops.io/v1/?api_key=${key}&url=${encodeURIComponent(url)}` : url;
-}
+//
+// Every proxied call also goes through proxyLimiter.js's shared semaphore
+// (LICENCE_MATCHING_PLAN.md Phase 1.3) — this file, nswFairTrading.js and fwo.js share one
+// ScrapeOps account capped at 5 concurrent requests.
+const viaProxy = (url) => proxyUrl(url);
 
 const fetchActTermResults = makeTermCache(async (term) => {
   const searchUrl = `https://www.courts.act.gov.au/judgment?query=${encodeURIComponent(term)}`;
-  const { data } = await axios.get(viaProxy(searchUrl), {
-    timeout: 45_000,
-    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; know-your-builder/1.0)' },
-  });
+  const { data } = await proxied(
+    () =>
+      axios.get(viaProxy(searchUrl), {
+        timeout: 45_000,
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; know-your-builder/1.0)' },
+      }),
+    { label: 'courts_act courts' }
+  );
   const $ = cheerio.load(data);
   const results = [];
 
@@ -334,10 +340,14 @@ const fetchActTermResults = makeTermCache(async (term) => {
 // Queensland Judgments.
 const fetchAcatTermResults = makeTermCache(async (term) => {
   const searchUrl = `https://www.acat.act.gov.au/decisions2/search-decisions?meta_partyName=${encodeURIComponent(term)}`;
-  const { data } = await axios.get(viaProxy(searchUrl), {
-    timeout: 45_000,
-    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; know-your-builder/1.0)' },
-  });
+  const { data } = await proxied(
+    () =>
+      axios.get(viaProxy(searchUrl), {
+        timeout: 45_000,
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; know-your-builder/1.0)' },
+      }),
+    { label: 'courts_act ACAT' }
+  );
   const $ = cheerio.load(data);
   const results = [];
 
