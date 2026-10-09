@@ -83,7 +83,7 @@ async function fetchLicences(query, _http = axios) {
         },
         { headers: HEADERS, timeout: 20000 }
       ),
-    { label: 'nswFairTrading search' }
+    { label: 'nswFairTrading search', priority: 'high' }
   );
   return Array.isArray(data?.results) ? data.results : [];
 }
@@ -98,6 +98,7 @@ async function fetchLicenceDetails(licenceType, licenceId, _http = axios) {
   try {
     const { data } = await proxied(() => _http.get(viaProxy(url), { headers: HEADERS, timeout: 20000 }), {
       label: 'nswFairTrading details',
+      priority: 'high',
     });
     return data?.componentData ?? null;
   } catch {

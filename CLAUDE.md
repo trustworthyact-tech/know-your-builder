@@ -327,7 +327,9 @@ a ScrapeOps request: `proxyUrl()` builds the URL and `proxied()` applies one pro
 semaphore (`PROXY_MAX_CONCURRENCY`, default 5) plus one retry on HTTP 429 —
 `nswFairTrading.js`, `courtRecords.js` (ACT courts + ACAT) and `fwo.js` all use it. Any new
 proxy-backed scraper must too. Queue time counts against callers' timeouts; queued waits are
-logged as `[proxyLimiter] <label> waited Nms`.
+logged as `[proxyLimiter] <label> waited Nms`. NSW's requests pass `priority: 'high'` (added after
+a production search for an 11-business-name company left NSW queued 25s behind ~40 FWO/ACT
+court requests and timing out); normal requests still get every 5th slot while high ones wait.
 
 ### Reliability plan — WS0 foundations + WS1 ingestion landed (2026-09-09); Modern Slavery bulk ingestion investigated and deferred
 
