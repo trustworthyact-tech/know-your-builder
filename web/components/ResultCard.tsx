@@ -13,6 +13,11 @@ export function ResultCard({ item, showJurisdiction }: Props) {
   const hasMetadata = item.metadata && Object.keys(item.metadata).length > 0;
   const hasExtras = hasMetadata || !!item.description;
   const isActive = item.status?.toLowerCase().includes('active');
+  // How the server matched this record to the searched entity (LICENCE_MATCHING_PLAN.md 3.1).
+  // The two uncertain-or-indirect kinds get a visible badge; the rest stay in the details list.
+  const matchedBy = item.metadata?.['MatchedBy'] ?? '';
+  const isNameOnly = matchedBy === 'Name only — verify';
+  const linkedCompany = item.metadata?.['LinkedCompany'];
 
   return (
     <div className="bg-surface rounded-xl border border-border shadow-sm mb-3 overflow-hidden">
@@ -48,6 +53,16 @@ export function ResultCard({ item, showJurisdiction }: Props) {
               }`}
             >
               {item.status}
+            </span>
+          )}
+          {isNameOnly && (
+            <span className="inline-block text-xs font-semibold px-2 py-0.5 rounded mt-1.5 ml-1.5 bg-warning-bg text-warning">
+              Matched by name only — verify
+            </span>
+          )}
+          {!isNameOnly && linkedCompany && (
+            <span className="inline-block text-xs font-semibold px-2 py-0.5 rounded mt-1.5 ml-1.5 bg-info-bg text-info">
+              Associated company: {linkedCompany}
             </span>
           )}
         </div>

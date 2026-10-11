@@ -7,6 +7,7 @@
     "build": "prisma generate && next build",
     "start": "next start",
     "type-check": "tsc --noEmit",
+    "test": "tsx --test lib/riskGrouper.test.ts",
     "worker:monitoring": "tsx workers/monitoring.ts",
     "worker:emailSequence": "tsx workers/emailSequence.ts",
     "test:credits": "node scripts/add-test-credits.js"
