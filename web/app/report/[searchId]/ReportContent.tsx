@@ -10,6 +10,7 @@ import { RiskSummaryPanel } from '@/components/RiskSummaryPanel';
 import { CoverageNotice } from '@/components/CoverageNotice';
 import { ProjectTimeline } from '@/components/ProjectTimeline';
 import { riskGrouper } from '@/lib/riskGrouper';
+import { LinkedCompanies } from '@/components/LinkedCompanies';
 import { SERVER_URL } from '@/lib/api';
 import { DEEP_CHECK_ENABLED } from '@/lib/scope';
 
@@ -284,6 +285,15 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
   const disqualifiedItems: ResultItem[] = asicDisqualified?.results ?? [];
   const asicExtractItems: ResultItem[] = asicExtract?.results ?? [];
   const asicEUItems: ResultItem[] = asicEU?.results ?? [];
+  // Whether the licence searches had any people to work from (typed, or found on a licence
+  // record) — the linked-companies list in 8.1 only says "none found" when they did.
+  const hadPeople =
+    (input?.directors?.some(Boolean) ?? false) ||
+    [...(nswFairTrading?.results ?? []), ...(actLicences?.results ?? [])].some((r) =>
+      ['Director', 'NominatedSupervisor', 'Partners', 'Nominees'].some((k) => r.metadata?.[k])
+    );
+  const showLinkedCompanies = Boolean(nswFairTrading || actLicences);
+
   const identityItems: ResultItem[] = [
     ...(abn?.results ?? []),
     ...asicCompanyItems,
@@ -769,7 +779,9 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
               ? `${disqualifiedItems.length} director(s) found on the ASIC Disqualified Persons Register. These individuals are legally prohibited from managing corporations.`
               : undefined
           }
-        />
+        >
+          {showLinkedCompanies && <LinkedCompanies results={results ?? []} hadPeople={hadPeople} />}
+        </ReportSection>
 
         {/* 8.2 Licences & Registrations */}
         <ReportSection

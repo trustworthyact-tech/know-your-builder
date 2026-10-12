@@ -90,7 +90,9 @@ async function searchAsicEnforceableUndertakings(companyName, directorNames, _re
       if (seen.has(dedupeKey)) continue;
       if (!nameMatchesEntity(record.partyText, query)) continue;
       seen.add(dedupeKey);
-      allResults.push(mapRecordToResult(record));
+      // matchedTerm: which name found it — same field courtRecords.js sets — so the orchestrator
+      // can tell an own-entity hit from one found under a linked company or person.
+      allResults.push({ ...mapRecordToResult(record), matchedTerm: query });
     }
   }
 

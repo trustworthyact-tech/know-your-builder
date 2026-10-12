@@ -23,8 +23,27 @@ const DESCRIPTIONS: Record<RiskGroupId, string> = {
 
 const INACTIVE_STATUSES = ['expired', 'suspended', 'cancelled', 'inactive', 'lapsed'];
 
+// Match provenance stamped by the server (LICENCE_MATCHING_PLAN.md Phase 3; see
+// server/scrapers/licenceMatching.js). A "Name only — verify" result is shown in the report but
+// never drives a finding. A result carrying `LinkedCompany` belongs to another company linked to
+// the searched entity's people — never counted as the entity's own record; a confirmed one raises
+// a separate, lower-severity "associated company" trigger instead (see associatedCompanyTriggers).
+const NAME_ONLY = 'Name only — verify';
+
+function isVerifyOnly(item: ResultItem): boolean {
+  return item.metadata?.['MatchedBy'] === NAME_ONLY;
+}
+
+function isConfirmedLinkedCompany(item: ResultItem): boolean {
+  return Boolean(item.metadata?.['LinkedCompany']) && !isVerifyOnly(item);
+}
+
+function ownResults(items: ResultItem[] | undefined): ResultItem[] {
+  return (items ?? []).filter((i) => !isVerifyOnly(i) && !i.metadata?.['LinkedCompany']);
+}
+
 function resultsOf(findings: Record<string, SearchResult>, key: string): ResultItem[] {
-  return findings[key]?.results ?? [];
+  return ownResults(findings[key]?.results);
 }
 
 function extractYear(text: string): number | null {
@@ -60,6 +79,49 @@ function hasInactiveStatus(item: ResultItem): boolean {
 
 function hasComplianceHistory(item: ResultItem): boolean {
   return (item.metadata?.['ComplianceHistory'] ?? '').startsWith('Yes');
+}
+
+const CANCELLED_STATUSES = ['cancelled', 'suspended'];
+
+// What counts as a record against a linked company, by source. A linked company's licence is
+// how it was found, so a licence only counts when it was cancelled/suspended or carries
+// compliance history — expired on its own is normal.
+function associatedRecordKind(key: string, item: ResultItem): string | null {
+  if (key.startsWith('courts_')) return 'court or tribunal decision(s)';
+  if (key === 'fwo') return 'Fair Work Ombudsman enforcement outcome(s)';
+  if (key === 'asicEnforceableUndertakings') return 'ASIC court enforceable undertaking(s)';
+  if (key === 'actDisciplinary') return 'ACT disciplinary action(s)';
+  if (key === 'nswFairTrading' || key === 'actLicences') {
+    const status = (item.status ?? item.metadata?.['Status'] ?? '').toLowerCase();
+    if (CANCELLED_STATUSES.some((s) => status.includes(s))) return 'cancelled or suspended licence(s)';
+    if (hasComplianceHistory(item)) return 'licence(s) with compliance history';
+  }
+  return null;
+}
+
+// "Associated company" triggers (LICENCE_MATCHING_PLAN.md 3.3): records against another company
+// confirmed as linked to the searched entity's people — a phoenix signal, not proof against the
+// entity. One trigger per linked company; they never raise a group's severity.
+function associatedCompanyTriggers(findings: Record<string, SearchResult>): RiskGroupTrigger[] {
+  const byCompany = new Map<string, { via: string; counts: Map<string, number> }>();
+  for (const [key, result] of Object.entries(findings)) {
+    for (const item of result?.results ?? []) {
+      if (!isConfirmedLinkedCompany(item)) continue;
+      const kind = associatedRecordKind(key, item);
+      if (!kind) continue;
+      const company = item.metadata!['LinkedCompany'];
+      const entry = byCompany.get(company) ?? { via: item.metadata?.['LinkedVia'] ?? '', counts: new Map() };
+      entry.counts.set(kind, (entry.counts.get(kind) ?? 0) + 1);
+      byCompany.set(company, entry);
+    }
+  }
+  return [...byCompany.entries()].map(([company, { via, counts }]) => ({
+    scraperKey: 'linkedCompanies',
+    finding: `Associated company ${company}${via ? ` (linked via ${via})` : ''}: ${[...counts.entries()]
+      .map(([kind, n]) => `${n} ${kind}`)
+      .join(', ')}`,
+    anchor: '#s81',
+  }));
 }
 
 export function riskGrouper(findings: Record<string, SearchResult>): RiskGroupResult[] {
@@ -134,7 +196,7 @@ export function riskGrouper(findings: Record<string, SearchResult>): RiskGroupRe
     let severity: 'significant' | 'findings' = 'findings';
 
     const qbcc = findings['qbcc'];
-    const adjudicationResults = qbcc?.adjudicationResults ?? [];
+    const adjudicationResults = ownResults(qbcc?.adjudicationResults);
     if (adjudicationResults.length > 0) {
       severity = 'significant';
       triggers.push({
@@ -147,7 +209,7 @@ export function riskGrouper(findings: Record<string, SearchResult>): RiskGroupRe
     // Security of Payment keywords across all court-records jurisdictions
     const courtKeys = Object.keys(findings).filter((k) => k.startsWith('courts_'));
     const sopResults = courtKeys.flatMap((k) =>
-      (findings[k]?.results ?? []).filter(
+      resultsOf(findings, k).filter(
         (r) =>
           r.title?.toLowerCase().includes('security of payment') ||
           r.description?.toLowerCase().includes('security of payment') ||
@@ -200,7 +262,7 @@ export function riskGrouper(findings: Record<string, SearchResult>): RiskGroupRe
     let severity: 'significant' | 'findings' = 'findings';
 
     const qbcc = findings['qbcc'];
-    const licenceResults = qbcc?.licenceResults ?? [];
+    const licenceResults = ownResults(qbcc?.licenceResults);
 
     if (qbcc?.status === 'done' && licenceResults.length > 0) {
       const inactiveLicences = licenceResults.filter(hasInactiveStatus);
@@ -289,7 +351,7 @@ export function riskGrouper(findings: Record<string, SearchResult>): RiskGroupRe
     let severity: 'significant' | 'findings' = 'findings';
 
     const courtKeys = Object.keys(findings).filter((k) => k.startsWith('courts_'));
-    const allCourtResults = courtKeys.flatMap((k) => findings[k]?.results ?? []);
+    const allCourtResults = courtKeys.flatMap((k) => resultsOf(findings, k));
     const totalCourtHits = allCourtResults.length;
 
     if (totalCourtHits >= 6) {
@@ -307,7 +369,7 @@ export function riskGrouper(findings: Record<string, SearchResult>): RiskGroupRe
       });
     }
 
-    const federalResults = findings['courts_federal']?.results ?? [];
+    const federalResults = resultsOf(findings, 'courts_federal');
     if (federalResults.length > 0) {
       severity = 'significant';
       triggers.push({
@@ -399,6 +461,9 @@ export function riskGrouper(findings: Record<string, SearchResult>): RiskGroupRe
         anchor: '#s81',
       });
     }
+
+    // Records against linked companies — added without touching `severity`.
+    triggers.push(...associatedCompanyTriggers(findings));
 
     if (triggers.length > 0) {
       groups.push({

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { SearchResult, ResultItem } from '@/src/types';
 import { ResultCard } from './ResultCard';
 import { RiskBadge, RiskLevel } from './RiskBadge';
@@ -31,6 +31,8 @@ interface Props {
   supplementalLinks?: ResultItem[];
   /** When true, "Verify directly" links are only shown for sources that returned results */
   linksRequireResults?: boolean;
+  /** Extra section content, rendered after the result cards */
+  children?: ReactNode;
 }
 
 export function ReportSection({
@@ -45,6 +47,7 @@ export function ReportSection({
   criticalBanner,
   supplementalLinks,
   linksRequireResults = false,
+  children,
 }: Props) {
   const [open, setOpen] = useState(true);
 
@@ -165,6 +168,8 @@ export function ReportSection({
               No records found in automated search
             </p>
           )}
+
+          {children}
 
           {!isLinkSection && supplementalLinks && supplementalLinks.length > 0 && (
             <div className="mt-5 pt-4 border-t border-border-light">

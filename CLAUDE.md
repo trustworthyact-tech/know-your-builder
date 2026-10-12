@@ -22,7 +22,8 @@ npx tsc --noEmit          # mobile
 cd web && npx tsc --noEmit  # web
 ```
 
-No test suite or linter configured.
+Tests: `cd server && npm test` (unit), `server/tests/run-all.sh` (live), `cd web && npm test`
+(`riskGrouper` only). No linter configured.
 
 ## Checking scraper health (WS0.8, reliability plan)
 
@@ -230,8 +231,9 @@ rather than being discovered only at re-enable time.
 
 **Licence-register entity matching** (established 2026-10-09 for NSW/ACT; applies to every
 licence or disciplinary register added for any state/territory). Full evidence and the
-implementation plan: `LICENCE_MATCHING_PLAN.md` (until its phases land, `nswFairTrading.js`/
-`actLicences.js` don't yet follow all of this).
+implementation plan: `LICENCE_MATCHING_PLAN.md`. Shared helpers in
+`server/scrapers/licenceMatching.js` (`resolveEntityIdentity`, `classifyMatch`, name
+normalisation, name caps) — every licence register uses them rather than its own copy.
 - **Never search a register under the typed name alone.** Resolve identity once from the
   ABN lookup: ABR legal name, ABN, ACN (user-supplied, or last 9 digits of a *company's*
   ABN), entity type, business names, and for trusts the trust's own name ("The Trustee for X"
@@ -241,8 +243,9 @@ implementation plan: `LICENCE_MATCHING_PLAN.md` (until its phases land, `nswFair
   field at all. Search/match every identifier the register supports, digits only (spaced
   formats fail), and compare any 9- or 11-digit value against *both* ABN and ACN — registers
   put ABNs in ACN fields and vice versa.
-- **Always also search by name** (legal name, business names — capped at 10 for any
-  proxy-backed per-name search — and trust name): a material share of records carry no
+- **Always also search by name** (legal name, business names — capped for any proxy-backed
+  per-name search: 10 for NSW licences, 3 for ACT courts and FWO, constants in
+  `licenceMatching.js` — and trust name): a material share of records carry no
   identifier at all (mostly legacy NSW records, trusts, partnerships, "P/L"-style names).
   Normalise suffixes (P/L, Pty Limited, Proprietary Limited → Pty Ltd), bracketed words, and
   `&`/and before matching.
@@ -304,7 +307,13 @@ redundant download.
 
 ## Incomplete work
 
-### ScrapeOps proxy credits run out within days for companies with many business names — OPEN, decision pending (2026-10-09)
+### ScrapeOps proxy credits run out within days for companies with many business names — DECIDED, fix on branch (2026-10-09)
+
+**Decided (2026-10-09): business-name cap of 3 for `courts_act` and `fwo`, 10 for NSW
+licences, no ScrapeOps upgrade.** Implemented with licence-matching Phase 2 (branch
+`feature/licence-matching-phase2`): estimated ~55 → ~35 credits for the Turnkey search. Not
+yet measured in production. The options and measurements below are the record of how this
+was decided.
 
 **Measured in production, 2026-10-09**, right after licence-matching Phase 1 deployed: one
 `/api/search` for TURNKEY CREATIONS PTY LTD (ABN 67155832732, 11 ABR business names) used
@@ -340,9 +349,35 @@ credits.
 - The health dashboard won't flag credit exhaustion (see `LICENCE_MATCHING_PLAN.md`'s Phase 2
   constraints) — check `used_api_credits` directly until something monitors it.
 
-### Licence matching misses trading-name searches and multi-director NSW companies — planned (2026-10-09)
+### Licence matching misses trading-name searches and multi-director NSW companies — Phases 1–3 done on branch, not deployed (2026-10-11)
 
-Not started. Full plan, evidence, user decisions and test fixtures: **`LICENCE_MATCHING_PLAN.md`**
+**Phase 3 done (2026-10-11, same branch):** report shows how each record matched (badges, a
+linked-companies list in 8.1); `riskGrouper` ignores `Name only — verify` and linked-company
+records, and confirmed linked-company records raise one "Associated company" trigger each under
+Corporate Structure & Phoenix Risk without raising its severity. Also fixed: person-only
+searches sent ASIC insolvency / ATO debt / payment times / modern slavery a blank name (10
+unrelated insolvency notices, flagged as a finding) — now "not searched". `web/` now has
+`npm test` (`tsx --test lib/riskGrouper.test.ts`). Remaining: the production credit/latency
+check after deploy.
+
+**Phase 2b done (2026-10-11, same branch):** names the user types are searched in NSW
+again (a director-only search had silently stopped searching NSW), people are linked to other
+companies via NSW personal-licence records and ACT partner/nominee lists, up to 3 linked
+companies' legal names (plus the entity's legal name) feed courts/FWO/ASIC EU/ACT
+disciplinary, and person-name matches are `Name only — verify` unless tied by licence number.
+**Ship Phase 2, 2b and 3.3 together** — until 3.3, a linked company's cancelled licence reads
+as the searched entity's own licensing finding.
+
+**Phase 2 done on branch `feature/licence-matching-phase2` (not deployed):** new shared
+`server/scrapers/licenceMatching.js`; the orchestrator resolves the entity's identity once from
+the ABN lookup (8s bound, fails open to the typed name) and NSW/ACT match by ABN/ACN first,
+then by legal/business/trust names, with every item tagged `metadata.MatchedBy`. NSW no longer
+searches under person names — people's licences come from the licence record. Deviations and
+live results are recorded under each Phase 2 item in `LICENCE_MATCHING_PLAN.md`. Still to do:
+the production credit/latency check, then Phase 3 (report labels, riskGrouper excludes
+name-only).
+
+Originally: Full plan, evidence, user decisions and test fixtures: **`LICENCE_MATCHING_PLAN.md`**
 (repo root) — work it phase by phase and tick items off there. In short: licence searches
 use the typed name verbatim (a TURNKEY CREATIONS PTY LTD search entered as one of its ABR
 business names found no licences and no people); NSW silently drops all directors when the

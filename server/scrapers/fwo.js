@@ -209,12 +209,18 @@ async function searchFWO(companyName, abn, directors) {
   // courtRecords.js's comment on concurrent:true). Running terms sequentially compounded
   // that across every director name; concurrently, total time is bounded by the single
   // slowest term instead of their sum.
+  // A director-only search has no company name or ABN: the primary query is skipped rather than
+  // sent blank — a blank query returned the newsroom's latest outcomes, and an empty entity name
+  // let all of them through the name filter (found 2026-10-11: six unrelated FWO outcomes on a
+  // person search).
+  const primaryQuery = abn ? abn.replace(/\s/g, '') : (companyName || '').trim();
   const queries = [
-    { query: abn ? abn.replace(/\s/g, '') : companyName, entityName: companyName },
+    ...(primaryQuery ? [{ query: primaryQuery, entityName: companyName }] : []),
     ...(directors || []).filter(Boolean).map((director) => ({ query: director, entityName: director })),
   ];
   const outcomes = await Promise.all(queries.map(({ query, entityName }) => fetchFwoResults(query, entityName)));
-  const allResults = outcomes.flatMap((o) => o.results);
+  // matchedTerm: which name found it — same field courtRecords.js sets.
+  const allResults = outcomes.flatMap((o, i) => o.results.map((r) => ({ ...r, matchedTerm: queries[i].entityName })));
 
   // Deduplicate by URL
   const seen = new Set();

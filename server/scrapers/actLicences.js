@@ -1,4 +1,5 @@
 const { readCachedLicenceRecords, readCachedDisciplinaryRecords } = require('./actLicencesDataset');
+const { NAME_ONLY, asIdentity, classifyMatch, entityNames, licenceSummary, makeNameMatcher } = require('./licenceMatching');
 
 // ACT Access Canberra — List of Professionals (Socrata open-data API).
 // No auth required. Company names are stored in the `surname` field;
@@ -62,31 +63,7 @@ function registerUrlForOccupation(occupation) {
 
 const BUILDING_OCCUPATIONS = new Set(['Builder', 'Building Surveyor', 'Building Assessor']);
 
-function escapeRegExp(s) {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function nameMatchesEntity(text, query) {
-  if (!query) return false;
-  const words = query
-    .toLowerCase()
-    .split(/\s+/)
-    // Strip punctuation from each token before building its \b-anchored regex. Found live
-    // 2026-09-09 while verifying resolveActAssociatedNames against "Geocon Constructors
-    // (ACT) Pty Ltd": a token that itself starts/ends with punctuation (e.g. "(act)") can
-    // never satisfy \b at that position, since \b requires a word/non-word transition and
-    // both the preceding space and the leading "(" are non-word — the match silently fails
-    // regardless of whether the name is genuinely present in the text. Stripping punctuation
-    // from the token (leaving the alphanumeric core, e.g. "act") lets \b anchor correctly
-    // against the real word-boundary that still exists around it in the target text.
-    .map((w) => w.replace(/[^a-z0-9]/g, ''))
-    .filter((w) => (w.length > 3 || /^\d+$/.test(w)) && !/^(pty|ltd|limited|the|and|of|a)$/.test(w));
-  if (words.length === 0) return false;
-  const lower = text.toLowerCase();
-  return words.every((w) => new RegExp(`\\b${escapeRegExp(w)}\\b`).test(lower));
-}
-
-function toResultItem(hit, query) {
+function toResultItem(hit, query, provenance = {}) {
   const name = hit.surname
     ? `${hit.surname}${hit.given_names ? ', ' + hit.given_names : ''}`
     : query;
@@ -112,6 +89,7 @@ function toResultItem(hit, query) {
       ACN: hit.licensee_acn,
       Partners: hit.partners,
       Nominees: hit.nominees,
+      ...provenance,
     },
   };
 }
@@ -129,6 +107,104 @@ function parseNames(field) {
     .filter(Boolean);
 }
 
+function licenceNameField(hit) {
+  return hit.given_names ? `${hit.given_names} ${hit.surname}` : hit.surname || '';
+}
+
+// Licence numbers in a nominees field ("NICKOLAS JAI CONSTABLE: 20091091-Builder-Class C" →
+// "20091091") — the nominee's own licence, which is how a person's licence is tied to a company
+// record by number rather than by name (LICENCE_MATCHING_PLAN.md 2b.4).
+function nomineeLicenceNumbers(field) {
+  return [...String(field || '').matchAll(/:\s*(\d+)/g)].map((m) => m[1]);
+}
+
+// Classifies one ACT licence row against the entity (licenceMatching.js). `licensee_acn` holds
+// an ACN or an 11-digit ABN, spaced or not (LICENCE_MATCHING_PLAN.md finding 3) — compared
+// digit-wise against both. Returns null for rows that don't belong to the entity, including
+// rejected ones (name matches, identifiers differ).
+function classifyLicenceRow(hit, identity, matchers) {
+  const { match, matchedBy } = classifyMatch(
+    { identifiers: [hit.licensee_acn], names: [licenceNameField(hit)] },
+    identity,
+    matchers
+  );
+  return match === 'confirmed' || match === 'name-only' ? matchedBy : null;
+}
+
+// One pass over the building-occupation rows, sorting each into:
+//   - entity rows: the searched entity's own licences (ACN/ABN first, then its names);
+//   - person rows: a listed person's own licence, matched by their name. Confirmed
+//     ('Linked on licence record') only when its number is a nominee number on one of the
+//     entity's confirmed licences; otherwise 'Name only — verify' (could be a namesake);
+//   - linked-company rows: another company licence a listed person appears on as partner or
+//     nominee (Phase 2b.2 — e.g. Frank Walmsley → Turnkey, though he holds no licence). Confirmed
+//     only when tied by a confirmed nominee licence number; a name in the partners/nominees list
+//     is a name match ('Name only — verify').
+// `people` are person names (typed, or discovered from licence records). Matching is local and
+// free, so it's uncapped.
+function matchActLicenceRows(records, identity, people) {
+  const entityMatchers = entityNames(identity).map(makeNameMatcher);
+  const personMatchers = [...new Set((people || []).filter(Boolean))].map((name) => ({ name, matches: makeNameMatcher(name) }));
+  const rows = records.filter((hit) => BUILDING_OCCUPATIONS.has(hit.occupation));
+
+  const entityRows = [];
+  const entityKeys = new Set();
+  const confirmedNomineeNumbers = new Set();
+  for (const hit of rows) {
+    const matchedBy = classifyLicenceRow(hit, identity, entityMatchers);
+    if (!matchedBy) continue;
+    entityRows.push({ hit, matchedBy });
+    entityKeys.add(hit.cola_licence_number);
+    if (matchedBy !== NAME_ONLY) for (const n of nomineeLicenceNumbers(hit.nominees)) confirmedNomineeNumbers.add(n);
+  }
+
+  const personRows = [];
+  const linkedCompanyRows = [];
+  if (personMatchers.length === 0) return { entityRows, personRows, linkedCompanyRows };
+
+  const confirmedPersonNumbers = new Map(); // licence number → person name
+  for (const hit of rows) {
+    if (entityKeys.has(hit.cola_licence_number) || !hit.given_names) continue;
+    const person = personMatchers.find((p) => p.matches(licenceNameField(hit)));
+    if (!person) continue;
+    const confirmed = confirmedNomineeNumbers.has(String(hit.cola_licence_number));
+    if (confirmed) confirmedPersonNumbers.set(String(hit.cola_licence_number), person.name);
+    personRows.push({ hit, person: person.name, matchedBy: confirmed ? 'Linked on licence record' : NAME_ONLY });
+  }
+
+  for (const hit of rows) {
+    if (entityKeys.has(hit.cola_licence_number) || hit.given_names) continue;
+    // Tied by a confirmed person's licence number — a link even when the nominee's name is
+    // written differently ("N J CONSTABLE").
+    const tiedNumber = nomineeLicenceNumbers(hit.nominees).find((n) => confirmedPersonNumbers.has(n));
+    if (tiedNumber) {
+      const person = confirmedPersonNumbers.get(tiedNumber);
+      linkedCompanyRows.push({ hit, person, role: 'Nominee', confidence: 'confirmed', matchedBy: `Linked company — via ${person}` });
+      continue;
+    }
+    const listed = [
+      ...parseNames(hit.partners).map((name) => ({ name, role: 'Partner' })),
+      ...parseNames(hit.nominees).map((name) => ({ name, role: 'Nominee' })),
+    ];
+    let link = null;
+    for (const { name, role } of listed) {
+      const person = personMatchers.find((p) => p.matches(name));
+      if (person) {
+        link = { person: person.name, role };
+        break;
+      }
+    }
+    if (!link) continue;
+    linkedCompanyRows.push({ hit, ...link, confidence: 'name-only', matchedBy: NAME_ONLY });
+  }
+  return { entityRows, personRows, linkedCompanyRows };
+}
+
+async function readLicenceRows(_readCachedLicenceRecords) {
+  const { records } = await _readCachedLicenceRecords();
+  return records;
+}
+
 // Partner / Nominee names for a company's ACT builder licence, straight from Access
 // Canberra's own register — reliability plan WS3: a free substitute for ASIC's own officer
 // data (DSP access paused until 2027, see CLAUDE.md's WS3 entries). Deliberately independent
@@ -136,36 +212,63 @@ function parseNames(field) {
 // an already-local dataset cache (WS1), not a live call, so calling it a second time here
 // costs a cache read, not a duplicate HTTP request — not worth the complexity a hoisted-
 // promise split would add. Fails open (returns []) on any error — director discovery is
-// best-effort and must never block resolveDirectors()'s other 12 consumers.
-async function resolveActAssociatedNames(companyName, _readCachedLicenceRecords = readCachedLicenceRecords) {
-  const strippedName = (companyName || '').replace(/\s*(?:pty|proprietary)?\.?\s*(?:ltd|limited)\.?\s*$/i, '').trim();
-  if (!strippedName) return [];
-
+// best-effort and must never block resolveDirectors()'s other consumers.
+//
+// Since LICENCE_MATCHING_PLAN.md Phase 2, licences are matched to the entity by ACN/ABN first,
+// then by any of its names (legal, business, trust, typed). People from a name-only licence
+// carry `confidence: 'name-only'`.
+async function resolveActAssociatedNames(identityOrName, _readCachedLicenceRecords = readCachedLicenceRecords) {
+  const identity = asIdentity(identityOrName);
+  if (entityNames(identity).length === 0 && !identity.abn && !identity.acn) return [];
   let records;
   try {
-    ({ records } = await _readCachedLicenceRecords());
+    records = await readLicenceRows(_readCachedLicenceRecords);
   } catch {
     return [];
   }
-
   const names = [];
-  for (const hit of records) {
-    if (!BUILDING_OCCUPATIONS.has(hit.occupation)) continue;
-    if (!nameMatchesEntity(hit.surname || '', strippedName)) continue;
-    for (const name of parseNames(hit.partners)) names.push({ name, role: 'Partner' });
-    for (const name of parseNames(hit.nominees)) names.push({ name, role: 'Nominee' });
+  for (const { hit, matchedBy } of matchActLicenceRows(records, identity, []).entityRows) {
+    const confidence = matchedBy === NAME_ONLY ? 'name-only' : 'confirmed';
+    for (const name of parseNames(hit.partners)) names.push({ name, role: 'Partner', confidence });
+    for (const name of parseNames(hit.nominees)) names.push({ name, role: 'Nominee', confidence });
   }
   return names;
 }
 
-async function searchACTLicences(companyName, abn, directors, _readCachedLicenceRecords = readCachedLicenceRecords) {
-  // Strip "Pty Ltd" so partial-word matches work against the registered name.
-  const strippedName = companyName.replace(/\s*(?:pty|proprietary)?\.?\s*(?:ltd|limited)\.?\s*$/i, '').trim();
-  const queries = [strippedName, ...(directors || [])].filter(Boolean);
+// Other companies the given people appear on as partner/nominee (Phase 2b.2), in the shape the
+// orchestrator merges with NSW's linked companies: { name, abn, acn, licenceNumber, via,
+// confidence, source }. Fails open to [] — this only widens the searches.
+async function resolveActLinkedCompanies(identityOrName, people, _readCachedLicenceRecords = readCachedLicenceRecords) {
+  if (!(people || []).some(Boolean)) return [];
+  let records;
+  try {
+    records = await readLicenceRows(_readCachedLicenceRecords);
+  } catch {
+    return [];
+  }
+  return matchActLicenceRows(records, asIdentity(identityOrName), people).linkedCompanyRows.map(({ hit, person, role, confidence }) => {
+    const digits = (hit.licensee_acn || '').replace(/\D/g, '');
+    return {
+      name: hit.surname,
+      abn: digits.length === 11 ? digits : '',
+      acn: digits.length === 9 ? digits : '',
+      licenceNumber: hit.cola_licence_number,
+      person,
+      via: `${person} (${role})`,
+      confidence,
+      source: 'ACT',
+    };
+  });
+}
+
+// `identityOrName` is a licenceMatching.js identity, or a plain company name (+ `abn`) for
+// standalone use. `directors` are person names to match individually (local, free).
+async function searchACTLicences(identityOrName, abn, directors, _readCachedLicenceRecords = readCachedLicenceRecords) {
+  const identity = asIdentity(identityOrName, abn);
 
   let records;
   try {
-    ({ records } = await _readCachedLicenceRecords());
+    records = await readLicenceRows(_readCachedLicenceRecords);
   } catch (err) {
     return {
       source: 'ACT Access Canberra — Builder Licence Register',
@@ -179,20 +282,15 @@ async function searchACTLicences(companyName, abn, directors, _readCachedLicence
     };
   }
 
-  const allResults = [];
-  const seen = new Set();
-
-  for (const query of queries) {
-    for (const hit of records) {
-      if (!BUILDING_OCCUPATIONS.has(hit.occupation)) continue;
-      const nameField = hit.given_names ? `${hit.given_names} ${hit.surname}` : hit.surname;
-      if (!nameMatchesEntity(nameField, query)) continue;
-      const key = hit.cola_licence_number || `${hit.surname}|${hit.expiry_date}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      allResults.push(toResultItem(hit, query));
-    }
-  }
+  const { entityRows, personRows, linkedCompanyRows } = matchActLicenceRows(records, identity, directors);
+  const entityName = identity.legalName || identity.typedName;
+  const allResults = [
+    ...entityRows.map(({ hit, matchedBy }) => toResultItem(hit, entityName, { MatchedBy: matchedBy })),
+    ...personRows.map(({ hit, person, matchedBy }) => toResultItem(hit, person, { MatchedBy: matchedBy, LinkedVia: `Person: ${person}` })),
+    ...linkedCompanyRows.map(({ hit, person, role, matchedBy }) =>
+      toResultItem(hit, hit.surname, { MatchedBy: matchedBy, LinkedCompany: hit.surname, LinkedVia: `${person} (${role})` })
+    ),
+  ];
 
   return {
     source: 'ACT Access Canberra — Builder Licence Register',
@@ -200,16 +298,13 @@ async function searchACTLicences(companyName, abn, directors, _readCachedLicence
     category: 'license',
     results: allResults,
     searchUrl: REGISTERS_PORTAL_URL,
-    summary:
-      allResults.length > 0
-        ? `${allResults.length} ACT builder licence record(s) found`
-        : 'No ACT builder licence records found',
+    summary: licenceSummary(allResults, identity, { found: 'ACT builder licence record(s)', none: 'ACT builder licence' }),
   };
 }
 
 // ── Register of Disciplinary Actions (avib-prrz) ────────────────────────────────
 
-function toDisciplinaryResultItem(hit, query) {
+function toDisciplinaryResultItem(hit, query, provenance = {}) {
   return {
     title: hit.licensee_name || query,
     url: DISCIPLINARY_PORTAL_URL,
@@ -225,22 +320,30 @@ function toDisciplinaryResultItem(hit, query) {
       ActionDate: hit.action_date,
       Reasons: hit.circumstances_reasons,
       ACN: hit.a_c_n,
+      ...provenance,
     },
   };
 }
 
-async function searchACTDisciplinary(companyName, abn, directors, _readCachedDisciplinaryRecords = readCachedDisciplinaryRecords) {
-  // A company's ABN is its two check digits followed by its ACN — derive a
-  // candidate ACN from either a bare 9-digit ACN or an 11-digit ABN so a match
-  // against a_c_n is still possible if the registered name in this dataset
-  // doesn't textually match the searched company name.
-  const abnDigits = (abn || '').replace(/\D/g, '');
-  const acnDigits =
-    abnDigits.length === 11 ? abnDigits.slice(2) : abnDigits.length === 9 ? abnDigits : '';
-
-  // Strip "Pty Ltd" so partial-word matches work against the registered name.
-  const strippedName = (companyName || '').replace(/\s*(?:pty|proprietary)?\.?\s*(?:ltd|limited)\.?\s*$/i, '').trim();
-  const queries = [strippedName, ...(directors || [])].filter(Boolean);
+// Matched by `a_c_n` (ACN, or an ABN stored in that field) first, then by the entity's names,
+// then by linked companies (Phase 2b.3 — each matched by its own ACN/ABN or name), then by person
+// names. A person-name match is 'Name only — verify'. A linked-company action carries
+// `Linked company — via <person>` only when the link is confirmed and the action matched the
+// company's identifier; otherwise 'Name only — verify'.
+async function searchACTDisciplinary(
+  identityOrName,
+  abn,
+  directors,
+  _readCachedDisciplinaryRecords = readCachedDisciplinaryRecords,
+  linkedCompanies = []
+) {
+  const identity = asIdentity(identityOrName, abn);
+  const entityMatchers = entityNames(identity).map(makeNameMatcher);
+  const people = (directors || []).filter(Boolean).map((d) => ({ name: d, matcher: makeNameMatcher(d) }));
+  const linked = (linkedCompanies || []).map((c) => {
+    const cIdentity = { legalName: c.name, typedName: c.name, abn: c.abn || '', acn: c.acn || '', possibleAcn: '', businessNames: [], trustName: '' };
+    return { company: c, identity: cIdentity, matchers: entityNames(cIdentity).map(makeNameMatcher) };
+  });
 
   let records;
   try {
@@ -261,25 +364,40 @@ async function searchACTDisciplinary(companyName, abn, directors, _readCachedDis
   const allResults = [];
   const seen = new Set();
 
-  function addMatches(query) {
-    for (const hit of records) {
-      if (!BUILDING_OCCUPATIONS.has(hit.occupation)) continue;
-      const hitAcnDigits = (hit.a_c_n || '').replace(/\D/g, '');
-      const acnMatches = Boolean(acnDigits) && hitAcnDigits === acnDigits;
-      if (!acnMatches && !nameMatchesEntity(hit.licensee_name, query)) continue;
-      const key = `${hit.licence_number}|${hit.action_date}|${hit.action_type}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      allResults.push(toDisciplinaryResultItem(hit, query));
+  for (const hit of records) {
+    if (!BUILDING_OCCUPATIONS.has(hit.occupation)) continue;
+    const key = `${hit.licence_number}|${hit.action_date}|${hit.action_type}`;
+    if (seen.has(key)) continue;
+    const record = { identifiers: [hit.a_c_n], names: [hit.licensee_name] };
+    const { match, matchedBy: entityMatch } = classifyMatch(record, identity, entityMatchers);
+    let provenance = null;
+    let query = identity.legalName || identity.typedName;
+    if (match === 'confirmed' || match === 'name-only') {
+      provenance = { MatchedBy: entityMatch };
+    } else if (match !== 'rejected') {
+      for (const l of linked) {
+        const r = classifyMatch(record, l.identity, l.matchers);
+        if (r.match !== 'confirmed' && r.match !== 'name-only') continue;
+        const confirmed = r.match === 'confirmed' && l.company.confidence === 'confirmed';
+        provenance = {
+          MatchedBy: confirmed ? `Linked company — via ${l.company.person || l.company.via}` : NAME_ONLY,
+          LinkedCompany: l.company.name,
+          LinkedVia: l.company.via,
+        };
+        query = l.company.name;
+        break;
+      }
+      if (!provenance) {
+        const person = people.find((p) => p.matcher(hit.licensee_name || ''));
+        if (person) {
+          provenance = { MatchedBy: NAME_ONLY, LinkedVia: `Person: ${person.name}` };
+          query = person.name;
+        }
+      }
     }
-  }
-
-  // The ACN match is independent of any query string, so it needs to run at least
-  // once even if `queries` is empty (e.g. no director names and an unmatchable name).
-  if (queries.length > 0) {
-    for (const query of queries) addMatches(query);
-  } else if (acnDigits) {
-    addMatches('');
+    if (!provenance) continue;
+    seen.add(key);
+    allResults.push(toDisciplinaryResultItem(hit, query, provenance));
   }
 
   return {
@@ -295,4 +413,4 @@ async function searchACTDisciplinary(companyName, abn, directors, _readCachedDis
   };
 }
 
-module.exports = { searchACTLicences, searchACTDisciplinary, resolveActAssociatedNames };
+module.exports = { searchACTLicences, searchACTDisciplinary, resolveActAssociatedNames, resolveActLinkedCompanies };

@@ -1,6 +1,6 @@
 # Licence matching plan: identifier-first NSW/ACT licence and people discovery
 
-Status: **Phase 1 done (2026-10-09, branch `fix/licence-matching-phase1`); Phases 2–3 not started** (drafted 2026-10-09). Work through the phases in order and
+Status: **Phase 1 done (2026-10-09, branch `fix/licence-matching-phase1`); Phase 2 done (2026-10-09, branch `feature/licence-matching-phase2`, not yet deployed); Phase 2b done (2026-10-11, same branch); Phase 3 done (2026-10-11, same branch) — ship 2, 2b and 3 together; production credit check still to do** (drafted 2026-10-09). Work through the phases in order and
 tick items off here as they land, so a fresh session can pick up mid-way. The permanent rules
 this plan implements (and that every future state/territory licence register must follow) are
 in CLAUDE.md under "Scraper conventions" → "Licence-register entity matching".
@@ -62,10 +62,13 @@ in CLAUDE.md under "Scraper conventions" → "Licence-register entity matching".
   search. Watch `used_api_credits`
   (`GET https://proxy.scrapeops.io/v1/account?api_key=…`, run from the production container
   via `railway ssh`, since the key lives only in Railway env).
-- **Business-name cap = 10, applied to the NSW licence search AND to the ACT court search**
-  (`courts_act`, which spends 2 proxy credits per name). ACT licence matching is local and
-  free, so the cap is irrelevant there. Apply the same cap to any future proxy-backed
-  per-name search.
+- **Business-name caps (revised 2026-10-09, after Phase 1's production check): 10 for the
+  NSW licence search; 3 for `courts_act` (2 proxy credits per name) and `fwo`.** The
+  original single cap of 10 was decided before one 11-business-name search was measured at
+  55 credits; 10 would only have cut it to ~13 terms. Licences are what a trading-name search
+  misses most, so NSW keeps 10. ACT licence matching is local and free, so it's uncapped.
+  Any future proxy-backed per-name search must pick a cap and check its credit cost
+  (constants in `server/scrapers/licenceMatching.js`).
 - **Name-only matches are "verify" only.** Show them in the report, labelled
   "matched by name only — verify", but they must never drive a `riskGrouper` finding or
   severity. Revisit later.
@@ -145,7 +148,7 @@ Phase 2/3 item below:
   exhaustion would therefore show as failing reports but a "healthy" dashboard. Not changed
   here; check ScrapeOps usage directly (see Decisions).
 
-- [ ] **2.1 Shared module `server/scrapers/licenceMatching.js`.** This is how the logic
+- [x] **2.1 Shared module `server/scrapers/licenceMatching.js`.** This is how the logic
   carries over to future registers: every licence scraper uses it rather than re-implementing
   matching per file (an intentional exception to the file-local-helper habit, because the
   rules must not drift). Exports:
@@ -163,11 +166,31 @@ Phase 2/3 item below:
     match → confirmed; identifiers present but different → rejected even if the name matches;
     no identifiers and name matches → name-only.
   - `BUSINESS_NAME_CAP = 10`.
-- [ ] **2.2 Orchestrator** (`server/searchOrchestrator.js`). Build the identity once from
+  - **As built:** also `COURT_FWO_BUSINESS_NAME_CAP = 3`, `searchableName` (normalised, suffix
+    dropped — what's typed into a register search), `makeNameMatcher` (compiled once per
+    query; minimum significant-word length is 3, not the old 4, so "BHP"-style names work),
+    `entityNames(identity)`, and `asIdentity(nameOrIdentity, abn)` so standalone/live-test
+    callers can still pass a plain company name. Two refinements to `classifyMatch`'s rule:
+    (1) a record is only *rejected* when it carries an identifier of a kind the identity also
+    has — a trust (ABN only) is not rejected by a record carrying only its trustee company's
+    ACN; it falls back to name-only. (2) When the ABR entity type is unknown (identity lookup
+    timed out, or standalone caller), the ABN's last 9 digits become `possibleAcn`: it can
+    confirm a match (and NSW searches it) but never reject one. ABR exposes no ACN field, so
+    the ACN is always derived from a company's ABN.
+- [x] **2.2 Orchestrator** (`server/searchOrchestrator.js`). Build the identity once from
   `abnPromise` (adds about 1–2s before licence discovery starts) and pass it to NSW, ACT and
   people discovery. The typed name becomes the fallback only when there is no ABN. Cap
   `resolveAlternateNames()` output passed to `courts_act` at 10.
-- [ ] **2.3 NSW** (`nswFairTrading.js`). Queries in priority order, at most 3 concurrent via
+  - **As built:** `identityPromise` bounds `abnPromise` at 8s and fails open to the typed
+    name/ABN; with no ABN typed it resolves immediately. NSW discovery and ACT people
+    discovery start from it; the 20s discovery bound covers identity + NSW. `courts_act` and
+    `fwo` get business names capped at 3. The `nswFairTrading` key no longer awaits
+    `resolveDirectors()` and no longer gets `markPartialIfNoDirectors()` (it doesn't search
+    under person names any more, so a missing person list doesn't make it partial).
+    Courts still search under the typed `companyName`, not the legal name — not in this
+    plan's scope; a trading-name search still misses court records filed under the legal
+    name unless it's also an ABR business name.
+- [x] **2.3 NSW** (`nswFairTrading.js`). Queries in priority order, at most 3 concurrent via
   `proxyLimiter`, leaving headroom for courts and FWO:
   - (a) ABN digits, ACN digits and legal name. These feed people discovery and must finish
     inside the 20s discovery timeout.
@@ -175,25 +198,157 @@ Phase 2/3 item below:
   Dedupe by `licenceId`. Fetch one details page per unique licence. Apply `classifyMatch`
   using the hit's `ABN`/`ACN`. Also match the hit's `businessNameList`. Fix the metadata to
   show `ACN` (and `ABN` when present).
-- [ ] **2.4 ACT** (`actLicences.js`: licences, disciplinary, `resolveActAssociatedNames`).
+  - **As built:** a 3-slot per-search limiter covers searches *and* details fetches. Dedupe
+    is by `licenceId` across all queries. Every item carries `metadata.MatchedBy`
+    (`ABN` / `ACN` / `Name only — verify`). Rejected hits are logged, not shown. Queries are
+    sent normalised (lowercase, suffix dropped). Live: Turnkey typed as "Canberra Granny Flat
+    Builders" → 259006C via ACN; Universal → 85273C via ABN; Ardent → 354290C via ABN.
+- [x] **2.4 ACT** (`actLicences.js`: licences, disciplinary, `resolveActAssociatedNames`).
   Match `licensee_acn` / `a_c_n` digit-wise against ABN and ACN, plus names (legal, business,
   trust). Apply `classifyMatch`.
-- [ ] **2.5 People discovery.** Take Directors / Nominated Supervisor (NSW) and Partners /
+  - **As built:** one pass over the rows per search. Entity matches carry `MatchedBy`; rows
+    matched only via a person's name (directors/partners passed in) carry
+    `MatchedBy: 'Linked person — name match'` — a separate label from `Name only — verify`,
+    since the person was linked to the entity by a licence record. **Superseded by 2b.4**:
+    that label is gone; person-name matches are `Name only — verify` unless tied by number.
+- [x] **2.5 People discovery.** Take Directors / Nominated Supervisor (NSW) and Partners /
   Nominees (ACT) from `confirmed` licences, plus the personal licences NSW lists under each
   party (`parties[].licences`). People from `name-only` licences are included, tagged with
   lower confidence.
-- [ ] **2.6 Drop NSW searches under each person's name** in `searchNSWFairTrading`. The
+  - **As built:** `associatedNames` entries are `{ name, role, confidence: 'confirmed' |
+    'name-only' }`; `resolveDirectors()` still flattens them to names. Linked personal
+    licences become NSW result items (`MatchedBy: 'Linked on licence record'`, plus
+    `LinkedVia: '<role> on licence <number>'`), or `Name only — verify` when the company
+    licence they came from was name-only. Each one gets its own details fetch for compliance
+    history (1 credit each) — the plan assumed none.
+- [x] **2.6 Drop NSW searches under each person's name** in `searchNSWFairTrading`. The
   details payload already links each person's licences, which saves about 2 proxy credits per
   search. Keep ACT per-person matching, which is local and free.
+  - **Trade-off seen live:** a licence NSW doesn't link to the person is no longer found —
+    e.g. Universal's "Raja Mohan Kamineni" supervisor certificate, which the old name search
+    turned up, is not linked under "Raj Mohan" on 85273C.
+- [x] Verify (Phase 2): `npm test` 200/200 (new `licenceMatching.test.js`, rewritten
+  `nswFairTrading.test.js`); new live `tests/test-licence-matching.js` (9/9, in
+  `run-all.sh`); `test-ws3-director-discovery` now passes (was failing on `main`);
+  `test-nsw-fairtrading`, `-licence`, `test-act-licences`, `test-act-disciplinary`,
+  `test-launch-scope`, `test-ws4-fault-injection` pass. `test-ws0-pilot` fails identically on
+  `main` (no local ASIC DPN cache). **Not yet done: the production load/credit check below.**
+
+## Phase 2b: person searches, linked companies, legal + trading names (decided 2026-10-11)
+
+Agreed with the user after Phase 2 was built. Same branch as Phase 2.
+
+- [x] **2b.1 NSW searches names the user typed.** Phase 2.6 dropped *all* person-name
+  searches, which made a director-only search run zero NSW queries and report "no licence
+  found" — a false clean. Typed names are searched again (in the discovery queries, so their
+  linked companies are known in time for courts). Names discovered from a licence record are
+  still not searched: the record already links their licences. A typed person's licence found
+  by name is `Name only — verify` (could be a namesake).
+- [x] **2b.2 Person → linked company.**
+  - NSW: a personal licence's details list the company licences the person holds a role on
+    (`parties[].licences`, e.g. Constable's 241240C → Turnkey 259006C as Nominated
+    Supervisor). Explicit link; the company's details are fetched once for its ACN and
+    compliance (1 credit per linked company). Applies to typed people and to people found on
+    the searched entity's own licences (phoenix signal).
+  - ACT: company licence rows name people in `partners` / `nominees`. Match each listed name
+    individually against the person's full name (local, free) — e.g. Frank Walmsley → Turnkey,
+    though he holds no licence. Name-based, so these links are verify-confidence.
+  - Linked companies carry `{ name, abn, acn, via, confidence }`; the searched entity itself
+    is excluded. Their licences appear in the licence results with
+    `MatchedBy: 'Linked company — via <person>'` (or `Name only — verify` when the link is
+    name-based).
+- [x] **2b.3 Linked companies feed the name-based checks.** Legal name only (not their own
+  business names — that fans out to 30+ credits), **at most 3 linked companies per search**,
+  confirmed links first. Fed into: all court searches, FWO, ASIC enforceable undertakings,
+  ACT disciplinary. Not fed into ABN-keyed single-entity checks (ATO debt, ASIC insolvency,
+  payment times, modern slavery).
+- [x] **2b.4 One uncertainty label.** ACT licences matched via a person: a **nominee** licence
+  is confirmed when its licence number appears in a confirmed licence's nominees field
+  ("NAME: 20091091-Builder-Class C") → `Linked on licence record`, same as NSW. Every other
+  person-name match → `Name only — verify`. The "Linked person — name match" label is removed.
+- [x] **2b.5 Courts/FWO search legal name and typed name.** Always both (a typed trading name
+  is still searched); the cap of 3 applies only to the remaining ABR business names. About
+  +3 credits per search when they differ.
+
+- [x] **2b as built / verified (2026-10-11):**
+  - ACT linked companies are also tied **by nominee licence number** when a person's licence
+    is confirmed: a company whose nominees field lists that number is a confirmed link even if
+    the name is written differently ("N J CONSTABLE"). Partner/nominee *name* links stay
+    name-only.
+  - A person's linked companies come from people on the searched entity's own licences too
+    (phoenix signal), not only from typed names. NSW fetches details for the first 3 linked
+    company licences (ACN + compliance); further ones are listed without a fetch.
+  - NSW with nothing to search under (no name, ABN or person) now reports `unavailable`, not
+    "no licence".
+  - **Pre-existing bug fixed along the way:** `fwo.js` sent a blank query for a director-only
+    search and its name filter passed every result — six unrelated FWO outcomes on a person
+    search. A blank primary query is now skipped.
+  - Verified: `npm test` 206/206; `tests/test-licence-matching.js` 12/12 (adds director-only
+    "Nickolas Jai Constable" → Turnkey via NSW, and "Frank Walmsley" → Turnkey via ACT);
+    full local `runSearchRequest` for Turnkey-as-trading-name (court/FWO terms = legal name +
+    2 people + 3 business names; NSW Caselaw uncapped) and director-only Walmsley (Turnkey fed
+    into courts/FWO). Related live scripts pass. **Production credit check still not done.**
 
 ## Phase 3: report
 
-- [ ] **3.1 Provenance per result:** `metadata.MatchedBy = 'ABN' | 'ACN' | 'Name only — verify'`,
+**Revised 2026-10-11** for Phase 2b (user-approved).
+
+- [x] **3.1 Provenance per result:** `metadata.MatchedBy` — `ABN` | `ACN` |
+  `Linked on licence record` | `Linked company — via <person>` | `Name only — verify` —
   shown by `ResultCard` (it already renders metadata generically).
-- [ ] **3.2 No licence found by identifier or name:** the summary says "No licence linked
-  to this ABN found" (not a clean pass). People-dependent keys stay `partial` and say why.
-- [ ] **3.3 `riskGrouper.ts` excludes `Name only` results** from every trigger (decision
-  above). Add a test case for this.
+  - Court and FWO results record which search term found them ("found searching: X" — legal
+    name, trading name, person or linked company). Check how `courtRecords.js` can carry the
+    term through; it doesn't today.
+  - The report lists the linked companies found (per person, and how) — section 8.1, near
+    the existing associated-companies display.
+- [x] **3.2 No licence found by identifier or name:** the summary says "No licence linked
+  to this ABN found" (not a clean pass); for a director-only search (no ABN), "No licence
+  found under this name", and it says when no linked company could be found.
+  People-dependent keys stay `partial` and say why.
+- [x] **3.3 `riskGrouper.ts`:** `Name only — verify` results never drive a finding (one rule —
+  it's the only uncertain label). `Linked on licence record` results drive findings normally.
+  **Records against a linked company** (licences, court cases, FWO) raise a separate,
+  lower-severity **"associated company"** finding, never folded into the searched entity's own
+  findings — a phoenix signal, not proof against the entity — and only for confirmed links.
+  Court/FWO hits found under a person discovered only from a name-only licence are
+  verify-only too. Add test cases for each. Saved reports keep their frozen `riskSummary`.
+  **Don't deploy Phase 2b before 3.3:** until then a linked company's cancelled licence would
+  read as the searched entity's own licensing finding.
+
+- [x] **Phase 3 as built / verified (2026-10-11):**
+  - **3.1:** court, FWO and ASIC EU results now carry `matchedTerm` (FWO and ASIC EU gained it;
+    courts already had it). The orchestrator labels them with `FoundBySearching`, plus
+    `LinkedCompany` / `MatchedBy` for linked-company hits and hits under name-only people —
+    pure helpers `buildTermProvenance` / `labelResultsByTerm` in `licenceMatching.js`.
+    `ResultCard` shows a "Matched by name only — verify" or "Associated company: X" badge. New
+    `web/components/LinkedCompanies.tsx` lists linked companies in section 8.1 (via whom,
+    confirmed or name-only, records found), or says none were found when there were people;
+    `ReportSection` gained a `children` slot for it.
+  - **3.2:** shared `licenceSummary()` — "No NSW contractor licence linked to this ABN found
+    (searched by ABN, ACN and name)" / "… found under this name" (no ABN), and found counts
+    add "(N matched by name only — verify)". The "none found" linked-company line lives in the
+    8.1 list rather than a register summary.
+  - **3.3:** `riskGrouper` counts only the entity's own results (drops `Name only — verify`
+    and anything with `LinkedCompany`). Confirmed linked-company records (court, FWO, ASIC EU,
+    ACT disciplinary, and licences only when cancelled/suspended or with compliance history)
+    become one "Associated company …" trigger per company inside **Corporate Structure &
+    Phoenix Risk**, never raising its severity — chosen over a new risk-group id so the
+    comparison view, saved `riskSummary` shape and emails need no change. New
+    `web/lib/riskGrouper.test.ts` (6 tests, `npm test` in `web/` via `tsx --test`).
+  - **Two pre-existing person-search bugs fixed** (found rendering a director-only report):
+    ASIC insolvency sent a blank name and returned 10 unrelated notices, which the risk
+    summary flagged as a significant insolvency finding; ATO debt, payment times and modern
+    slavery got the same blank name. All four now report "Not searched — no company name or
+    ABN was given" (`status: 'error'`, `unavailable`). And `resolveDirectors()` deduped
+    case-sensitively, so NSW's "Frank Walmsley" and ACT's "FRANK WALMSLEY" were searched twice.
+  - Verified: server `npm test` 211/211; web `npm test` 6/6 and `tsc --noEmit` clean; live
+    `test-licence-matching`, `test-court-records`, `test-fwo`, `test-asic-eu`,
+    `test-launch-scope`, `test-ws4-fault-injection`, `test-ws3-director-discovery` pass;
+    `/report/preview` rendered with real Turnkey and Frank Walmsley output (plus one synthetic
+    linked company to exercise the associated-company path) and checked by screenshot.
+  - Not changed: `web/workers/monitoring.ts`'s `detectChanges` still counts raw result totals,
+    so linked-company and name-only records would count toward change alerts (the worker isn't
+    deployed — see CLAUDE.md). Saved reports keep their frozen `riskSummary`.
 
 ## Testing (Phase 2 + 3)
 
@@ -206,7 +361,7 @@ Phase 2/3 item below:
 | TURNKEY CREATIONS PTY LTD, searched as "Canberra Granny Flat Builders" + ABN 67155832732 | 2 ACT + 2 NSW licences; Constable + Walmsley |
 | Universal Property Group Pty Limited (ABN 98078297748) | Bhart Bhushan (Director), Raj Mohan (Nominated Supervisor) |
 | Ardent Builders Pty Ltd (ABN 84614738751, NSW ABN-only) | found via ABN |
-| An ACT record with an 11-digit `licensee_acn` (e.g. value 13673468329) | found via ABN |
+| An ACT builder record with an 11-digit `licensee_acn` — DEMOLITION BROTHERS (AUST) PTY LTD, ABN 54616886321 (13673468329 is an electrician, filtered out by occupation) | found via ABN |
 | A "P/L" name (e.g. ALFRED BUILDERS (AUST) P/L) | name-only match |
 | A NSW family-trust licensee | found via trust name |
 
@@ -216,6 +371,12 @@ Phase 2/3 item below:
 - `npx tsc --noEmit` in `web/` (Phase 3).
 
 ## Budget targets (no ScrapeOps upgrade)
+
+**Revised estimate for Phase 2 as built (not yet measured in production):** NSW per search =
+2–3 identifier/legal-name queries + 1 per business name (≤10) + trust name + 1 details per
+licence found + 1 per linked personal licence. Turnkey: ~15 NSW credits (was ~6), but
+`courts_act` drops from ~14 terms to ~6 (−16) and `fwo` from ~14 to ~6 (−8) with the cap of
+3 → roughly 55 → ~35 credits. Typical (0–3 business names): about +2–4.
 
 | | Proxy credits per search vs today | NSW time |
 |---|---|---|
