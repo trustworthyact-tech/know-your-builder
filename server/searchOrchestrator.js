@@ -16,7 +16,9 @@ const { SCRAPERS } = require('./scrapers/manifest');
 const { runScraper, withTimeout } = require('./scrapers/runScraper');
 const {
   resolveEntityIdentity,
+  withAsicIdentityFallback,
   COURT_FWO_BUSINESS_NAME_CAP,
+  FORMER_NAME_CAP,
   LINKED_COMPANY_CAP,
   buildTermProvenance,
   labelResultsByTerm,
@@ -27,7 +29,7 @@ const scraperHealth = require('./scrapers/scraperHealth');
 const { searchPaymentTimes } = require('./scrapers/paymentTimes');
 const { searchModernSlavery } = require('./scrapers/modernSlavery');
 const { searchQBCC } = require('./scrapers/qbcc');
-const { searchASIC } = require('./scrapers/asic');
+const { searchASIC, lookupAsicCompany } = require('./scrapers/asic');
 const { searchASICDisqualifiedFromDataset } = require('./scrapers/asicDpnMatch');
 const { searchAsicInsolvency } = require('./scrapers/asicInsolvency');
 const { searchAtoDebt } = require('./scrapers/atoDebt');
@@ -69,21 +71,38 @@ async function runSearchRequest({ abn, acn, companyName, tradingName, directors 
   // elsewhere, since every .then/.catch/await attaches independently to the same promise.
   const abnPromise = searchABN(abn, companyName, acn);
   abnPromise.catch(() => {});
-  const asicPromise = searchASIC(companyName, abn, acn, process.env.CAPTCHA_API_KEY);
-  asicPromise.catch(() => {});
 
   // Who the entity is (LICENCE_MATCHING_PLAN.md 2.2): legal name, ABN, ACN, entity type,
   // business names and trust name, resolved once from the ABN lookup and shared by the NSW and
   // ACT licence checks and people discovery — so a search typed as a trading name still searches
   // the registers under the legal name and identifiers. abnPromise has no overall timeout of its
-  // own (several 15s ABR calls), so it's bounded here and fails open to the typed name/ABN: a
-  // slow ABR must not eat the 20s discovery window below. With no ABN typed there is nothing to
-  // wait for.
+  // own (API, then page-scrape fallback), so it's bounded here and fails open to the typed
+  // name/ABN: a slow ABR must not eat the 20s discovery window below. 5s since the ABN Lookup API
+  // (DATA_SOURCES_PLAN.md 1.1; 200–850ms from Railway) — was 8s for the page scrape. With no ABN
+  // typed there is nothing to wait for.
+  //
+  // When the ABR gave no record (an outage, a timeout, or a genuinely unknown ABN), a company's
+  // legal name and ACN come from ASIC's Company Dataset by ABN instead (DATA_SOURCES_PLAN.md
+  // 1.4), bounded at 4s and failing open to the typed name as before. Found 2026-10-12: during
+  // an ABR maintenance window every search fell back to the typed name silently.
   const identityPromise = abn
-    ? withTimeout(abnPromise, 8_000)
+    ? withTimeout(abnPromise, 5_000)
+        .catch(() => null)
         .then((abnResult) => resolveEntityIdentity({ abn, acn, companyName }, abnResult))
-        .catch(() => resolveEntityIdentity({ abn, acn, companyName }, null))
+        .then((identity) =>
+          identity.legalName
+            ? identity
+            : withTimeout(lookupAsicCompany({ abn: identity.abn, acn: identity.acn }), 4_000)
+                .then((company) => withAsicIdentityFallback(identity, company))
+                .catch(() => identity)
+        )
     : Promise.resolve(resolveEntityIdentity({ abn, acn, companyName }, null));
+
+  // ASIC company record (Company Dataset — DATA_SOURCES_PLAN.md 1.3), looked up by the resolved
+  // ACN/ABN rather than the typed name, so it starts once identity resolves. Same no-op .catch()
+  // as abnPromise: runScraper may never await it when asic's breaker is open.
+  const asicPromise = identityPromise.then((identity) => searchASIC(identity));
+  asicPromise.catch(() => {});
 
   // WS3 (reliability plan) — director discovery via NSW/ACT's own licence registers, a free
   // substitute for ASIC's own officer data (its DSP application path is paused until 2027 —
@@ -199,6 +218,30 @@ async function runSearchRequest({ abn, acn, companyName, tradingName, directors 
     return linkedCompaniesPromise;
   }
 
+  // Former names of the entity itself, at most FORMER_NAME_CAP: the ABR's (dated, newest first,
+  // and covering trusts too — DATA_SOURCES_PLAN.md 1.1) then ASIC's (companies, confirmed by
+  // ACN), deduped. Each source is bounded so a slow lookup can't hold up the court/FWO searches;
+  // either failing just contributes nothing.
+  let formerNamesPromise;
+  function resolveFormerNames() {
+    formerNamesPromise ??= (async () => {
+      const [abr, asic] = await Promise.all([
+        identityPromise.then(() => withTimeout(abnPromise, 1_000)).catch(() => null),
+        withTimeout(asicPromise, 10_000).catch(() => null),
+      ]);
+      const seen = new Set([normaliseEntityName(companyName)]);
+      return [...(abr?.formerNames ?? []), ...(asic?.formerNames ?? [])]
+        .filter((n) => {
+          const key = normaliseEntityName(n);
+          if (!key || seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        })
+        .slice(0, FORMER_NAME_CAP);
+    })();
+    return formerNamesPromise;
+  }
+
   // Directors + ABR trading/business names, combined — for scrapers that treat their
   // "extra terms" parameter generically as more names to search under (courtRecords, FWO),
   // not just directors. resolveDirectors/resolveAlternateNames depend on different
@@ -209,14 +252,15 @@ async function runSearchRequest({ abn, acn, companyName, tradingName, directors 
   // name still searches both — Phase 2b.5; the cap applies only to the remaining business names),
   // and the legal names of linked companies (Phase 2b.3, at most LINKED_COMPANY_CAP).
   async function resolveExtraSearchTerms(businessNameCap = Infinity) {
-    const [identity, directorNames, alternateNames, linked] = await Promise.all([
+    const [identity, directorNames, alternateNames, linked, formerNames] = await Promise.all([
       identityPromise,
       resolveDirectors(),
       resolveAlternateNames(businessNameCap),
       resolveLinkedCompanies(),
+      resolveFormerNames(),
     ]);
     const typedKey = normaliseEntityName(companyName);
-    const names = [identity.legalName, ...directorNames, ...alternateNames, ...linked.map((c) => c.name)];
+    const names = [identity.legalName, ...directorNames, ...alternateNames, ...formerNames, ...linked.map((c) => c.name)];
     const seen = new Set([typedKey]);
     return names.filter((n) => {
       const key = normaliseEntityName(n);
@@ -232,11 +276,12 @@ async function runSearchRequest({ abn, acn, companyName, tradingName, directors 
   let termProvenancePromise;
   function resolveTermProvenance() {
     termProvenancePromise ??= (async () => {
-      const [identity, nsw, act, linked] = await Promise.all([
+      const [identity, nsw, act, linked, formerNames] = await Promise.all([
         identityPromise,
         nswDirectorDiscoveryPromise,
         actDirectorDiscoveryPromise,
         resolveLinkedCompanies(),
+        resolveFormerNames(),
       ]);
       return buildTermProvenance({
         companyName,
@@ -244,6 +289,7 @@ async function runSearchRequest({ abn, acn, companyName, tradingName, directors 
         typedPeople,
         discoveredPeople: [...(nsw.associatedNames ?? []), ...act],
         linkedCompanies: linked,
+        formerNames,
       });
     })().catch(() => new Map());
     return termProvenancePromise;
@@ -359,8 +405,13 @@ async function runSearchRequest({ abn, acn, companyName, tradingName, directors 
     asicExtract: async () =>
       searchAsicExtract(companyName, abn, acn, await resolveDirectors(), process.env.CAPTCHA_API_KEY),
     asicEnforceableUndertakings: async () => {
-      const [identity, dirs, linked] = await Promise.all([identityPromise, resolveDirectors(), resolveLinkedCompanies()]);
-      const extra = [identity.legalName, ...dirs, ...linked.map((c) => c.name)].filter(Boolean);
+      const [identity, dirs, linked, formerNames] = await Promise.all([
+        identityPromise,
+        resolveDirectors(),
+        resolveLinkedCompanies(),
+        resolveFormerNames(),
+      ]);
+      const extra = [identity.legalName, ...formerNames, ...dirs, ...linked.map((c) => c.name)].filter(Boolean);
       return withTermProvenance(await searchAsicEnforceableUndertakings(companyName, [...new Set(extra)]));
     },
   };

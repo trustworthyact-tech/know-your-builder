@@ -19,7 +19,7 @@ import { isJurisdictionInScope } from '@/lib/scope';
 // would never reach 100%.
 const INITIAL_SEARCHES: (SearchResult & { scope: string })[] = [
   { key: 'abn',               label: 'ABR — Business Register',               status: 'idle', scope: 'national' },
-  { key: 'asic',              label: 'ASIC Connect — Company Search',          status: 'idle', scope: 'national' },
+  { key: 'asic',              label: 'ASIC Company Register',                  status: 'idle', scope: 'national' },
   { key: 'asicDisqualified',  label: 'ASIC — Disqualified Persons Register',   status: 'idle', scope: 'national' },
   { key: 'asicInsolvency',   label: 'ASIC Published Notices — Insolvency',    status: 'idle', scope: 'national' },
   { key: 'atoDebt',          label: 'ASIC Published Notices — ATO Tax Debt',  status: 'idle', scope: 'national' },

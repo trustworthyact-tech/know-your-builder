@@ -75,7 +75,12 @@ const ENABLED_JURISDICTIONS = new Set(
 
 const SCRAPERS = [
   { key: 'abn', label: 'ABR — Business Register', jurisdiction: 'national', bucket: 2, sourceType: 'live-api', cadence: null, timeoutMs: 20_000, mvpScope: true },
-  { key: 'asic', label: 'ASIC Connect — Company Search', jurisdiction: 'national', bucket: 4, sourceType: 'live-scrape-captcha', cadence: null, timeoutMs: 90_000, mvpScope: true },
+  // DATA_SOURCES_PLAN.md 1.3 (2026-10-12): was bucket 4 / live-scrape-captcha / 90s (ASIC Connect
+  // + 2captcha). Now ASIC's Company Dataset via data.gov.au's live DataStore API — a plain live
+  // call, bucket 2. 30s, not 20s: the lookup waits on identity (ABR, up to 5s, plus a 4s ASIC
+  // fallback) and then makes up to two 8s attempts — the budget must cover the awaited chain,
+  // not just its own call (the 2026-10-02 lesson).
+  { key: 'asic', label: 'ASIC Company Register', jurisdiction: 'national', bucket: 2, sourceType: 'live-api', cadence: null, timeoutMs: 30_000, mvpScope: true },
   // timeoutMs raised 10_000 -> 45_000 (2026-10-02): still genuinely bucket 1/bulk-dataset —
   // this key's own register read is a fast in-process lookup (see asicDpnDataset.js's
   // memCache) — but searchOrchestrator.js's invocation closure awaits resolveDirectors()
