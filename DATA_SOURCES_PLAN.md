@@ -247,15 +247,19 @@ that the phases below must close. Gaps 1 and 2 correct this plan's earlier assum
 Ordered by value for effort. Effort figures are rough.
 
 ### Phase 0 — urgent fixes (about 1–1.5 days)
-- [ ] **ScrapeOps credits:** 143 of 1,000 left (2026-10-12). Check the reset date; decide
-  between a one-month $29 bridge or a gap until Phases 2–3 ship.
-- [ ] **Block-page checks** in `fwo.js` and the ACT court/ACAT fetchers: require a marker
+- [ ] **ScrapeOps credits:** 143 of 1,000 left on 2026-10-12, **27 left on 2026-10-13** (after
+  Phase 2's 3-credit verification)
+  (about one heavy search). Check the reset date; decide between a one-month $29 bridge or
+  ACT courts and FWO being unavailable until the new proxy route (Phase 4) or local copies
+  (Phase 3) ship.
+- [x] **Block-page checks** in `fwo.js` and the ACT court/ACAT fetchers: require a marker
   that appears only on a real results page, so a challenge page can't read as "no results".
-  Add a regression test.
+  Add a regression test. **Moved into Phase 2 (2.2)**, which builds the response check into
+  the shared request helper those fetchers will use.
 - [ ] **Dashboard measures completeness:** add a per-key `complete` rate next to
   `successRate7d`.
-- [ ] **Identity everywhere in scope:** `asic`, `asicInsolvency`, `atoDebt` and
-  `modernSlavery` use identity's legal name, ABN and ACN instead of the typed name.
+- [ ] **Identity everywhere in scope:** `asicInsolvency`, `atoDebt` and `modernSlavery` use
+  identity's legal name, ABN and ACN instead of the typed name. (`asic` done in Phase 1.)
 - [ ] **Unavailable datasets reported as complete:** found 2026-10-13 in a local run where
   the caches were empty. `paymentTimes` ("data is not yet available") and `asicDisqualified`
   ("register data unavailable") return `done`/`complete` with that text in the summary, so
@@ -431,14 +435,105 @@ no new dependency, so the weekly-copy design is **not built**. It stays the fall
 the local dataset with no CAPTCHA; former names reach the search terms; "Not active" and
 external administration are flagged; and all tests pass.
 
-### Phase 2 — NSW licences off the proxy (about 1 day; needs an API.NSW account)
-- [ ] Register on api.nsw.gov.au (you need to do this) and subscribe to the Trades API.
-- [ ] Verify from the Railway container: reachability, search by ABN/ACN/name, and whether
-  the detail endpoint carries compliance history and associated roles (director, nominated
-  supervisor).
-- [ ] If it matches: use the API first, with the Verify NSW backend as fallback. Budget:
-  about 5–15 calls per search fits 2,500/month for roughly 170–500 searches. Price the
-  premium tier before volume exceeds that.
+### Phase 2 — NSW licences off the proxy, and sites retried directly (built 2026-10-13, branch `feature/data-sources-phase2`)
+
+**Revised 2026-10-13: no API.NSW account needed.** Tested from the Railway container:
+
+| Site | Direct from Railway | Notes |
+|---|---|---|
+| Verify NSW search (`advQuery`) | 8/8 OK, ~200ms | The block from 2026-09-15 has lifted |
+| Verify NSW licence details | 3/3 OK, ~250ms | Same |
+| ACT courts, ACAT | 403, Cloudflare | Still blocked |
+| FWO | Timed out after 15s | Still blocked |
+| API.NSW Trades API (`api.onegov.nsw.gov.au/tradesregister/v1`) | 401 (live, needs an OAuth key) | A 2020 product, possibly the retired OneGov backend; data shape unverified |
+
+So NSW can go direct now, with the proxy as fallback. Blocks come and go (NSW was blocked a
+month ago), so the same helper tries every proxied site directly and remembers the result.
+A site that unblocks Railway then stops costing proxy credits on its own, and one that
+re-blocks falls back to the proxy without a deploy.
+
+#### 2.1 Direct first, proxy as fallback (`proxyLimiter.js`)
+- [x] New `fetchDirectFirst({ site, request, validate, label, priority })`:
+  1. Unless the site is in a "direct is blocked" cooldown, try the request **directly**, with
+     a short timeout (NSW 8s; ACT and FWO 5s).
+  2. If that fails (network error, timeout, 403/429/5xx) or the response fails `validate`,
+     put the site in a 30-minute cooldown and send the request **through the proxy**, using
+     the existing semaphore, priority tier and 429 retry.
+  3. A direct success clears the cooldown.
+  4. Never throws a different shape than today: a request that fails both routes throws, and
+     the callers' existing "failed → `partial`/`unavailable`" handling stays as it is.
+- [x] Logging: one line when a site's direct request fails (and the cooldown starts) and one
+  when direct works again, rather than one per request. A blocked site's traffic is then
+  visible without dozens of lines per search; ScrapeOps' own `used_api_credits` counts
+  proxied requests. (Changed from the per-request logging planned above.)
+- [x] Callers no longer build ScrapeOps URLs themselves. The helper does it for the proxy
+  route, keeping NSW's `keep_headers`. `proxyLimiter.js` stays the only way to make a proxied
+  request (CLAUDE.md convention).
+- [x] With no `SCRAPEOPS_API_KEY` (local dev), only the direct route runs, as today.
+
+#### 2.2 Response checks: a block page is a failure, never "no results"
+This is Phase 0's block-page item.
+- [x] `validate` for each site, built from real saved responses (results page, no-results
+  page, challenge page) and kept as test fixtures:
+  - **NSW search:** a JSON body with a `results` array.
+  - **NSW details:** a JSON body with `componentData`.
+  - **ACT courts / ACAT:** the results container or the site's own no-results text.
+  - **FWO:** the search page's result list or its no-results text.
+- [x] A response that fails `validate` on the proxy route is a failed request: same as an
+  error, so `partial`/`unavailable`, never an empty clean result.
+
+#### 2.3 Move the three scrapers onto it
+- [x] `nswFairTrading.js`: search and details (priority stays `high`).
+- [x] `courtRecords.js`: ACT courts and ACAT.
+- [x] `fwo.js`.
+
+Today ACT and FWO will take the proxy route after one fast failed direct attempt per 30
+minutes (ACT fails in under 0.3s; FWO's 5s timeout is paid at most once per cooldown).
+
+#### 2.4 Former names in the NSW and ACT licence searches (deferred from 1.4)
+- [x] NSW and ACT licence registers also search the entity's former names (from
+  `resolveFormerNames`). NSW requests are now free when direct; ACT is a local dataset. A
+  match by name only stays "Name only — verify"; identifier matches are unaffected.
+
+#### 2.5 Tests and verification
+- [x] **Unit tests** for `fetchDirectFirst`, with injected fake routes:
+  - direct succeeds → no proxy call;
+  - direct fails → proxy;
+  - an invalid direct response → proxy;
+  - the cooldown skips direct, and a direct success clears it;
+  - both routes fail → throws;
+  - no proxy key → direct only;
+  - an invalid proxy response → failure, not empty results.
+- [x] **Regression tests:** a saved challenge page for ACT and FWO must produce
+  `partial`/`unavailable`, never "no cases found". Confirmed against `main`'s code: fed the
+  same Cloudflare page, it reported "No cases found in ACT courts and tribunals" and "No Fair
+  Work Ombudsman enforcement outcomes found". Fixtures are trimmed real pages in
+  `server/scrapers/fixtures/`.
+- [x] **Existing tests:**
+  - `npm test`: 238/238, including the new `blockPages.test.js` and 8 new `fetchDirectFirst`
+    tests;
+  - `test-launch-scope` 3/3, `test-ws4-fault-injection` 49/49, `test-licence-matching` 12/12,
+    `test-asic-company` 6/6, `test-nsw-fairtrading` 5/5, `test-court-records` 11/11.
+- [x] **From the Railway container, before merging (2026-10-13):** the branch's code was run
+  against production's real proxy key:
+  - NSW went direct (no credit; 1.8s);
+  - ACT courts and ACAT failed directly (403, about 0.2s) and found all 7 Geocon cases
+    through the proxy;
+  - FWO timed out directly at 5s, then succeeded through the proxy.
+
+  3 credits spent (970 → 973).
+- [ ] **After deploy:** ScrapeOps `used_api_credits` should stop rising for NSW requests, and
+  logs should show no "nsw: direct request failed" lines.
+
+#### 2.6 API.NSW Trades API: not needed now
+- [ ] Revisit only if Verify NSW blocks Railway again **and** the proxy route proves
+  unreliable for it. It would then be a third route behind direct and proxy. It needs an
+  account (free tier: 2,500 calls/month, OAuth key/secret, tokens last about 12 hours), and
+  its data shape must first be checked against what we read from Verify NSW today.
+
+**Effect on proxy credits:** NSW was about 5–15 credits of a heavy search; ACT courts (2 per
+search term) and FWO (1 per term) are most of the rest. So Phase 2 slows the credit drain but
+doesn't stop it. Phase 4 (residential proxy) or Phase 3 (local copies of ACT and FWO) does.
 
 ### Phase 3 — our own copies of FWO, ACT courts/ACAT and ASIC notices (about 5–6 days, including the shared ingestion module)
 - [ ] One shared ingestion module (WS0.6), closing architecture gaps 1–7:

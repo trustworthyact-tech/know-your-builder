@@ -1,5 +1,5 @@
 const axios = require('axios');
-const { proxied, proxyUrl } = require('./proxyLimiter');
+const { fetchDirectFirst } = require('./proxyLimiter');
 const {
   BUSINESS_NAME_CAP,
   NAME_ONLY,
@@ -41,8 +41,8 @@ const HEADERS = {
 //
 // Originally ScraperAPI, switched to ScrapeOps' Proxy API Aggregator on 2026-09-23 after
 // ScraperAPI's free-tier monthly credits were exhausted (confirmed live via SSH: every
-// proxied request was getting a 403 from ScraperAPI itself) — see courtRecords.js's
-// viaProxy for the full record; same identical `?api_key=X&url=Y` shape, one-line swap.
+// proxied request was getting a 403 from ScraperAPI itself) — see courtRecords.js's ACT
+// fetcher comments for the full record; same identical `?api_key=X&url=Y` shape, one-line swap.
 //
 // `keep_headers=true` is required here specifically (courtRecords.js's plain GETs don't
 // need it) — found live 2026-09-23 immediately after the swap: without it, ScrapeOps
@@ -56,27 +56,31 @@ const HEADERS = {
 // Every proxied call also goes through proxyLimiter.js's shared semaphore
 // (LICENCE_MATCHING_PLAN.md Phase 1.3) — this file, courtRecords.js and fwo.js share one
 // ScrapeOps account capped at 5 concurrent requests.
-const viaProxy = (url) => proxyUrl(url, { keepHeaders: true });
+//
+// DATA_SOURCES_PLAN.md Phase 2 (2026-10-13): Verify NSW answers Railway directly again (11/11
+// search and details requests, ~200ms), so requests go through fetchDirectFirst — direct first,
+// ScrapeOps (with keep_headers) only if the block returns. Responses must have the JSON shape
+// below; anything else is a failed lookup, never an empty one.
+const isSearchResponse = (data) => Array.isArray(data?.results);
+const isDetailsResponse = (data) => Boolean(data?.componentData) && typeof data.componentData === 'object';
 
 // `_http` is injectable (defaults to axios) so tests can simulate failures without the network.
 async function fetchLicences(query, _http = axios) {
-  const { data } = await proxied(
-    () =>
-      _http.post(
-        viaProxy(SEARCH_URL),
-        {
-          licenceGroup: 'Trades',
-          search: query,
-          autoComplete: false,
-          pageNumber: 0,
-          pageSize: 20,
-          licenceTypes: [],
-        },
-        { headers: HEADERS, timeout: 20000 }
-      ),
-    { label: 'nswFairTrading search', priority: 'high' }
-  );
-  return Array.isArray(data?.results) ? data.results : [];
+  const data = await fetchDirectFirst({
+    site: 'nsw',
+    request: {
+      method: 'post',
+      url: SEARCH_URL,
+      data: { licenceGroup: 'Trades', search: query, autoComplete: false, pageNumber: 0, pageSize: 20, licenceTypes: [] },
+      headers: HEADERS,
+    },
+    validate: isSearchResponse,
+    label: 'nswFairTrading search',
+    priority: 'high',
+    keepHeaders: true,
+    _http,
+  });
+  return data.results;
 }
 
 // A licence's current/expired status says nothing about whether it also carries compliance
@@ -87,11 +91,16 @@ async function fetchLicences(query, _http = axios) {
 async function fetchLicenceDetails(licenceType, licenceId, _http = axios) {
   const url = `${API_BASE}/search/details/${encodeURIComponent(licenceType)}/${encodeURIComponent(licenceId)}`;
   try {
-    const { data } = await proxied(() => _http.get(viaProxy(url), { headers: HEADERS, timeout: 20000 }), {
+    const data = await fetchDirectFirst({
+      site: 'nsw',
+      request: { url, headers: HEADERS },
+      validate: isDetailsResponse,
       label: 'nswFairTrading details',
       priority: 'high',
+      keepHeaders: true,
+      _http,
     });
-    return data?.componentData ?? null;
+    return data.componentData;
   } catch {
     return null; // non-fatal — callers treat a null details fetch as "unknown", not "none"
   }
@@ -483,12 +492,14 @@ function primaryQueries(identity, people) {
   ];
 }
 
-// Enrichment queries (b): the typed name when it differs, ABR business names (capped — each is a
-// proxy credit) and the trust's own name. Run by the main nswFairTrading key, inside its 45s.
+// Enrichment queries (b): the typed name when it differs, ABR business names (capped — each was
+// a proxy credit, and still is if Verify NSW re-blocks Railway), the trust's own name, and the
+// entity's former names (DATA_SOURCES_PLAN.md 2.4). Run by the main nswFairTrading key, inside
+// its 45s.
 function secondaryQueries(identity) {
   const primaryName = searchableName(identity.legalName || identity.typedName);
   return uniqueQueries(
-    [identity.typedName, ...identity.businessNames.slice(0, BUSINESS_NAME_CAP), identity.trustName],
+    [identity.typedName, ...identity.businessNames.slice(0, BUSINESS_NAME_CAP), identity.trustName, ...(identity.formerNames ?? [])],
     [primaryName]
   ).map((query) => ({ query }));
 }
@@ -520,6 +531,11 @@ async function searchNSWFairTrading(identityOrName, abn, people, preFetchedPrima
   const identity = asIdentity(identityOrName, abn);
   const reusePrimary = Boolean(preFetchedPrimary && !preFetchedPrimary.failed && preFetchedPrimary.ctx);
   const ctx = reusePrimary ? preFetchedPrimary.ctx : createContext(identity, _http);
+  // Discovery ran before the former names were known, so a reused context matches records
+  // against them too from here on (a former-name hit without identifiers is "verify" only).
+  if (reusePrimary && identity.formerNames?.length) {
+    ctx.matchers = entityNames({ ...ctx.identity, formerNames: identity.formerNames }).map(makeNameMatcher);
+  }
   let primary = preFetchedPrimary;
   if (!reusePrimary) {
     primary = await runQueries(primaryQueries(identity, people), ctx);
@@ -569,6 +585,8 @@ async function searchNSWFairTrading(identityOrName, abn, people, preFetchedPrima
 }
 
 module.exports = {
+  isSearchResponse,
+  isDetailsResponse,
   searchNSWFairTrading,
   fetchNswCompanyLookup,
   associatedNamesFromDetails,

@@ -158,11 +158,12 @@ function asIdentity(identityOrName, abn = '') {
 
 // Every name the entity might be registered under, primary first: legal name (or the typed name
 // when there's no ABR record), the typed name when it differs (often one of the business names
-// anyway — deduped), business names, then the trust's own name.
+// anyway — deduped), business names, the trust's own name, then former names when the caller
+// has them (`identity.formerNames`, set by the orchestrator — DATA_SOURCES_PLAN.md 2.4).
 function entityNames(identity) {
   const out = [];
   const seen = new Set();
-  for (const n of [identity.legalName || identity.typedName, identity.typedName, ...identity.businessNames, identity.trustName]) {
+  for (const n of [identity.legalName || identity.typedName, identity.typedName, ...identity.businessNames, identity.trustName, ...(identity.formerNames ?? [])]) {
     const key = normaliseEntityName(n);
     if (!key || seen.has(key)) continue;
     seen.add(key);

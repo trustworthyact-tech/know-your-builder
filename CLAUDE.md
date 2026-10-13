@@ -330,7 +330,47 @@ Done on branch `feature/data-sources-phase1` (not deployed):
   riskGrouper's "registered within 2 years" modifier never fired). A failed lookup is
   `unavailable`, never "No ABR records found". Identity bound 8s → 5s.
 
-Remaining for Phase 1: deploy, then watch `abn`/`asic` complete rates for 7 days. Next phase
+Phase 1 merged and deployed 2026-10-13 (PR #28). Watch `abn`/`asic` complete rates for 7 days.
+
+**Phase 2 built** on branch `feature/data-sources-phase2` (not merged):
+- **Direct first, proxy as fallback:** every proxy-backed request goes through
+  `proxyLimiter.fetchDirectFirst()`. It tries the site directly, falls back to ScrapeOps only
+  when that fails, and remembers a blocked site for 30 minutes. Verify NSW answers Railway
+  directly again (2026-10-13), so NSW costs no credits; ACT courts/ACAT (Cloudflare 403) and
+  FWO (timeout) still use the proxy.
+- **Response checks:** every response must look like a real results or no-results page
+  (`isFunnelbackResultsPage`, `isFwoSearchPage`, NSW's JSON shape), so a block page is a
+  failed check, never "no cases found". Fixtures are in `server/scrapers/fixtures/`.
+- **Former names:** the NSW and ACT licence searches also search the entity's former names.
+
+Any new proxy-backed fetch must use `fetchDirectFirst` with a `validate` function.
+
+### API.NSW Trades API — deliberately not used, kept as a future redundancy (decided 2026-10-13)
+
+NSW's official licence API (api.nsw.gov.au product 25, "Trades API";
+`https://api.onegov.nsw.gov.au/tradesregister/v1/{verify,browse,details}`) was planned as the
+way around Verify NSW blocking Railway. **Omitted** because the block lifted: Verify NSW
+answers Railway directly again (2026-10-13), and Phase 2's `fetchDirectFirst` already falls
+back to ScrapeOps if it re-blocks.
+
+**Worth adding later as a third route** (direct → proxy → Trades API) if NSW licence lookups
+need more redundancy, for example if Verify NSW re-blocks Railway and the proxy also proves
+unreliable for it.
+
+What's known:
+- The endpoints are live: an unauthenticated call returns 401 "Invalid Access Token", and
+  Railway can reach the host.
+- Access needs a free api.nsw.gov.au account: 2,500 calls/month on the free tier, OAuth
+  consumer key and secret, tokens last about 12 hours. Premium pricing is unpublished.
+
+What's unverified:
+- **The data shape.** The product dates from March 2020, before NSW moved its public register
+  to Verify NSW, so it may run on the retired OneGov backend. Before relying on it, check that
+  it returns what `nswFairTrading.js` reads from Verify NSW today: search by ABN, ACN and name;
+  licence status and expiry; compliance history (`complianceSummary`, notifications); and
+  associated roles (director, nominated supervisor).
+
+Full findings: `DATA_SOURCES_PLAN.md` Phase 2, item 2.6. Next phase
 items are in the plan (Phase 0 fixes, then Phase 2 NSW API).
 
 ### ScrapeOps proxy credits run out within days for companies with many business names — DECIDED, fix on branch (2026-10-09)
