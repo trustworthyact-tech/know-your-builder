@@ -345,6 +345,18 @@ Phase 1 merged and deployed 2026-10-13 (PR #28). Watch `abn`/`asic` complete rat
 
 Any new proxy-backed fetch must use `fetchDirectFirst` with a `validate` function.
 
+**Phase 0 built** on branch `feature/data-sources-phase0` (not merged):
+- **Never-run checks are no longer "complete":** `paymentTimes`/`asicDisqualified` with no
+  data are `status: 'error'`. An out-of-date cached copy is `completeness: 'stale'` with
+  `asOf`, via `validateResult.staleFields()`; no scraper had ever set `stale` before.
+- **Identity everywhere:** `asicInsolvency`, `atoDebt` and `modernSlavery` search the legal
+  name and resolved ACN. The notice checks no longer derive an "ACN" from a trust's or sole
+  trader's ABN; a known non-company is "not applicable".
+- **Complete rate:** `health_check_event.completeness` is recorded per outcome, and
+  `/admin/scraper-health` shows a 7-day complete rate. That's the ≥95% target's real measure;
+  the success rate counts partial and stale results as successes.
+- **Zero-width characters** are removed in `normaliseEntityName`.
+
 ### API.NSW Trades API — deliberately not used, kept as a future redundancy (decided 2026-10-13)
 
 NSW's official licence API (api.nsw.gov.au product 25, "Trades API";

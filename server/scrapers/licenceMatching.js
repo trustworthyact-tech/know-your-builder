@@ -35,8 +35,14 @@ function normaliseDigits(v) {
 
 // "P/L", "Pty. Ltd.", "Pty Limited", "Proprietary Limited" → "pty ltd"; bracketed words such as
 // "(Aust)" or "(ACT)" dropped; "&" → "and"; punctuation and repeated whitespace collapsed.
+// Zero-width and soft-hyphen characters are removed, not turned into spaces: found in register
+// data (VIC BPC, 2026-10-12 — "\u200B\u200BImam Holdings Pty Ltd"), and one inside a word would
+// otherwise split it in two and break the match (DATA_SOURCES_PLAN.md Phase 0).
+const INVISIBLE_CHARS = /[\u00AD\u200B-\u200D\u2060\uFEFF]/g;
+
 function normaliseEntityName(name) {
   return String(name ?? '')
+    .replace(INVISIBLE_CHARS, '')
     .toLowerCase()
     .replace(/\([^)]*\)/g, ' ')
     .replace(/\bp\s*\/\s*l\b/g, ' pty ltd ')
@@ -84,6 +90,12 @@ function parseTrustName(legalName) {
 
 function isCompanyEntityType(entityType) {
   return /company/i.test(entityType || '');
+}
+
+// True only when the ABR says the entity is something other than a company (a trust, sole
+// trader, partnership…). Unknown entity type (no ABR record) is not "known non-company".
+function isKnownNonCompany(identity) {
+  return Boolean(identity?.entityType) && !isCompanyEntityType(identity.entityType);
 }
 
 // Who the searched entity is, resolved once per search from the ABN lookup (searchABN's
@@ -288,6 +300,7 @@ module.exports = {
   parseTrustName,
   resolveEntityIdentity,
   withAsicIdentityFallback,
+  isKnownNonCompany,
   asIdentity,
   entityNames,
   identifiersMatch,

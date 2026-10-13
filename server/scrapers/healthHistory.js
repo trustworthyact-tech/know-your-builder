@@ -14,7 +14,7 @@ const { getPool, ensureSchema } = require('./db');
 // deliberate double protection against the exact unhandled-rejection process crash documented
 // in CLAUDE.md's WS4.2 entry (abnPromise/asicPromise) — this function must never be the thing
 // that takes the server down.
-async function logEvent(key, outcome, error, pool = getPool()) {
+async function logEvent(key, outcome, error, pool = getPool(), completeness = null) {
   if (!pool) return;
   try {
     // Idempotent + memoized (see db.js) — cheap to call on every event, and guarantees
@@ -24,8 +24,8 @@ async function logEvent(key, outcome, error, pool = getPool()) {
     // whichever dataset-refresh job happened to run first via datasetStore.js.
     await ensureSchema();
     await pool.query(
-      'INSERT INTO health_check_event (scraper_key, outcome, error) VALUES ($1, $2, $3)',
-      [key, outcome, error ?? null]
+      'INSERT INTO health_check_event (scraper_key, outcome, error, completeness) VALUES ($1, $2, $3, $4)',
+      [key, outcome, error ?? null, completeness ?? null]
     );
   } catch (err) {
     console.warn(`[healthHistory] failed to log event for ${key}:`, err.message);
@@ -54,7 +54,9 @@ async function getRollup({ windowDays = 7 } = {}, pool = getPool()) {
     const { rows } = await pool.query(
       `SELECT scraper_key,
               COUNT(*) FILTER (WHERE outcome = 'success') AS successes,
-              COUNT(*) FILTER (WHERE outcome IN ('success', 'failure')) AS attempts
+              COUNT(*) FILTER (WHERE outcome IN ('success', 'failure')) AS attempts,
+              COUNT(*) FILTER (WHERE completeness = 'complete') AS completes,
+              COUNT(*) FILTER (WHERE completeness IS NOT NULL) AS completeness_logged
          FROM health_check_event
         WHERE occurred_at > now() - ($1 || ' days')::interval
         GROUP BY scraper_key`,
@@ -65,10 +67,16 @@ async function getRollup({ windowDays = 7 } = {}, pool = getPool()) {
     for (const row of rows) {
       const attempts = Number(row.attempts);
       const successes = Number(row.successes);
+      const logged = Number(row.completeness_logged || 0);
       result[row.scraper_key] = {
         attempts,
         successes,
         successRate: attempts > 0 ? successes / attempts : null,
+        // Share of searches where the user got a complete check — the ≥95% target in
+        // DATA_SOURCES_PLAN.md. Counts failures and circuit-open skips (logged as
+        // 'unavailable') as not complete; ignores rows from before completeness was logged.
+        completeChecks: logged,
+        completeRate: logged > 0 ? Number(row.completes || 0) / logged : null,
       };
     }
     return result;
@@ -90,6 +98,8 @@ function mergeHistory(report, rollup) {
       historyAvailable: rollup !== null,
       attempts7d: history ? history.attempts : null,
       successRate7d: history ? history.successRate : null,
+      completeChecks7d: history ? history.completeChecks : null,
+      completeRate7d: history ? history.completeRate : null,
     };
   });
   return { ...report, scrapers };

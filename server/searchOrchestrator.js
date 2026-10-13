@@ -17,6 +17,7 @@ const { runScraper, withTimeout } = require('./scrapers/runScraper');
 const {
   resolveEntityIdentity,
   withAsicIdentityFallback,
+  isKnownNonCompany,
   COURT_FWO_BUSINESS_NAME_CAP,
   FORMER_NAME_CAP,
   LINKED_COMPANY_CAP,
@@ -336,6 +337,28 @@ async function runSearchRequest({ abn, acn, companyName, tradingName, directors 
     };
   }
 
+  // ASIC published notices (insolvency, ATO tax debt) are about companies. They're searched by
+  // the resolved ACN — only a company's ABN carries one; the old ABN-last-9-digits derivation
+  // searched a non-existent "ACN" for every trust and sole trader — else by the legal name, not
+  // the typed (possibly trading) name (DATA_SOURCES_PLAN.md Phase 0). A known non-company gets
+  // an honest "not applicable" rather than a search that can't find anything.
+  async function noticesSearchArgs() {
+    const identity = await identityPromise;
+    return {
+      identity,
+      name: identity.legalName || companyName,
+      acn: identity.acn || identity.possibleAcn || normaliseDigits(acn),
+    };
+  }
+  function notACompany(source, identity) {
+    return {
+      source,
+      jurisdiction: 'Federal',
+      results: [],
+      summary: `Not a company (${identity.entityType}) — ASIC published notices apply to companies`,
+    };
+  }
+
   // One invocation closure per manifest key — bespoke per-scraper argument wiring
   // (companyName/abn/acn/directors/alternateNames in varying combinations) lives here.
   // Every key in server/scrapers/manifest.js's SCRAPERS list must have an entry.
@@ -343,10 +366,20 @@ async function runSearchRequest({ abn, acn, companyName, tradingName, directors 
     abn: () => abnPromise,
     asic: () => asicPromise,
     asicDisqualified: async () => searchASICDisqualifiedFromDataset(await resolveDirectors()),
-    asicInsolvency: async () =>
-      hasEntity ? searchAsicInsolvency(companyName, abn, acn) : notSearchedWithoutEntity('ASIC Published Notices — Insolvency'),
-    atoDebt: async () =>
-      hasEntity ? searchAtoDebt(companyName, abn, acn) : notSearchedWithoutEntity('ASIC Published Notices — ATO tax debt'),
+    asicInsolvency: async () => {
+      const source = 'ASIC Published Notices — Insolvency';
+      if (!hasEntity) return notSearchedWithoutEntity(source);
+      const { identity, name, acn: noticeAcn } = await noticesSearchArgs();
+      if (!noticeAcn && isKnownNonCompany(identity)) return notACompany(source, identity);
+      return searchAsicInsolvency(name, '', noticeAcn);
+    },
+    atoDebt: async () => {
+      const source = 'ASIC Published Notices — ATO tax debt';
+      if (!hasEntity) return notSearchedWithoutEntity(source);
+      const { identity, name, acn: noticeAcn } = await noticesSearchArgs();
+      if (!noticeAcn && isKnownNonCompany(identity)) return notACompany(source, identity);
+      return searchAtoDebt(name, '', noticeAcn);
+    },
     courts_federal: async () => {
       const [dirs, terms] = await Promise.all([resolveDirectors(), resolveExtraSearchTerms()]);
       return markPartialIfNoDirectors(await withTermProvenance(await searchCourtRecords(companyName, terms, 'federal')), dirs.length);
@@ -370,8 +403,12 @@ async function runSearchRequest({ abn, acn, companyName, tradingName, directors 
     courts_tas: async () => withTermProvenance(await searchCourtRecords(companyName, await resolveExtraSearchTerms(), 'tas')),
     paymentTimes: async () =>
       hasEntity ? searchPaymentTimes(companyName, await resolveAbn(), acn) : notSearchedWithoutEntity('Payment Times Reporting Register'),
-    modernSlavery: async () =>
-      hasEntity ? searchModernSlavery(companyName, abn) : notSearchedWithoutEntity('Modern Slavery Statements Register'),
+    modernSlavery: async () => {
+      if (!hasEntity) return notSearchedWithoutEntity('Modern Slavery Statements Register');
+      // Legal name and resolved ABN, not the typed name (DATA_SOURCES_PLAN.md Phase 0).
+      const identity = await identityPromise;
+      return searchModernSlavery(identity.legalName || companyName, identity.abn || abn);
+    },
     qbcc: async () => searchQBCC(companyName, abn, await resolveDirectors(), await resolveAlternateNames()),
     fwo: async () =>
       withTermProvenance(await searchFWO(companyName, abn, await resolveExtraSearchTerms(COURT_FWO_BUSINESS_NAME_CAP))),

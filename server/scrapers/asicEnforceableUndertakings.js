@@ -1,4 +1,5 @@
 const { readCachedAsicEuRecords, REGISTER_URL } = require('./asicEnforceableUndertakingsDataset');
+const { staleFields } = require('./validateResult');
 
 // Every significant word must appear in the record text to prevent false positives.
 // Phrase-anchored (not just "every word present anywhere") for multi-word queries —
@@ -61,10 +62,9 @@ function mapRecordToResult(record) {
 async function searchAsicEnforceableUndertakings(companyName, directorNames, _readCachedAsicEuRecords = readCachedAsicEuRecords) {
   const queries = [stripCompanySuffix(companyName), ...(directorNames || [])].filter(Boolean);
 
-  let records;
+  let records, stale, cachedAt;
   try {
-    const fetched = await _readCachedAsicEuRecords();
-    records = fetched.records;
+    ({ records, stale, cachedAt } = await _readCachedAsicEuRecords());
   } catch {
     // No live data AND no cache at all — fail loud rather than silently reporting
     // "no undertakings found", mirroring vicBpc.js's convention for a source that
@@ -106,6 +106,7 @@ async function searchAsicEnforceableUndertakings(companyName, directorNames, _re
       allResults.length > 0
         ? `${allResults.length} court enforceable undertaking(s) found`
         : 'No court enforceable undertakings found for this entity',
+    ...staleFields(stale, cachedAt),
   };
 }
 

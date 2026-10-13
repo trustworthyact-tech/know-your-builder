@@ -118,6 +118,17 @@ test('searchASICDisqualifiedFromDataset — dataset unavailable is reported hone
   assert.equal(result.results.length, 0);
   assert.match(result.summary, /register data unavailable/);
   assert.doesNotMatch(result.summary, /no disqualification records found/);
+  // DATA_SOURCES_PLAN.md Phase 0: without status 'error' the completeness badge showed it complete.
+  assert.equal(result.status, 'error');
+});
+
+test('searchASICDisqualifiedFromDataset — an out-of-date cached copy is marked stale with its date', async () => {
+  const cachedAt = new Date('2026-10-01T00:00:00Z');
+  const fresh = await searchASICDisqualifiedFromDataset(['Veronica Roberts'], async () => ({ rows: [], stale: false, cachedAt: new Date() }));
+  assert.equal(fresh.completeness, undefined);
+  const old = await searchASICDisqualifiedFromDataset(['Veronica Roberts'], async () => ({ rows: [], stale: true, cachedAt }));
+  assert.equal(old.completeness, 'stale');
+  assert.equal(old.asOf, cachedAt.toISOString());
 });
 
 test('searchASICDisqualifiedFromDataset — genuine match found end-to-end', async () => {

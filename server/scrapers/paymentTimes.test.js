@@ -201,4 +201,7 @@ test('searchPaymentTimes — nothing ever ingested reports an honest "not yet av
   const result = await searchPaymentTimes('Acme Constructions', '', '');
   assert.equal(result.results.length, 0);
   assert.match(result.summary, /not yet available/);
+  // DATA_SOURCES_PLAN.md Phase 0: the summary alone was honest, but without status 'error' the
+  // completeness badge showed this never-run check as complete.
+  assert.equal(result.status, 'error');
 });
