@@ -345,3 +345,9 @@ test('entityNames — includes former names when the identity carries them, dedu
   const identity = { ...resolveEntityIdentity({ companyName: 'Turnkey Creations Pty Ltd' }, null), formerNames: ['FAW Holdings Pty Ltd', 'Turnkey Creations Pty Ltd'] };
   assert.deepEqual(entityNames(identity), ['Turnkey Creations Pty Ltd', 'FAW Holdings Pty Ltd']);
 });
+
+test('normaliseEntityName — zero-width characters are removed, even inside a word', () => {
+  assert.equal(normaliseEntityName('​​Imam Holdings Pty Ltd​'), 'imam holdings pty ltd');
+  assert.equal(normaliseEntityName('Im​am Hold﻿ings P/L'), 'imam holdings pty ltd');
+  assert.ok(makeNameMatcher('Imam Holdings Pty Ltd')('IM​AM HOLDINGS PTY LTD'));
+});

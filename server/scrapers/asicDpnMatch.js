@@ -1,6 +1,7 @@
 'use strict';
 
 const { readCachedDpnRows } = require('./asicDpnDataset');
+const { staleFields } = require('./validateResult');
 const { isNameMatch, buildSearchUrl } = require('./asicDisqualified');
 
 const BASE = 'https://connectonline.asic.gov.au';
@@ -114,6 +115,7 @@ async function searchASICDisqualifiedFromDataset(directors, _fetchDpnRows = read
       source: 'ASIC — Disqualified Persons Register',
       jurisdiction: 'Federal',
       category: 'identity',
+      status: 'error',
       results: [],
       searchUrl: DPN_FALLBACK_URL,
       summary: `${checked.length} director(s) — register data unavailable, verify manually via ASIC Connect`,
@@ -138,6 +140,7 @@ async function searchASICDisqualifiedFromDataset(directors, _fetchDpnRows = read
     results: allResults,
     searchUrl: firstUrl,
     summary,
+    ...staleFields(stale, cachedAt),
   };
 }
 

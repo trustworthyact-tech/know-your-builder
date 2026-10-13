@@ -246,7 +246,7 @@ that the phases below must close. Gaps 1 and 2 correct this plan's earlier assum
 
 Ordered by value for effort. Effort figures are rough.
 
-### Phase 0 — urgent fixes (about 1–1.5 days)
+### Phase 0 — urgent fixes (built 2026-10-13, branch `feature/data-sources-phase0`)
 - [ ] **ScrapeOps credits:** 143 of 1,000 left on 2026-10-12, **27 left on 2026-10-13** (after
   Phase 2's 3-credit verification)
   (about one heavy search). Check the reset date; decide between a one-month $29 bridge or
@@ -256,16 +256,36 @@ Ordered by value for effort. Effort figures are rough.
   that appears only on a real results page, so a challenge page can't read as "no results".
   Add a regression test. **Moved into Phase 2 (2.2)**, which builds the response check into
   the shared request helper those fetchers will use.
-- [ ] **Dashboard measures completeness:** add a per-key `complete` rate next to
-  `successRate7d`.
-- [ ] **Identity everywhere in scope:** `asicInsolvency`, `atoDebt` and `modernSlavery` use
-  identity's legal name, ABN and ACN instead of the typed name. (`asic` done in Phase 1.)
-- [ ] **Unavailable datasets reported as complete:** found 2026-10-13 in a local run where
+- [x] **Dashboard measures completeness:**
+  - `health_check_event` gains a `completeness` column (idempotent `ALTER … ADD COLUMN IF NOT
+    EXISTS`; dry-run against production in a rolled-back transaction).
+  - `runScraper` logs each outcome's completeness; failures and circuit-open skips are logged
+    as `unavailable`.
+  - `/admin/scraper-health` shows a **7-day complete rate**, counted only from rows logged
+    since this change.
+- [x] **Identity everywhere in scope:**
+  - `asicInsolvency`, `atoDebt` and `modernSlavery` search the legal name and resolved
+    ABN/ACN. Verified end to end: typed "Canberra Granny Flat Builders" → TURNKEY CREATIONS
+    PTY LTD, ACN 155832732.
+  - Also fixed: the notice checks derived an "ACN" from the last 9 digits of *any* ABN. For a
+    trust or sole trader that meant searching a non-existent number and reporting "no
+    notices". A known non-company now gets "Not a company — ASIC published notices apply to
+    companies".
+  - `modernSlavery` timeout 20s → 30s, to cover the identity wait.
+- [x] **Unavailable datasets reported as complete:** found 2026-10-13 in a local run where
   the caches were empty. `paymentTimes` ("data is not yet available") and `asicDisqualified`
   ("register data unavailable") return `done`/`complete` with that text in the summary, so
   the completeness badge shows a check that never ran as complete. Both must return
   `unavailable`. Check every other dataset-backed key for the same shape.
-- [ ] **Zero-width characters:** strip them in `licenceMatching.js`'s name normalisation.
+  **Done:** `paymentTimes` (both its failure paths) and `asicDpnMatch` now return
+  `status: 'error'`. The EU and ACT registers already did. **Also fixed:** no scraper ever set
+  `completeness: 'stale'`, so an out-of-date cached copy showed as complete, mentioned only in
+  the summary text. `validateResult.staleFields()` now marks `paymentTimes`, `asicDisqualified`,
+  `asicEnforceableUndertakings`, `actLicences` and `actDisciplinary` as `stale` with `asOf`
+  when their cache is past its SLA.
+- [x] **Zero-width characters:** strip them in `licenceMatching.js`'s name normalisation.
+  (It already turned them into spaces, which worked at the start of a name but split a word
+  when one sat inside it; they're now removed.)
   Found in an out-of-scope register (VIC BPC), where it makes names never match; the fix is
   one line and protects the NSW/ACT registers against the same data problem.
 

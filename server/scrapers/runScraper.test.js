@@ -163,3 +163,21 @@ test('runScraper — WS0.8: a rejecting logHealthEvent never surfaces as an unha
   );
   assert.equal(sent[1].status, 'done');
 });
+
+// DATA_SOURCES_PLAN.md Phase 0 — every health event records what the user got, so the dashboard
+// can report a complete rate, not just "returned without throwing".
+test('runScraper — logs the result completeness with each outcome', async () => {
+  const events = [];
+  const logHealthEvent = async (key, outcome, error, completeness) => { events.push({ outcome, completeness }); };
+  const { send } = collector();
+  await runScraper(entry('t_c_complete'), async () => ({ results: [], summary: 'ok' }), { send, logHealthEvent });
+  await runScraper(entry('t_c_partial'), async () => ({ results: [], summary: 'ok', completeness: 'partial' }), { send, logHealthEvent });
+  await runScraper(entry('t_c_error'), async () => ({ status: 'error', results: [], summary: 'failed' }), { send, logHealthEvent });
+  await runScraper(entry('t_c_throw'), async () => { throw new Error('boom'); }, { send, logHealthEvent });
+  assert.deepEqual(events, [
+    { outcome: 'success', completeness: 'complete' },
+    { outcome: 'success', completeness: 'partial' },
+    { outcome: 'success', completeness: 'unavailable' },
+    { outcome: 'failure', completeness: 'unavailable' },
+  ]);
+});

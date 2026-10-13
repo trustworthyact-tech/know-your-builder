@@ -1,7 +1,7 @@
 'use strict';
 
 const axios = require('axios');
-const { NAME_ONLY, normaliseDigits, normaliseEntityName } = require('./licenceMatching');
+const { NAME_ONLY, isKnownNonCompany, normaliseDigits, normaliseEntityName } = require('./licenceMatching');
 
 // ASIC company record, from ASIC's own Company Dataset as served live by data.gov.au's CKAN
 // DataStore API (DATA_SOURCES_PLAN.md Phase 1.2/1.3, 2026-10-12). Replaces a CAPTCHA-gated
@@ -193,10 +193,6 @@ async function fetchDirectorsFromDataApi(acn, apiKey, _http = axios) {
     }));
 }
 
-function isKnownNonCompany(entityType) {
-  return Boolean(entityType) && !/company/i.test(entityType);
-}
-
 // `identity` is resolveEntityIdentity()'s output (licenceMatching.js). Lookup order: ACN (the
 // user's, or derived from a company ABN), then the ABN's last 9 digits when the entity type is
 // unknown, then the ABN column, then — only with no identifier at all — the name.
@@ -208,7 +204,7 @@ async function searchASIC(identity, { _http = axios, _fetchDirectors = fetchDire
   const name = identity.legalName || identity.typedName || '';
   const searchUrl = acn ? buildDetailUrl(acn) : buildSearchUrl(name || abn);
 
-  if (!acn && isKnownNonCompany(identity.entityType)) {
+  if (!acn && isKnownNonCompany(identity)) {
     return {
       ...base,
       results: [],

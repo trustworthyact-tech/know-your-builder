@@ -123,6 +123,7 @@
           <th>Jurisdiction</th>
           <th>Scope</th>
           <th>7-day success rate</th>
+          <th>7-day complete rate</th>
           <th>Last success</th>
           <th>Last failure</th>
         </tr>
@@ -151,6 +152,15 @@
     return d.toLocaleString();
   }
 
+  // Share of checks the user actually got in full (not partial, stale or unavailable) — the
+  // ≥95% target. Counted only from events logged since 2026-10-13, when completeness started
+  // being recorded.
+  function fmtCompleteRate(row) {
+    if (!row.historyAvailable) return 'no persisted history';
+    if (row.completeChecks7d == null || row.completeChecks7d === 0) return 'not yet recorded';
+    return Math.round(row.completeRate7d * 100) + '% (' + row.completeChecks7d + ')';
+  }
+
   function fmtRate(row) {
     if (!row.historyAvailable) return 'no history yet';
     if (row.attempts7d == null || row.attempts7d === 0) return 'no attempts';
@@ -172,6 +182,7 @@
         '<td>' + (row.jurisdiction || '—') + '</td>' +
         '<td><span class="mvp">' + (row.mvpScope ? 'MVP' : 'non-MVP') + '</span></td>' +
         '<td>' + fmtRate(row) + '</td>' +
+        '<td>' + fmtCompleteRate(row) + '</td>' +
         '<td>' + fmtTime(row.lastSuccessAt) + '</td>' +
         '<td>' + fmtTime(row.lastFailureAt) + '</td>' +
         '</tr>';

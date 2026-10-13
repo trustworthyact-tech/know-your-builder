@@ -50,4 +50,14 @@ function assertValidResult(key, result) {
   return result;
 }
 
-module.exports = { assertValidResult };
+// Marks a result built from a cached dataset copy that's older than its refresh SLA
+// (DATA_SOURCES_PLAN.md Phase 0, 2026-10-13): completeness 'stale' plus the copy's date, so
+// the report's CompletenessBadge says so instead of showing the check as complete. Before
+// this, no scraper ever set 'stale' — an old copy was only mentioned in the summary text.
+function staleFields(stale, cachedAt) {
+  if (!stale) return {};
+  const asOf = cachedAt ? new Date(cachedAt) : null;
+  return { completeness: 'stale', ...(asOf && !isNaN(asOf) ? { asOf: asOf.toISOString() } : {}) };
+}
+
+module.exports = { assertValidResult, staleFields };

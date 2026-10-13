@@ -28,3 +28,20 @@ test('nameMatchesEntity — a multi-word name is phrase-anchored, not "every wor
     false
   );
 });
+
+// DATA_SOURCES_PLAN.md Phase 0 — an out-of-date cached copy is marked stale, with its date.
+const { searchAsicEnforceableUndertakings } = require('./asicEnforceableUndertakings');
+
+test('searchAsicEnforceableUndertakings — a stale cached copy sets completeness stale; a fresh one does not', async () => {
+  const cachedAt = new Date('2026-10-01T00:00:00Z');
+  const fresh = await searchAsicEnforceableUndertakings('Acme Pty Ltd', [], async () => ({ records: [], stale: false, cachedAt: new Date() }));
+  assert.equal(fresh.completeness, undefined);
+  const old = await searchAsicEnforceableUndertakings('Acme Pty Ltd', [], async () => ({ records: [], stale: true, cachedAt }));
+  assert.equal(old.completeness, 'stale');
+  assert.equal(old.asOf, cachedAt.toISOString());
+});
+
+test('searchAsicEnforceableUndertakings — no data at all is an error, not "no undertakings found"', async () => {
+  const out = await searchAsicEnforceableUndertakings('Acme Pty Ltd', [], async () => { throw new Error('no cache'); });
+  assert.equal(out.status, 'error');
+});

@@ -132,7 +132,9 @@ const SCRAPERS = [
   // mvpScope:true routing this through runScraper(), the wrong 10s timeout (meant for a local
   // dataset lookup) was being enforced against a real live HTTP fetch, which needs the
   // live-call default of 20s like every other bucket-2 entry.
-  { key: 'modernSlavery', label: 'Modern Slavery Statements Register', jurisdiction: 'national', bucket: 2, sourceType: 'live-scrape', cadence: null, timeoutMs: 20_000, mvpScope: true },
+  // timeoutMs 20_000 -> 30_000 (2026-10-13, DATA_SOURCES_PLAN.md Phase 0): it now waits on
+  // identity (up to 5s ABR + 4s ASIC fallback) for the legal name before its own 15s request.
+  { key: 'modernSlavery', label: 'Modern Slavery Statements Register', jurisdiction: 'national', bucket: 2, sourceType: 'live-scrape', cadence: null, timeoutMs: 30_000, mvpScope: true },
   { key: 'qbcc', label: 'QBCC — Licence Register', jurisdiction: 'qld', bucket: 2, sourceType: 'live-api', cadence: null, timeoutMs: 20_000, mvpScope: false },
   // timeoutMs was 20_000 — found live 2026-09-23 (a real "Morris Property Group" search):
   // fairwork.gov.au (Akamai-fronted) was actively blocking Railway's IP with an instant

@@ -1,4 +1,5 @@
 const { readCachedLicenceRecords, readCachedDisciplinaryRecords } = require('./actLicencesDataset');
+const { staleFields } = require('./validateResult');
 const { NAME_ONLY, asIdentity, classifyMatch, entityNames, licenceSummary, makeNameMatcher } = require('./licenceMatching');
 
 // ACT Access Canberra — List of Professionals (Socrata open-data API).
@@ -266,9 +267,9 @@ async function resolveActLinkedCompanies(identityOrName, people, _readCachedLice
 async function searchACTLicences(identityOrName, abn, directors, _readCachedLicenceRecords = readCachedLicenceRecords) {
   const identity = asIdentity(identityOrName, abn);
 
-  let records;
+  let records, stale, cachedAt;
   try {
-    records = await readLicenceRows(_readCachedLicenceRecords);
+    ({ records, stale, cachedAt } = await _readCachedLicenceRecords());
   } catch (err) {
     return {
       source: 'ACT Access Canberra — Builder Licence Register',
@@ -299,6 +300,7 @@ async function searchACTLicences(identityOrName, abn, directors, _readCachedLice
     results: allResults,
     searchUrl: REGISTERS_PORTAL_URL,
     summary: licenceSummary(allResults, identity, { found: 'ACT builder licence record(s)', none: 'ACT builder licence' }),
+    ...staleFields(stale, cachedAt),
   };
 }
 
@@ -345,9 +347,9 @@ async function searchACTDisciplinary(
     return { company: c, identity: cIdentity, matchers: entityNames(cIdentity).map(makeNameMatcher) };
   });
 
-  let records;
+  let records, stale, cachedAt;
   try {
-    ({ records } = await _readCachedDisciplinaryRecords());
+    ({ records, stale, cachedAt } = await _readCachedDisciplinaryRecords());
   } catch (err) {
     return {
       source: 'ACT Access Canberra — Register of Disciplinary Actions',
@@ -410,6 +412,7 @@ async function searchACTDisciplinary(
       allResults.length > 0
         ? `${allResults.length} ACT disciplinary action(s) found`
         : 'No ACT disciplinary actions found',
+    ...staleFields(stale, cachedAt),
   };
 }
 

@@ -29,7 +29,7 @@ test('logEvent — inserts scraper_key/outcome/error via the pool', async () => 
 
   assert.equal(pool.calls.length, 1);
   assert.match(pool.calls[0].sql, /INSERT INTO health_check_event/);
-  assert.deepEqual(pool.calls[0].values, ['asic', 'failure', 'boom']);
+  assert.deepEqual(pool.calls[0].values, ['asic', 'failure', 'boom', null]);
 });
 
 test('logEvent — a null error is passed through as null, not the string "null"', async () => {
@@ -60,8 +60,8 @@ test('getRollup — computes successRate from attempts/successes and excludes ci
 
   const result = await getRollup({ windowDays: 7 }, pool);
 
-  assert.deepEqual(result.asic, { attempts: 4, successes: 3, successRate: 0.75 });
-  assert.deepEqual(result.fwo, { attempts: 2, successes: 0, successRate: 0 });
+  assert.deepEqual(result.asic, { attempts: 4, successes: 3, successRate: 0.75, completeChecks: 0, completeRate: null });
+  assert.deepEqual(result.fwo, { attempts: 2, successes: 0, successRate: 0, completeChecks: 0, completeRate: null });
   assert.match(pool.calls[0].sql, /GROUP BY scraper_key/);
   assert.match(pool.calls[0].sql, /outcome IN \('success', 'failure'\)/);
 });
@@ -115,4 +115,28 @@ test('mergeHistory — a key absent from a non-null rollup (no events yet) repor
   assert.equal(merged.scrapers[0].historyAvailable, true);
   assert.equal(merged.scrapers[0].attempts7d, null);
   assert.equal(merged.scrapers[0].successRate7d, null);
+});
+
+// DATA_SOURCES_PLAN.md Phase 0 — completeness is stored and rolled up into a complete rate.
+test('logEvent — stores completeness alongside the outcome', async () => {
+  const pool = makeFakePool();
+  await logEvent('asic', 'success', null, pool, 'partial');
+  const insert = pool.calls.find((c) => /INSERT INTO health_check_event/.test(c.sql));
+  assert.match(insert.sql, /completeness/);
+  assert.deepEqual(insert.values, ['asic', 'success', null, 'partial']);
+});
+
+test('getRollup / mergeHistory — complete rate counts only rows that recorded completeness', async () => {
+  const pool = makeFakePool({
+    queryImpl: (sql) =>
+      /FROM health_check_event/.test(sql)
+        ? { rows: [{ scraper_key: 'fwo', successes: '10', attempts: '12', completes: '6', completeness_logged: '8' }] }
+        : { rows: [] },
+  });
+  const rollup = await getRollup({ windowDays: 7 }, pool);
+  assert.equal(rollup.fwo.completeRate, 6 / 8);
+  assert.equal(rollup.fwo.completeChecks, 8);
+  const merged = mergeHistory({ scrapers: [{ key: 'fwo' }, { key: 'abn' }] }, rollup);
+  assert.equal(merged.scrapers[0].completeRate7d, 0.75);
+  assert.equal(merged.scrapers[1].completeRate7d, null);
 });

@@ -32,11 +32,16 @@ function withTimeout(promise, timeoutMs) {
  * here can never surface as an unhandled rejection (the exact class of bug documented in
  * CLAUDE.md's WS4.2 entry) or add latency to the request this scraper is part of.
  */
-async function runScraper(manifestEntry, fn, { send, health = defaultHealth, logHealthEvent = healthHistory.logEvent } = {}) {
+// logHealthEvent(key, outcome, error, completeness) — completeness is what the user got (see
+// health_check_event.completeness in schema.sql), so the dashboard can show a complete rate.
+const defaultLogHealthEvent = (key, outcome, error, completeness) =>
+  healthHistory.logEvent(key, outcome, error, undefined, completeness);
+
+async function runScraper(manifestEntry, fn, { send, health = defaultHealth, logHealthEvent = defaultLogHealthEvent } = {}) {
   const { key, label, timeoutMs, breaker } = manifestEntry;
 
   if (health.isOpen(key)) {
-    logHealthEvent(key, 'circuit_open', null).catch(() => {});
+    logHealthEvent(key, 'circuit_open', null, 'unavailable').catch(() => {});
     send({
       key,
       label,
@@ -52,12 +57,13 @@ async function runScraper(manifestEntry, fn, { send, health = defaultHealth, log
   try {
     const result = await withTimeout(fn(), timeoutMs);
     health.recordSuccess(key);
-    logHealthEvent(key, 'success', null).catch(() => {});
-    send({ key, label, status: 'done', ...assertValidResult(key, result) });
+    const validated = assertValidResult(key, result);
+    logHealthEvent(key, 'success', null, validated?.completeness ?? null).catch(() => {});
+    send({ key, label, status: 'done', ...validated });
   } catch (err) {
     health.recordFailure(key, breaker);
     const message = err && err.message ? err.message : String(err);
-    logHealthEvent(key, 'failure', message).catch(() => {});
+    logHealthEvent(key, 'failure', message, 'unavailable').catch(() => {});
     // Log the full stack, not just the message — a bare "Execution context was destroyed"
     // doesn't say which Puppeteer call in the scraper threw (asicInsolvency/atoDebt, 2026-10-06).
     console.error(`[${key}]`, (err && err.stack) || message);

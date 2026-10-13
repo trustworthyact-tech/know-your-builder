@@ -1,6 +1,7 @@
 'use strict';
 
 const axios = require('axios');
+const { staleFields } = require('./validateResult');
 const zlib  = require('zlib');
 const fs    = require('fs');
 const os    = require('os');
@@ -424,19 +425,21 @@ async function searchPaymentTimes(companyName, abn, acn) {
       source: 'Payment Times Reporting Register',
       jurisdiction: 'Federal',
       category: 'payment',
+      status: 'error',
       results: [],
       searchUrl,
       summary: `Could not read register data: ${err.message}`,
     };
   }
 
-  const { rows: allRows, stale, empty } = queryResult;
+  const { rows: allRows, stale, empty, fetchedAt } = queryResult;
 
   if (empty) {
     return {
       source: 'Payment Times Reporting Register',
       jurisdiction: 'Federal',
       category: 'payment',
+      status: 'error',
       results: [],
       searchUrl,
       summary: 'Payment Times register data is not yet available — try again shortly',
@@ -482,6 +485,7 @@ async function searchPaymentTimes(companyName, abn, acn) {
     summary: stale
       ? `Register data may be a few hours old — background refresh has not completed recently. ${baseSummary}`
       : baseSummary,
+    ...staleFields(stale, fetchedAt),
   };
 }
 

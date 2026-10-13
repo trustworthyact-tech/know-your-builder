@@ -38,3 +38,10 @@ CREATE TABLE IF NOT EXISTS health_check_event (
 );
 
 CREATE INDEX IF NOT EXISTS idx_health_check_event_key_time ON health_check_event(scraper_key, occurred_at);
+
+-- What the user actually got (DATA_SOURCES_PLAN.md Phase 0, 2026-10-13): the result's
+-- completeness ('complete' | 'partial' | 'stale' | 'unavailable'). 'success' only means the
+-- scraper returned without throwing, which includes partial and stale results, so the
+-- dashboard's success rate couldn't show whether checks were really completing. NULL on rows
+-- logged before this column existed; the complete rate only counts rows that have it.
+ALTER TABLE health_check_event ADD COLUMN IF NOT EXISTS completeness TEXT;
