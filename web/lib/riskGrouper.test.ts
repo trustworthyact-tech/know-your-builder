@@ -96,3 +96,41 @@ test('associated-company triggers never lower an existing significant corporate 
   assert.equal(corporate.severity, 'significant');
   assert.equal(corporate.triggers.length, 2);
 });
+
+// DATA_SOURCES_PLAN.md 1.5: ASIC company status is matched exactly. "Not active" (ASIC code NOAC)
+// and "Not registered" (NRGD) used to pass a substring check for "active"/"registered".
+function asicStatus(status: string) {
+  const corporate = riskGrouper(findings(result('asic', [{ title: 'X PTY LTD', status }]))).find(
+    (g) => g.id === 'CORPORATE'
+  );
+  return corporate ? { severity: corporate.severity, finding: corporate.triggers[0].finding } : null;
+}
+
+test('a registered company raises no ASIC status finding', () => {
+  assert.equal(asicStatus('Registered'), null);
+  assert.equal(asicStatus('registered'), null);
+  assert.equal(asicStatus('Active'), null);
+});
+
+test('adverse ASIC statuses are significant, including the ones that contain a clean word', () => {
+  for (const status of [
+    'Not active',
+    'Not registered',
+    'Deregistered',
+    'External administration',
+    'Strike-off action in progress',
+    'Cancelled',
+    'Dissolved by Act of Parliament',
+  ]) {
+    const r = asicStatus(status);
+    assert.ok(r, `${status} should raise a finding`);
+    assert.equal(r!.severity, 'significant', status);
+    assert.match(r!.finding, new RegExp(status));
+  }
+});
+
+test('an unrecognised ASIC status is raised at findings severity, never treated as clean', () => {
+  const r = asicStatus('DIV3');
+  assert.ok(r);
+  assert.equal(r!.severity, 'findings');
+});

@@ -307,6 +307,32 @@ redundant download.
 
 ## Incomplete work
 
+### Data sources plan — Phase 1 in progress (2026-10-12)
+
+Full audit and phased plan for the 16 MVP sources: **`DATA_SOURCES_PLAN.md`** (repo root).
+Principle recorded there: public data only, so no paid ASIC extracts or information brokers.
+Done on branch `feature/data-sources-phase1` (not deployed):
+- **`asic` no longer scrapes ASIC Connect.** It reads ASIC's Company Dataset through
+  data.gov.au's live CKAN DataStore API (`asic.js`), looked up by the resolved ACN/ABN. No
+  CAPTCHA, about 1s, and it adds former names and statuses such as external administration
+  and strike-off. A failed lookup is `unavailable`, never "not found". Manifest: bucket 2,
+  30s.
+- **Former names** (confirmed by ACN) join the court/FWO/ASIC EU search terms
+  (`FORMER_NAME_CAP` 3) as the entity's own names.
+- **ABR-outage fallback:** when the ABN lookup returns no record, a company's legal name and
+  ACN come from the same ASIC data by ABN (`withAsicIdentityFallback`).
+- **`riskGrouper` ASIC status bug fixed:** the old substring check passed "Not active"
+  (ASIC `NOAC`) as healthy.
+
+- **`abn` uses the official ABN Lookup web services** (`ABR_GUID`, set in Railway
+  2026-10-13), with the ABR page scrape as fallback. The result shape is unchanged. It adds
+  `ACN`, dated `Former name(s)` and a real `date` (registration; it was always empty, so
+  riskGrouper's "registered within 2 years" modifier never fired). A failed lookup is
+  `unavailable`, never "No ABR records found". Identity bound 8s → 5s.
+
+Remaining for Phase 1: deploy, then watch `abn`/`asic` complete rates for 7 days. Next phase
+items are in the plan (Phase 0 fixes, then Phase 2 NSW API).
+
 ### ScrapeOps proxy credits run out within days for companies with many business names — DECIDED, fix on branch (2026-10-09)
 
 **Decided (2026-10-09): business-name cap of 3 for `courts_act` and `fwo`, 10 for NSW

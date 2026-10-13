@@ -24,6 +24,10 @@ const COURT_FWO_BUSINESS_NAME_CAP = 3;
 // names are added to the court/FWO/other name-based searches — legal name only, not their own
 // business names, which fans out quickly (decided 2026-10-11).
 const LINKED_COMPANY_CAP = 3;
+// Former company names (ASIC Company Dataset, confirmed by ACN) added to the court/FWO/other
+// name-based searches. Capped while courts and FWO are still live proxy-backed searches
+// (DATA_SOURCES_PLAN.md 1.4); the dataset doesn't date each former name, so it's the first 3.
+const FORMER_NAME_CAP = 3;
 
 function normaliseDigits(v) {
   return String(v ?? '').replace(/\D/g, '');
@@ -125,6 +129,25 @@ function resolveEntityIdentity({ abn, acn, companyName } = {}, abnResult = null)
   };
 }
 
+// When the ABR lookup returned nothing (an outage — DATA_SOURCES_PLAN.md 1.4 — or a timeout), a
+// company's legal name and ACN can still come from ASIC's Company Dataset, looked up by ABN.
+// Business names still need the ABR, so they stay empty. `company` is asic.js's
+// lookupAsicCompany() result; a non-company or no ASIC record leaves the identity unchanged.
+function withAsicIdentityFallback(identity, company) {
+  if (identity.legalName || !company?.current) return identity;
+  const current = company.current;
+  const legalName = current['Company Name'] || '';
+  return {
+    ...identity,
+    legalName,
+    acn: identity.acn || normaliseDigits(current.ACN),
+    possibleAcn: '',
+    entityType: identity.entityType || 'Company (from ASIC; ABR unavailable)',
+    trustName: parseTrustName(legalName),
+    identitySource: 'ASIC Company Dataset (ABR unavailable)',
+  };
+}
+
 // Scrapers accept either a resolved identity or, for standalone/live-test callers, a plain
 // company name plus optional ABN (no ABR record, so no legal name, business names or derived
 // ACN — just the typed name and ABN digits).
@@ -194,13 +217,13 @@ const NAME_ONLY = 'Name only — verify';
 // — courtRecords.js strips company suffixes from its terms, so keys are compared the same way.
 // Priority: the entity's own names, then typed people, then people from confirmed licences, then
 // people from name-only licences, then linked companies.
-function buildTermProvenance({ companyName, identity, typedPeople = [], discoveredPeople = [], linkedCompanies = [] }) {
+function buildTermProvenance({ companyName, identity, typedPeople = [], discoveredPeople = [], linkedCompanies = [], formerNames = [] }) {
   const map = new Map();
   const set = (name, info) => {
     const key = searchableName(name);
     if (key && !map.has(key)) map.set(key, info);
   };
-  for (const n of [companyName, identity.legalName, ...identity.businessNames, identity.trustName]) set(n, { kind: 'entity' });
+  for (const n of [companyName, identity.legalName, ...identity.businessNames, identity.trustName, ...formerNames]) set(n, { kind: 'entity' });
   for (const n of typedPeople) set(n, { kind: 'person', confidence: 'typed' });
   for (const p of discoveredPeople) if (p.confidence !== 'name-only') set(p.name, { kind: 'person', confidence: 'confirmed' });
   for (const p of discoveredPeople) set(p.name, { kind: 'person', confidence: 'name-only', name: p.name });
@@ -252,6 +275,7 @@ module.exports = {
   BUSINESS_NAME_CAP,
   COURT_FWO_BUSINESS_NAME_CAP,
   LINKED_COMPANY_CAP,
+  FORMER_NAME_CAP,
   NAME_ONLY,
   buildTermProvenance,
   labelResultsByTerm,
@@ -262,6 +286,7 @@ module.exports = {
   makeNameMatcher,
   parseTrustName,
   resolveEntityIdentity,
+  withAsicIdentityFallback,
   asIdentity,
   entityNames,
   identifiersMatch,

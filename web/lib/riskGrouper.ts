@@ -28,6 +28,11 @@ const INACTIVE_STATUSES = ['expired', 'suspended', 'cancelled', 'inactive', 'lap
 // never drives a finding. A result carrying `LinkedCompany` belongs to another company linked to
 // the searched entity's people — never counted as the entity's own record; a confirmed one raises
 // a separate, lower-severity "associated company" trigger instead (see associatedCompanyTriggers).
+// ASIC company statuses. "active" stays clean for older result shapes that reported it.
+const ASIC_CLEAN_STATUSES = new Set(['registered', 'active']);
+const ASIC_ADVERSE_STATUS =
+  /deregistered|external administration|administration|liquidation|receivership|strike-off|not active|not registered|cancelled|dissolved/i;
+
 const NAME_ONLY = 'Name only — verify';
 
 function isVerifyOnly(item: ResultItem): boolean {
@@ -413,16 +418,21 @@ export function riskGrouper(findings: Record<string, SearchResult>): RiskGroupRe
     const triggers: RiskGroupTrigger[] = [];
     let severity: 'significant' | 'findings' = 'findings';
 
+    // Exact match against the clean statuses, not a substring test: ASIC's "Not active" (NOAC)
+    // and "Not registered" (NRGD) both contain a clean word and used to pass as healthy. A status
+    // that isn't clean and isn't a known adverse one is still raised, at findings severity —
+    // an unrecognised status is never silently clean.
     const asicResults = resultsOf(findings, 'asic');
     const inactiveAsic = asicResults.filter((r) => {
-      const status = (r.status ?? '').toLowerCase();
-      return status.length > 0 && !status.includes('active') && !status.includes('registered');
+      const status = (r.status ?? '').trim().toLowerCase();
+      return status.length > 0 && !ASIC_CLEAN_STATUSES.has(status);
     });
     if (inactiveAsic.length > 0) {
-      severity = 'significant';
+      const status = inactiveAsic[0].status ?? '';
+      if (ASIC_ADVERSE_STATUS.test(status)) severity = 'significant';
       triggers.push({
         scraperKey: 'asic',
-        finding: `Company status is "${inactiveAsic[0].status}" — not Active or Registered`,
+        finding: `Company status is "${status}" — not Registered`,
         anchor: '#s81',
       });
     }

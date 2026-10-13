@@ -307,3 +307,36 @@ test('licenceSummary — wording depends on whether there was an ABN', () => {
     '2 X record(s) found (1 matched by name only — verify)'
   );
 });
+
+// DATA_SOURCES_PLAN.md 1.4 — ABR-outage identity fallback and former names as entity terms.
+const { withAsicIdentityFallback, buildTermProvenance: buildProvenance } = require('./licenceMatching');
+
+const asicCompany = {
+  current: { 'Company Name': 'TURNKEY CREATIONS PTY LTD', ACN: '155832732' },
+  formerNames: ['FAW HOLDINGS PTY LTD'],
+};
+
+test('withAsicIdentityFallback — fills legal name and ACN when the ABR gave nothing', () => {
+  const identity = resolveEntityIdentity({ abn: '67155832732', companyName: 'Turnkey' }, null);
+  assert.equal(identity.legalName, '');
+  const out = withAsicIdentityFallback(identity, asicCompany);
+  assert.equal(out.legalName, 'TURNKEY CREATIONS PTY LTD');
+  assert.equal(out.acn, '155832732');
+  assert.equal(out.possibleAcn, '');
+  assert.match(out.entityType, /Company/);
+  assert.match(out.identitySource, /ABR unavailable/);
+  assert.deepEqual(out.businessNames, [], 'business names still need the ABR');
+});
+
+test('withAsicIdentityFallback — leaves an ABR-resolved identity, or a missing ASIC record, untouched', () => {
+  const abr = resolveEntityIdentity({ abn: '67155832732' }, { results: [{ title: 'TURNKEY CREATIONS PTY LTD', metadata: { 'Entity type': 'Australian Private Company' } }] });
+  assert.equal(withAsicIdentityFallback(abr, asicCompany), abr);
+  const bare = resolveEntityIdentity({ abn: '67155832732' }, null);
+  assert.equal(withAsicIdentityFallback(bare, null), bare);
+});
+
+test('buildTermProvenance — former names are the entity\'s own names', () => {
+  const identity = resolveEntityIdentity({ abn: '67155832732', companyName: 'Turnkey Creations' }, null);
+  const map = buildProvenance({ companyName: 'Turnkey Creations', identity, formerNames: ['FAW HOLDINGS PTY LTD'] });
+  assert.deepEqual(map.get(searchableName('FAW HOLDINGS PTY LTD')), { kind: 'entity' });
+});
