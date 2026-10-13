@@ -340,3 +340,8 @@ test('buildTermProvenance — former names are the entity\'s own names', () => {
   const map = buildProvenance({ companyName: 'Turnkey Creations', identity, formerNames: ['FAW HOLDINGS PTY LTD'] });
   assert.deepEqual(map.get(searchableName('FAW HOLDINGS PTY LTD')), { kind: 'entity' });
 });
+
+test('entityNames — includes former names when the identity carries them, deduped', () => {
+  const identity = { ...resolveEntityIdentity({ companyName: 'Turnkey Creations Pty Ltd' }, null), formerNames: ['FAW Holdings Pty Ltd', 'Turnkey Creations Pty Ltd'] };
+  assert.deepEqual(entityNames(identity), ['Turnkey Creations Pty Ltd', 'FAW Holdings Pty Ltd']);
+});

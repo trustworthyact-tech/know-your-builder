@@ -360,3 +360,21 @@ test('searchNSWFairTrading — a successful discovery result is reused without r
   assert.deepEqual(http.posts, []);
   assert.equal(result.results.length, 1);
 });
+
+// DATA_SOURCES_PLAN.md 2.4 — the entity's former names are searched too, and matched like its
+// other names: a hit carrying a matching identifier is confirmed, one with no identifiers is
+// "verify" only, even when discovery ran before the former names were known.
+test('searchNSWFairTrading — former names are searched, and matched after a reused discovery', async () => {
+  const withFormer = { ...turnkey, formerNames: ['FAW Holdings Pty Ltd'] };
+  const http = fakeHttp({
+    searchResults: {
+      'faw holdings': [hit('FAW HOLDINGS PTY LTD', '9F', 'L9'), hit('FAW HOLDINGS PTY LTD', '8F', 'L8', { ACN: '155832732' })],
+    },
+  });
+  const primary = await fetchNswCompanyLookup(turnkey, [], http);
+  const result = await searchNSWFairTrading(withFormer, '', [], primary, http);
+  assert.ok(http.posts.includes('faw holdings'), `queries: ${http.posts}`);
+  const byLicence = Object.fromEntries(result.results.map((r) => [r.metadata.LicenceNumber, r.metadata.MatchedBy]));
+  assert.equal(byLicence['8F'], 'ACN');
+  assert.equal(byLicence['9F'], 'Name only — verify');
+});

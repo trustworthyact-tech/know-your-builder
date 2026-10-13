@@ -1,7 +1,7 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
 const { fetchWithBrowser } = require('./browser');
-const { proxied, proxyUrl } = require('./proxyLimiter');
+const { fetchDirectFirst } = require('./proxyLimiter');
 
 // Jurisdiction labels shown in the report and used as SearchResult.jurisdiction.
 const JURISDICTION_LABELS = {
@@ -279,18 +279,31 @@ const fetchVicTermResults = makeTermCache(async (term) => {
 // Every proxied call also goes through proxyLimiter.js's shared semaphore
 // (LICENCE_MATCHING_PLAN.md Phase 1.3) — this file, nswFairTrading.js and fwo.js share one
 // ScrapeOps account capped at 5 concurrent requests.
-const viaProxy = (url) => proxyUrl(url);
+//
+// DATA_SOURCES_PLAN.md Phase 2 (2026-10-13): requests now go through fetchDirectFirst — direct
+// first, the proxy only when the site blocks Railway (still true for both ACT hosts on that
+// date: Cloudflare 403). Every response must pass isFunnelbackResultsPage, so a Cloudflare
+// challenge served with a 200 fails the search instead of parsing as "no cases found".
+
+// A real Funnelback search page from courts.act.gov.au or ACAT: result items, or the site's own
+// "Your search for … did not return any results" message (both checked against saved pages,
+// 2026-10-13). A Cloudflare challenge ("Just a moment...") has neither.
+function isFunnelbackResultsPage(html) {
+  return typeof html === 'string' && (/<li[^>]*class="[^"]*\bsearch-result\b/.test(html) || /did not return any results/i.test(html));
+}
+
+const ACT_HEADERS = { 'User-Agent': 'Mozilla/5.0 (compatible; know-your-builder/1.0)' };
 
 const fetchActTermResults = makeTermCache(async (term) => {
   const searchUrl = `https://www.courts.act.gov.au/judgment?query=${encodeURIComponent(term)}`;
-  const { data } = await proxied(
-    () =>
-      axios.get(viaProxy(searchUrl), {
-        timeout: 45_000,
-        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; know-your-builder/1.0)' },
-      }),
-    { label: 'courts_act courts' }
-  );
+  const data = await fetchDirectFirst({
+    site: 'act-courts',
+    request: { url: searchUrl, headers: ACT_HEADERS },
+    validate: isFunnelbackResultsPage,
+    label: 'courts_act courts',
+    timeoutMs: 45_000,
+    directTimeoutMs: 5_000,
+  });
   const $ = cheerio.load(data);
   const results = [];
 
@@ -340,14 +353,14 @@ const fetchActTermResults = makeTermCache(async (term) => {
 // Queensland Judgments.
 const fetchAcatTermResults = makeTermCache(async (term) => {
   const searchUrl = `https://www.acat.act.gov.au/decisions2/search-decisions?meta_partyName=${encodeURIComponent(term)}`;
-  const { data } = await proxied(
-    () =>
-      axios.get(viaProxy(searchUrl), {
-        timeout: 45_000,
-        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; know-your-builder/1.0)' },
-      }),
-    { label: 'courts_act ACAT' }
-  );
+  const data = await fetchDirectFirst({
+    site: 'acat',
+    request: { url: searchUrl, headers: ACT_HEADERS },
+    validate: isFunnelbackResultsPage,
+    label: 'courts_act ACAT',
+    timeoutMs: 45_000,
+    directTimeoutMs: 5_000,
+  });
   const $ = cheerio.load(data);
   const results = [];
 
@@ -583,8 +596,8 @@ async function fetchActAndAcatTermResults(term) {
   // Originally sequenced this on the theory that firing both at once was tripping a
   // burst rate-limit — live SSH testing into the production container same-day showed
   // the real cause was a standing Cloudflare managed challenge on that zone against
-  // Railway's IP, unrelated to request pacing (now routed through a proxy in both
-  // fetchers above — see viaProxy's comment — which clears it). Left sequential anyway
+  // Railway's IP, unrelated to request pacing (handled by fetchDirectFirst's proxy fallback
+  // in both fetchers above). Left sequential anyway
   // now that a proxy is in the loop — running two proxied requests in parallel
   // needlessly risks the proxy pool's own concurrency limits for no real speed benefit.
   let courtsResult;
@@ -686,6 +699,7 @@ async function searchCourtRecords(companyName, directors = [], jurisdiction = 'f
 
 module.exports = {
   searchCourtRecords,
+  isFunnelbackResultsPage,
   searchNswCaselaw,
   searchActJudgments,
   searchFederalCourtJudgments,

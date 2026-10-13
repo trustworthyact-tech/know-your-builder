@@ -386,18 +386,26 @@ async function runSearchRequest({ abn, acn, companyName, tradingName, directors 
       // resolveDirectors() or gets markPartialIfNoDirectors(): NSW doesn't search under person
       // names any more (LICENCE_MATCHING_PLAN.md 2.6), so a missing person list doesn't make it
       // partial.
-      const identity = await identityPromise;
+      const [identity, formerNames] = await Promise.all([identityPromise, resolveFormerNames()]);
       const primary = await nswCompanyLookupPromise.catch(() => ({ failed: true }));
-      return searchNSWFairTrading(identity, abn, typedPeople, primary);
+      return searchNSWFairTrading({ ...identity, formerNames }, abn, typedPeople, primary);
     },
     ntBuildingPractitioners: async () => searchNTBuildingPractitioners(companyName, abn, await resolveDirectors()),
     actLicences: async () => {
-      const [identity, dirs] = await Promise.all([identityPromise, resolveDirectors()]);
-      return markPartialIfNoDirectors(await searchACTLicences(identity, abn, dirs), dirs.length);
+      const [identity, dirs, formerNames] = await Promise.all([identityPromise, resolveDirectors(), resolveFormerNames()]);
+      return markPartialIfNoDirectors(await searchACTLicences({ ...identity, formerNames }, abn, dirs), dirs.length);
     },
     actDisciplinary: async () => {
-      const [identity, dirs, linked] = await Promise.all([identityPromise, resolveDirectors(), resolveLinkedCompanies()]);
-      return markPartialIfNoDirectors(await searchACTDisciplinary(identity, abn, dirs, undefined, linked), dirs.length);
+      const [identity, dirs, linked, formerNames] = await Promise.all([
+        identityPromise,
+        resolveDirectors(),
+        resolveLinkedCompanies(),
+        resolveFormerNames(),
+      ]);
+      return markPartialIfNoDirectors(
+        await searchACTDisciplinary({ ...identity, formerNames }, abn, dirs, undefined, linked),
+        dirs.length
+      );
     },
     waLicenceRegister: async () => searchWALicenceRegister(companyName, abn, await resolveDirectors()),
     tasLicenceRegister: async () =>

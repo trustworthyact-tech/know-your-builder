@@ -1,6 +1,5 @@
-const axios = require('axios');
 const cheerio = require('cheerio');
-const { proxied, proxyUrl } = require('./proxyLimiter');
+const { fetchDirectFirst } = require('./proxyLimiter');
 
 const BASE = 'https://www.fairwork.gov.au';
 
@@ -26,7 +25,18 @@ const HEADERS = {
 // Every proxied call also goes through proxyLimiter.js's shared semaphore
 // (LICENCE_MATCHING_PLAN.md Phase 1.3) — this file, nswFairTrading.js and courtRecords.js share one
 // ScrapeOps account capped at 5 concurrent requests.
-const viaProxy = (url) => proxyUrl(url);
+//
+// DATA_SOURCES_PLAN.md Phase 2 (2026-10-13): requests now go through fetchDirectFirst — direct
+// first, the proxy only while fairwork.gov.au still blocks Railway (it timed out from Railway on
+// that date). A response must pass isFwoSearchPage, so a block page served with a 200 fails the
+// query instead of reading as "no enforcement outcomes".
+
+// The news-and-media search page always carries its result count — "<span
+// id="num_search_results"><b>209</b> results</span>", or <b>0</b> with no matches (checked
+// against saved pages, 2026-10-13). An Akamai/Cloudflare block page doesn't.
+function isFwoSearchPage(html) {
+  return typeof html === 'string' && /id="num_search_results"/.test(html);
+}
 
 const ENFORCEMENT_KEYWORDS = [
   'penalty',
@@ -186,10 +196,14 @@ async function fetchFwoResults(query, entityName) {
   const url = `${BASE}/newsroom/news-and-media-search?keys=${encodeURIComponent(query)}`;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const { data } = await proxied(
-        () => axios.get(viaProxy(url), { headers: HEADERS, timeout: 20000, maxRedirects: 5 }),
-        { label: 'fwo' }
-      );
+      const data = await fetchDirectFirst({
+        site: 'fwo',
+        request: { url, headers: HEADERS },
+        validate: isFwoSearchPage,
+        label: 'fwo',
+        timeoutMs: 20_000,
+        directTimeoutMs: 5_000,
+      });
       const $ = cheerio.load(data);
       return { results: parseNewsItems($, url, entityName), failed: false };
     } catch {
@@ -265,4 +279,4 @@ async function searchFWO(companyName, abn, directors) {
   };
 }
 
-module.exports = { searchFWO };
+module.exports = { searchFWO, isFwoSearchPage };
