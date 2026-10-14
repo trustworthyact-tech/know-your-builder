@@ -1,5 +1,5 @@
 const axios = require('axios');
-const { fetchDirectFirst } = require('./proxyLimiter');
+const { proxiedRequest } = require('./proxyLimiter');
 const {
   BUSINESS_NAME_CAP,
   NAME_ONLY,
@@ -58,26 +58,26 @@ const HEADERS = {
 // ScrapeOps account capped at 5 concurrent requests.
 //
 // DATA_SOURCES_PLAN.md Phase 2 (2026-10-13): Verify NSW answers Railway directly again (11/11
-// search and details requests, ~200ms), so requests go through fetchDirectFirst — direct first,
-// ScrapeOps (with keep_headers) only if the block returns. Responses must have the JSON shape
+// search and details requests, ~200ms), so requests go through proxyLimiter's proxiedRequest —
+// direct first, then the residential proxy and ScrapeOps (with keep_headers) only if the block
+// returns (Phase 4). Responses must have the JSON shape
 // below; anything else is a failed lookup, never an empty one.
 const isSearchResponse = (data) => Array.isArray(data?.results);
 const isDetailsResponse = (data) => Boolean(data?.componentData) && typeof data.componentData === 'object';
 
 // `_http` is injectable (defaults to axios) so tests can simulate failures without the network.
 async function fetchLicences(query, _http = axios) {
-  const data = await fetchDirectFirst({
+  const data = await proxiedRequest({
     site: 'nsw',
-    request: {
-      method: 'post',
-      url: SEARCH_URL,
-      data: { licenceGroup: 'Trades', search: query, autoComplete: false, pageNumber: 0, pageSize: 20, licenceTypes: [] },
-      headers: HEADERS,
-    },
+    method: 'post',
+    url: SEARCH_URL,
+    data: { licenceGroup: 'Trades', search: query, autoComplete: false, pageNumber: 0, pageSize: 20, licenceTypes: [] },
+    headers: HEADERS,
     validate: isSearchResponse,
     label: 'nswFairTrading search',
     priority: 'high',
     keepHeaders: true,
+    deadlineMs: 25_000,
     _http,
   });
   return data.results;
@@ -91,13 +91,15 @@ async function fetchLicences(query, _http = axios) {
 async function fetchLicenceDetails(licenceType, licenceId, _http = axios) {
   const url = `${API_BASE}/search/details/${encodeURIComponent(licenceType)}/${encodeURIComponent(licenceId)}`;
   try {
-    const data = await fetchDirectFirst({
+    const data = await proxiedRequest({
       site: 'nsw',
-      request: { url, headers: HEADERS },
+      url,
+      headers: HEADERS,
       validate: isDetailsResponse,
       label: 'nswFairTrading details',
       priority: 'high',
       keepHeaders: true,
+      deadlineMs: 25_000,
       _http,
     });
     return data.componentData;

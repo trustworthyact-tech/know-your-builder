@@ -1,5 +1,5 @@
 const cheerio = require('cheerio');
-const { fetchDirectFirst } = require('./proxyLimiter');
+const { proxiedRequest } = require('./proxyLimiter');
 
 const BASE = 'https://www.fairwork.gov.au';
 
@@ -26,8 +26,8 @@ const HEADERS = {
 // (LICENCE_MATCHING_PLAN.md Phase 1.3) — this file, nswFairTrading.js and courtRecords.js share one
 // ScrapeOps account capped at 5 concurrent requests.
 //
-// DATA_SOURCES_PLAN.md Phase 2 (2026-10-13): requests now go through fetchDirectFirst — direct
-// first, the proxy only while fairwork.gov.au still blocks Railway (it timed out from Railway on
+// DATA_SOURCES_PLAN.md Phase 2 (2026-10-13): requests now go through proxiedRequest — direct
+// first, a proxy only while fairwork.gov.au still blocks Railway (it timed out from Railway on
 // that date). A response must pass isFwoSearchPage, so a block page served with a 200 fails the
 // query instead of reading as "no enforcement outcomes".
 
@@ -196,12 +196,13 @@ async function fetchFwoResults(query, entityName) {
   const url = `${BASE}/newsroom/news-and-media-search?keys=${encodeURIComponent(query)}`;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const data = await fetchDirectFirst({
+      const data = await proxiedRequest({
         site: 'fwo',
-        request: { url, headers: HEADERS },
+        url,
+        headers: HEADERS,
         validate: isFwoSearchPage,
         label: 'fwo',
-        timeoutMs: 20_000,
+        deadlineMs: 25_000,
         directTimeoutMs: 5_000,
       });
       const $ = cheerio.load(data);

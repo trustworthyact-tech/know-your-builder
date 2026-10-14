@@ -1,6 +1,8 @@
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const { solveCaptcha } = require('./captcha');
+const { createGate } = require('./priorityGate');
+const { InvalidResponseError } = require('./proxyLimiter');
 
 puppeteer.use(StealthPlugin());
 
@@ -17,24 +19,21 @@ const IDLE_TIMEOUT_MS = 120_000;
 // licence + ASIC insolvency + ATO debt) fail together even though each works fine
 // in isolation. Gate concurrent pages here — the one place all scrapers pass
 // through — instead of touching every call site.
+//
+// DATA_SOURCES_PLAN.md Phase 4: the slot queue has two priority tiers (priorityGate.js — FIFO
+// within a tier, no preemption, a starvation bound for normal pages). Federal Court, an MVP
+// check that is still a live browser search, opens its pages with openPage({ priority: 'high' });
+// every other scraper's plain browser.newPage() stays normal priority.
 const MAX_CONCURRENT_PAGES = Number(process.env.PUPPETEER_MAX_CONCURRENT_PAGES) || 3;
-let activePageCount = 0;
-const pageWaitQueue = [];
+const pageGate = createGate({ limit: () => MAX_CONCURRENT_PAGES });
 
-function acquirePageSlot() {
-  if (activePageCount < MAX_CONCURRENT_PAGES) {
-    activePageCount++;
-    return Promise.resolve();
-  }
-  return new Promise((resolve) => pageWaitQueue.push(resolve));
+async function acquirePageSlot(priority = 'normal') {
+  const waited = await pageGate.acquire(priority);
+  if (waited > 0) console.warn(`[browser] ${priority}-priority page waited ${waited}ms for a slot`);
 }
 
-// Hands the freed slot straight to the next waiter rather than decrementing —
-// keeps activePageCount accurate without a separate wake-up + re-acquire step.
 function releasePageSlot() {
-  const next = pageWaitQueue.shift();
-  if (next) next();
-  else activePageCount--;
+  pageGate.release();
 }
 
 function scheduleClose() {
@@ -53,6 +52,7 @@ function scheduleClose() {
 // `finally` block, so this piggybacks on that without any new cleanup burden.
 function attachPageGate(b) {
   const originalNewPage = b.newPage.bind(b);
+  b._ungatedNewPage = originalNewPage;
   b.newPage = async (...args) => {
     await acquirePageSlot();
     let page;
@@ -109,11 +109,42 @@ async function getBrowser() {
   return launchPromise;
 }
 
+// Opens a gated page with an explicit priority and, optionally, its own proxy. A proxied page
+// gets a separate browser context (Chromium applies --proxy-server per context), so the proxy
+// never touches other scrapers' pages; `proxy` is { server, username, password } from
+// proxyLimiter.residentialProxyForBrowser(). The slot is released, and the context closed, when
+// the page closes — callers close their page in a `finally` as with browser.newPage().
+async function openPage({ priority = 'normal', proxy = null } = {}) {
+  const browser = await getBrowser();
+  await acquirePageSlot(priority);
+  let context = null;
+  let page;
+  try {
+    if (proxy) {
+      context = await browser.createBrowserContext({ proxyServer: proxy.server });
+      page = await context.newPage();
+      if (proxy.username) await page.authenticate({ username: proxy.username, password: proxy.password ?? '' });
+    } else {
+      page = await browser._ungatedNewPage();
+    }
+  } catch (err) {
+    if (context) await context.close().catch(() => {});
+    releasePageSlot();
+    throw err;
+  }
+  page.once('close', () => {
+    releasePageSlot();
+    if (context) context.close().catch(() => {});
+  });
+  return page;
+}
+
 // Returns the rendered HTML of a page after bot-protection challenges have resolved.
 // Waits up to `challengeTimeoutMs` for Cloudflare / AWS WAF JS challenges to clear.
-async function fetchWithBrowser(url, { challengeTimeoutMs = 15_000 } = {}) {
-  const browser = await getBrowser();
-  const page = await browser.newPage();
+// `validate(html)`, when given, must recognise the real page: a challenge that never cleared
+// then throws InvalidResponseError instead of being parsed as an empty result (Phase 4).
+async function fetchWithBrowser(url, { challengeTimeoutMs = 15_000, priority = 'normal', proxy = null, validate = null } = {}) {
+  const page = await openPage({ priority, proxy });
   try {
     await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-AU,en;q=0.9' });
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
@@ -131,7 +162,11 @@ async function fetchWithBrowser(url, { challengeTimeoutMs = 15_000 } = {}) {
       await new Promise((r) => setTimeout(r, 1_000));
     }
 
-    return await page.content();
+    const html = await page.content();
+    if (validate && !validate(html)) {
+      throw new InvalidResponseError(`browser: ${new URL(url).host}${proxy ? ' (via proxy)' : ''} did not return a results page`);
+    }
+    return html;
   } finally {
     await page.close().catch(() => {});
   }
@@ -205,4 +240,4 @@ async function fetchAdfPageWithCaptcha(url, captchaApiKey) {
   }
 }
 
-module.exports = { getBrowser, fetchWithBrowser, fetchWithBrowserSearch, fetchAdfPageWithCaptcha };
+module.exports = { getBrowser, openPage, fetchWithBrowser, fetchWithBrowserSearch, fetchAdfPageWithCaptcha };
