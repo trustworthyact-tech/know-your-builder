@@ -5,7 +5,7 @@
   "scripts": {
     "start": "node --env-file=.env index.js",
     "dev": "nodemon --env-file=.env index.js",
-    "test": "node --test scrapers/captcha.test.js scrapers/asicDisqualified.test.js scrapers/abn.test.js scrapers/asic.test.js scrapers/asicDpnDataset.test.js scrapers/asicDpnMatch.test.js scrapers/manifest.test.js scrapers/datasetStore.test.js scrapers/runScraper.test.js scrapers/asicEnforceableUndertakingsDataset.test.js scrapers/paymentTimes.test.js scrapers/actLicencesDataset.test.js scrapers/vicBpcDataset.test.js scrapers/healthHistory.test.js scrapers/modernSlavery.test.js scrapers/asicEnforceableUndertakings.test.js scrapers/db.test.js scrapers/priorityGate.test.js scrapers/proxyLimiter.test.js scrapers/blockPages.test.js scrapers/validateResult.test.js scrapers/actLicences.test.js scrapers/nswFairTrading.test.js scrapers/licenceMatching.test.js"
+    "test": "node --test scrapers/captcha.test.js scrapers/asicDisqualified.test.js scrapers/abn.test.js scrapers/asic.test.js scrapers/asicDpnDataset.test.js scrapers/asicDpnMatch.test.js scrapers/manifest.test.js scrapers/datasetStore.test.js scrapers/runScraper.test.js scrapers/asicEnforceableUndertakingsDataset.test.js scrapers/paymentTimes.test.js scrapers/actLicencesDataset.test.js scrapers/vicBpcDataset.test.js scrapers/healthHistory.test.js scrapers/modernSlavery.test.js scrapers/asicEnforceableUndertakings.test.js scrapers/db.test.js scrapers/priorityGate.test.js scrapers/proxyLimiter.test.js scrapers/blockPages.test.js scrapers/validateResult.test.js scrapers/actLicences.test.js scrapers/nswFairTrading.test.js scrapers/licenceMatching.test.js ingestion/asicNotices.test.js ingestion/actJudgments.test.js ingestion/fwoReleases.test.js"
   },
   "dependencies": {
     "axios": "^1.7.9",

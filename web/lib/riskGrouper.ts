@@ -96,6 +96,8 @@ function associatedRecordKind(key: string, item: ResultItem): string | null {
   if (key === 'fwo') return 'Fair Work Ombudsman enforcement outcome(s)';
   if (key === 'asicEnforceableUndertakings') return 'ASIC court enforceable undertaking(s)';
   if (key === 'actDisciplinary') return 'ACT disciplinary action(s)';
+  if (key === 'asicInsolvency') return 'ASIC insolvency or deregistration notice(s)';
+  if (key === 'atoDebt') return 'ATO tax debt disclosure(s)';
   if (key === 'nswFairTrading' || key === 'actLicences') {
     const status = (item.status ?? item.metadata?.['Status'] ?? '').toLowerCase();
     if (CANCELLED_STATUSES.some((s) => status.includes(s))) return 'cancelled or suspended licence(s)';

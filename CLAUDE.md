@@ -363,6 +363,23 @@ Phase 4) with a `validate` function.
   `server/tests/proxy-trial.js` passes against an approved provider. Phase 3's local copies are
   now the main fix for ACT courts and FWO. Details: `DATA_SOURCES_PLAN.md` Phase 4.
 
+**Phase 3 built** on branch `feature/data-sources-phase3` (not merged): facts-only local indexes
+in `server/ingestion/` replace live searches for `asicInsolvency`/`atoDebt` (ASIC notice sitemaps,
+no proxy or browser), `courts_act` (ACT Supreme Court + ACAT listings) and `fwo` (FWO media
+releases). They store names, identifiers, dates, titles and links, never copied text.
+- **Storage:** one SQLite file on the Railway volume via `node:sqlite`. The container's Node 23.2
+  needs `--experimental-sqlite`, so `railway.toml`'s start command now passes it.
+- **Runner:** `ingestion/runner.js` runs each job single-flight and politely (paused while a
+  search is running), records health for `/admin/scraper-health`, and decides readiness.
+- **Fallback:** each check uses its live scraper until its index is ready.
+  `LOCAL_INDEX_DISABLED=<job>` forces the live scraper again without a deploy.
+- **Proxy-backed jobs are opt-in:** the ACT and FWO jobs crawl through ScrapeOps (first copies
+  about 27 and 2,350 credits), so they start only when named in `PROXY_INGESTION_JOBS`.
+- **Matching:** indexes skip names too generic to match on, which makes the result `partial`
+  (`isFilterableTerm` in `courtRecords.js`).
+- Details and live results: `DATA_SOURCES_PLAN.md` Phase 3. Any new index should be a job in
+  `ingestion/`, not a new refresh file.
+
 **Phase 0 merged and deployed** (PR #30):
 - **Never-run checks are no longer "complete":** `paymentTimes`/`asicDisqualified` with no
   data are `status: 'error'`. An out-of-date cached copy is `completeness: 'stale'` with

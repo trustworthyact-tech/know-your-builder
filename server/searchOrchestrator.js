@@ -34,6 +34,8 @@ const { searchASIC, lookupAsicCompany } = require('./scrapers/asic');
 const { searchASICDisqualifiedFromDataset } = require('./scrapers/asicDpnMatch');
 const { searchAsicInsolvency } = require('./scrapers/asicInsolvency');
 const { searchAtoDebt } = require('./scrapers/atoDebt');
+const ingestion = require('./ingestion');
+const localIndex = require('./ingestion/localIndex');
 const { searchFWO } = require('./scrapers/fwo');
 const { searchVicBpc } = require('./scrapers/vicBpc');
 const { searchVicVbaLicence } = require('./scrapers/vicVbaLicence');
@@ -58,7 +60,18 @@ const { searchAsicEnforceableUndertakings } = require('./scrapers/asicEnforceabl
  * WS4_IMPLEMENTATION_PLAN.md's 4.1 scope decision). Each result is streamed via `send` as it
  * resolves, exactly as the inline handler did before this extraction.
  */
-async function runSearchRequest({ abn, acn, companyName, tradingName, directors }, { send }) {
+// Background ingestion jobs (ingestion/runner.js) pause while a search is running, so a crawl
+// never competes with a user waiting on a report.
+async function runSearchRequest(request, options) {
+  ingestion.searchStarted();
+  try {
+    return await runSearch(request, options);
+  } finally {
+    ingestion.searchEnded();
+  }
+}
+
+async function runSearch({ abn, acn, companyName, tradingName, directors }, { send }) {
   // Shared promises so scrapers can reuse results without duplicate HTTP calls. Both fire
   // eagerly and unconditionally, before either key's circuit-breaker state is checked —
   // when a breaker is open, runScraper() returns early and never calls invocations.abn()/
@@ -371,6 +384,10 @@ async function runSearchRequest({ abn, acn, companyName, tradingName, directors 
       if (!hasEntity) return notSearchedWithoutEntity(source);
       const { identity, name, acn: noticeAcn } = await noticesSearchArgs();
       if (!noticeAcn && isKnownNonCompany(identity)) return notACompany(source, identity);
+      if (ingestion.asicNotices.indexReady()) {
+        const linked = await resolveLinkedCompanies();
+        return ingestion.asicNotices.searchNoticesFromIndex(localIndex.getDb(), { kind: 'insolvency', acn: noticeAcn, name, linked });
+      }
       return searchAsicInsolvency(name, '', noticeAcn);
     },
     atoDebt: async () => {
@@ -378,6 +395,9 @@ async function runSearchRequest({ abn, acn, companyName, tradingName, directors 
       if (!hasEntity) return notSearchedWithoutEntity(source);
       const { identity, name, acn: noticeAcn } = await noticesSearchArgs();
       if (!noticeAcn && isKnownNonCompany(identity)) return notACompany(source, identity);
+      if (ingestion.asicNotices.indexReady()) {
+        return ingestion.asicNotices.searchNoticesFromIndex(localIndex.getDb(), { kind: 'ato', acn: noticeAcn, name });
+      }
       return searchAtoDebt(name, '', noticeAcn);
     },
     courts_federal: async () => {
@@ -394,6 +414,17 @@ async function runSearchRequest({ abn, acn, companyName, tradingName, directors 
     courts_sa: async () => withTermProvenance(await searchCourtRecords(companyName, await resolveExtraSearchTerms(), 'sa')),
     courts_nt: async () => withTermProvenance(await searchCourtRecords(companyName, await resolveExtraSearchTerms(), 'nt')),
     courts_act: async () => {
+      // The local index (Phase 3) searches every name: the business-name cap only existed to
+      // save proxy credits (search rule 4). The live search keeps the cap.
+      if (ingestion.actJudgments.indexReady()) {
+        const [dirs, terms, identity] = await Promise.all([resolveDirectors(), resolveExtraSearchTerms(), identityPromise]);
+        const result = ingestion.actJudgments.searchActFromIndex(localIndex.getDb(), {
+          companyName,
+          terms,
+          acn: identity.acn || identity.possibleAcn,
+        });
+        return markPartialIfNoDirectors(await withTermProvenance(result), dirs.length);
+      }
       const [dirs, terms] = await Promise.all([
         resolveDirectors(),
         resolveExtraSearchTerms(COURT_FWO_BUSINESS_NAME_CAP),
@@ -410,8 +441,15 @@ async function runSearchRequest({ abn, acn, companyName, tradingName, directors 
       return searchModernSlavery(identity.legalName || companyName, identity.abn || abn);
     },
     qbcc: async () => searchQBCC(companyName, abn, await resolveDirectors(), await resolveAlternateNames()),
-    fwo: async () =>
-      withTermProvenance(await searchFWO(companyName, abn, await resolveExtraSearchTerms(COURT_FWO_BUSINESS_NAME_CAP))),
+    fwo: async () => {
+      // The local index (Phase 3) searches every name (search rule 4); the live search keeps the
+      // business-name cap that only existed to save proxy credits.
+      if (ingestion.fwoReleases.indexReady()) {
+        const terms = await resolveExtraSearchTerms();
+        return withTermProvenance(ingestion.fwoReleases.searchFwoFromIndex(localIndex.getDb(), { companyName, terms }));
+      }
+      return withTermProvenance(await searchFWO(companyName, abn, await resolveExtraSearchTerms(COURT_FWO_BUSINESS_NAME_CAP)));
+    },
     vicBpc: async () => searchVicBpc(companyName, abn, await resolveDirectors()),
     vicVbaLicence: async () => searchVicVbaLicence(companyName, abn, await resolveDirectors()),
     waBuildingEnergy: async () => searchWABuildingEnergy(companyName, abn, await resolveDirectors()),
