@@ -332,7 +332,7 @@ Done on branch `feature/data-sources-phase1` (not deployed):
 
 Phase 1 merged and deployed 2026-10-13 (PR #28). Watch `abn`/`asic` complete rates for 7 days.
 
-**Phase 2 built** on branch `feature/data-sources-phase2` (not merged):
+**Phase 2 merged and deployed** (PR #29):
 - **Direct first, proxy as fallback:** every proxy-backed request goes through
   `proxyLimiter.fetchDirectFirst()`. It tries the site directly, falls back to ScrapeOps only
   when that fails, and remembers a blocked site for 30 minutes. Verify NSW answers Railway
@@ -343,9 +343,27 @@ Phase 1 merged and deployed 2026-10-13 (PR #28). Watch `abn`/`asic` complete rat
   failed check, never "no cases found". Fixtures are in `server/scrapers/fixtures/`.
 - **Former names:** the NSW and ACT licence searches also search the entity's former names.
 
-Any new proxy-backed fetch must use `fetchDirectFirst` with a `validate` function.
+Any new proxy-backed fetch must use `proxiedRequest` (it replaced `fetchDirectFirst` in
+Phase 4) with a `validate` function.
 
-**Phase 0 built** on branch `feature/data-sources-phase0` (not merged):
+**Phase 4 built** (2026-10-13). It changes nothing in production until `PROXY_URL` is set:
+- **Route chain:** `proxyLimiter.proxiedRequest()` tries direct → a residential proxy
+  (`PROXY_URL`) twice → ScrapeOps, inside one deadline. The order can be changed with
+  `PROXY_ROUTES` / `PROXY_ROUTES_<SITE>`. Limits: residential 4 per site, 12 overall; ScrapeOps 5.
+- **Shared priority gate:** `priorityGate.js` now backs both the proxy slots and the
+  browser's page slots. Federal Court pages are high priority, and use the residential
+  proxy in their own browser context when one is configured.
+- **Federal Court false clean fixed:** a Cloudflare challenge page now fails
+  `isFedcourtResultsPage`; it used to read as "no cases found".
+- **Dashboard:** `/admin/scraper-health` shows per-route counts. With a residential proxy set,
+  a ScrapeOps share above 5% logs an `ALERT` line.
+- **Residential route on hold (2026-10-14):** the provider trial failed because residential
+  proxies refuse government sites. DataImpulse and Decodo both refused every `.gov.au` request.
+  An unblock request to DataImpulse (with KYC) is pending; leave `PROXY_URL` unset until
+  `server/tests/proxy-trial.js` passes against an approved provider. Phase 3's local copies are
+  now the main fix for ACT courts and FWO. Details: `DATA_SOURCES_PLAN.md` Phase 4.
+
+**Phase 0 merged and deployed** (PR #30):
 - **Never-run checks are no longer "complete":** `paymentTimes`/`asicDisqualified` with no
   data are `status: 'error'`. An out-of-date cached copy is `completeness: 'stale'` with
   `asOf`, via `validateResult.staleFields()`; no scraper had ever set `stale` before.

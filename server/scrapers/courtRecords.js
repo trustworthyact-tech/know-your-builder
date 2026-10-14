@@ -1,7 +1,7 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
 const { fetchWithBrowser } = require('./browser');
-const { fetchDirectFirst } = require('./proxyLimiter');
+const { proxiedRequest, residentialProxyForBrowser, routeOrder } = require('./proxyLimiter');
 
 // Jurisdiction labels shown in the report and used as SearchResult.jurisdiction.
 const JURISDICTION_LABELS = {
@@ -280,8 +280,8 @@ const fetchVicTermResults = makeTermCache(async (term) => {
 // (LICENCE_MATCHING_PLAN.md Phase 1.3) — this file, nswFairTrading.js and fwo.js share one
 // ScrapeOps account capped at 5 concurrent requests.
 //
-// DATA_SOURCES_PLAN.md Phase 2 (2026-10-13): requests now go through fetchDirectFirst — direct
-// first, the proxy only when the site blocks Railway (still true for both ACT hosts on that
+// DATA_SOURCES_PLAN.md Phase 2 (2026-10-13): requests now go through proxiedRequest — direct
+// first, a proxy only when the site blocks Railway (still true for both ACT hosts on that
 // date: Cloudflare 403). Every response must pass isFunnelbackResultsPage, so a Cloudflare
 // challenge served with a 200 fails the search instead of parsing as "no cases found".
 
@@ -296,12 +296,13 @@ const ACT_HEADERS = { 'User-Agent': 'Mozilla/5.0 (compatible; know-your-builder/
 
 const fetchActTermResults = makeTermCache(async (term) => {
   const searchUrl = `https://www.courts.act.gov.au/judgment?query=${encodeURIComponent(term)}`;
-  const data = await fetchDirectFirst({
+  const data = await proxiedRequest({
     site: 'act-courts',
-    request: { url: searchUrl, headers: ACT_HEADERS },
+    url: searchUrl,
+    headers: ACT_HEADERS,
     validate: isFunnelbackResultsPage,
     label: 'courts_act courts',
-    timeoutMs: 45_000,
+    deadlineMs: 45_000,
     directTimeoutMs: 5_000,
   });
   const $ = cheerio.load(data);
@@ -353,12 +354,13 @@ const fetchActTermResults = makeTermCache(async (term) => {
 // Queensland Judgments.
 const fetchAcatTermResults = makeTermCache(async (term) => {
   const searchUrl = `https://www.acat.act.gov.au/decisions2/search-decisions?meta_partyName=${encodeURIComponent(term)}`;
-  const data = await fetchDirectFirst({
+  const data = await proxiedRequest({
     site: 'acat',
-    request: { url: searchUrl, headers: ACT_HEADERS },
+    url: searchUrl,
+    headers: ACT_HEADERS,
     validate: isFunnelbackResultsPage,
     label: 'courts_act ACAT',
-    timeoutMs: 45_000,
+    deadlineMs: 45_000,
     directTimeoutMs: 5_000,
   });
   const $ = cheerio.load(data);
@@ -399,9 +401,43 @@ const fetchAcatTermResults = makeTermCache(async (term) => {
 // (1,897 total hits for "BHP", capped at 20) but no equivalent page-size override param
 // was found — its pagination is a `pagenumber` param, i.e. genuinely separate requests —
 // left unfixed here as a known follow-up, not folded into this fix.
+//
+// DATA_SOURCES_PLAN.md Phase 4: three changes to how the page is fetched.
+// - The page must pass isFedcourtResultsPage. Before this, a Cloudflare challenge that never
+//   cleared was parsed as "no div.result" and read as "no cases found" — a silent false clean.
+// - Federal Court pages take the browser pool's high-priority tier (browser.js), since this is
+//   the one MVP check that is still a live browser search.
+// - When a residential proxy is configured (PROXY_URL), the page goes through it, in its own
+//   browser context. A failed proxied attempt skips the proxy for FEDERAL_PROXY_COOLDOWN_MS, so
+//   runJurisdictionSearch's retry (and later searches) go direct, as before Phase 4. Set
+//   PROXY_ROUTES_FEDERAL=direct to turn the proxy off for this site.
+function isFedcourtResultsPage(html) {
+  return (
+    typeof html === 'string' &&
+    /id="fb-results"/.test(html) &&
+    (/<div[^>]*class="result"/.test(html) || /id="fb-no-results"/.test(html))
+  );
+}
+
+const FEDERAL_PROXY_COOLDOWN_MS = 10 * 60 * 1000;
+let federalProxySkippedUntil = 0;
+
+async function fetchFederalPage(url, { _fetchWithBrowser = fetchWithBrowser, _proxy = residentialProxyForBrowser(), _now = Date.now } = {}) {
+  const proxy = _proxy && routeOrder('federal').includes('residential') && federalProxySkippedUntil <= _now() ? _proxy : null;
+  try {
+    return await _fetchWithBrowser(url, { challengeTimeoutMs: 25_000, priority: 'high', proxy, validate: isFedcourtResultsPage });
+  } catch (err) {
+    if (proxy) {
+      federalProxySkippedUntil = _now() + FEDERAL_PROXY_COOLDOWN_MS;
+      console.warn(`[courtRecords:Federal] proxied browser fetch failed (${err.message}) — going direct for ${FEDERAL_PROXY_COOLDOWN_MS / 60_000} min`);
+    }
+    throw err;
+  }
+}
+
 const fetchFederalTermResults = makeTermCache(async (term) => {
   const searchUrl = `https://search.judgments.fedcourt.gov.au/s/search.html?collection=fca~sp-judgments-internet&profile=judgments-internet&num_ranks=100&query=${encodeURIComponent(term)}`;
-  const html = await fetchWithBrowser(searchUrl, { challengeTimeoutMs: 25_000 });
+  const html = await fetchFederalPage(searchUrl);
   const $ = cheerio.load(html);
   const results = [];
 
@@ -596,7 +632,7 @@ async function fetchActAndAcatTermResults(term) {
   // Originally sequenced this on the theory that firing both at once was tripping a
   // burst rate-limit — live SSH testing into the production container same-day showed
   // the real cause was a standing Cloudflare managed challenge on that zone against
-  // Railway's IP, unrelated to request pacing (handled by fetchDirectFirst's proxy fallback
+  // Railway's IP, unrelated to request pacing (handled by proxiedRequest's proxy fallback
   // in both fetchers above). Left sequential anyway
   // now that a proxy is in the loop — running two proxied requests in parallel
   // needlessly risks the proxy pool's own concurrency limits for no real speed benefit.
@@ -700,6 +736,9 @@ async function searchCourtRecords(companyName, directors = [], jurisdiction = 'f
 module.exports = {
   searchCourtRecords,
   isFunnelbackResultsPage,
+  isFedcourtResultsPage,
+  fetchFederalPage,
+  _resetFederalProxyForTests: () => { federalProxySkippedUntil = 0; },
   searchNswCaselaw,
   searchActJudgments,
   searchFederalCourtJudgments,

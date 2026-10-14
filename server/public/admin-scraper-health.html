@@ -96,6 +96,9 @@
     padding: 1px 5px;
   }
   .note { color: var(--muted); font-size: 12px; margin-top: 12px; }
+  h2 { font-size: 15px; margin: 28px 0 10px; }
+  h2 .sub { font-weight: 400; margin: 0; }
+  .alert { color: var(--open); font-weight: 600; }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -131,6 +134,14 @@
       <tbody id="rows"></tbody>
     </table>
     <p class="note" id="historyNote"></p>
+    <h2>Proxy routes <span class="sub">(since the server last started)</span></h2>
+    <table>
+      <thead>
+        <tr><th>Route</th><th>Configured</th><th>Served</th><th>Failed attempts</th></tr>
+      </thead>
+      <tbody id="routeRows"></tbody>
+    </table>
+    <p class="note" id="routeNote"></p>
   </div>
 
 <script>
@@ -145,6 +156,8 @@
   var rowsEl = document.getElementById('rows');
   var generatedAtEl = document.getElementById('generatedAt');
   var historyNoteEl = document.getElementById('historyNote');
+  var routeRowsEl = document.getElementById('routeRows');
+  var routeNoteEl = document.getElementById('routeNote');
 
   function fmtTime(iso) {
     if (!iso) return '—';
@@ -193,6 +206,26 @@
     historyNoteEl.textContent = anyHistory
       ? '7-day success rate is computed from persisted health_check_event rows.'
       : 'No persisted history available yet (DATABASE_URL not configured, or no events logged since setup).';
+    renderRoutes(report.proxyRoutes);
+  }
+
+  // Which route served each request to a site that may block Railway (direct, the residential
+  // proxy, or ScrapeOps). ScrapeOps should be a rare fallback once a residential proxy is set.
+  function renderRoutes(stats) {
+    if (!stats) { routeRowsEl.innerHTML = ''; routeNoteEl.textContent = ''; return; }
+    routeRowsEl.innerHTML = ['direct', 'residential', 'scrapeops'].map(function (r) {
+      var c = stats.routes[r] || { ok: 0, failed: 0 };
+      return '<tr><td>' + r + '</td><td>' + (stats.configured[r] ? 'yes' : 'no') + '</td><td>' + c.ok + '</td><td>' + c.failed + '</td></tr>';
+    }).join('');
+    var order = 'Default order: ' + stats.defaultOrder.join(' → ') + '. ';
+    if (stats.scrapeopsShare == null) {
+      routeNoteEl.textContent = order + 'No request has needed a proxy yet.';
+      return;
+    }
+    var pct = Math.round(stats.scrapeopsShare * 1000) / 10;
+    var over = stats.configured.residential && stats.scrapeopsShare > stats.scrapeopsShareAlertThreshold;
+    routeNoteEl.innerHTML = order + 'ScrapeOps served <span class="' + (over ? 'alert' : '') + '">' + pct + '%</span> of the last ' +
+      stats.scrapeopsShareSample + ' proxied requests' + (over ? ' — above the ' + (stats.scrapeopsShareAlertThreshold * 100) + '% alert threshold; the residential proxy is failing.' : '.');
   }
 
   function fetchReport(key) {

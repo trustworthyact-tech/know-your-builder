@@ -14,6 +14,7 @@ const { runSearchRequest } = require('./searchOrchestrator');
 const { SCRAPERS } = require('./scrapers/manifest');
 const scraperHealth = require('./scrapers/scraperHealth');
 const healthHistory = require('./scrapers/healthHistory');
+const { getRouteStats } = require('./scrapers/proxyLimiter');
 const { startPaymentTimesRefresh } = require('./scrapers/paymentTimesRefresh');
 const { startAsicDpnDatasetRefresh } = require('./scrapers/asicDpnDatasetRefresh');
 const { startVicBpcDatasetRefresh } = require('./scrapers/vicBpcDatasetRefresh');
@@ -112,7 +113,9 @@ app.get('/api/admin/scraper-health/full', async (req, res) => {
 
   const report = scraperHealth.buildHealthReport(SCRAPERS);
   const rollup = await healthHistory.getRollup({ windowDays: 7 });
-  res.json(healthHistory.mergeHistory(report, rollup));
+  // proxyRoutes (DATA_SOURCES_PLAN.md Phase 4): requests served/failed per route since this
+  // process started, and ScrapeOps' share of proxied requests (alert threshold 5%).
+  res.json({ ...healthHistory.mergeHistory(report, rollup), proxyRoutes: getRouteStats() });
 });
 
 // The reliability dashboard page itself — a static shell with no embedded data (it prompts

@@ -1,312 +1,357 @@
 'use strict';
 
-const { test, beforeEach } = require('node:test');
+// proxiedRequest (DATA_SOURCES_PLAN.md Phases 2 and 4): direct → residential → residential →
+// ScrapeOps, inside one deadline. The priority/starvation behaviour of the slot queues is
+// tested in priorityGate.test.js; these tests cover the route chain, its limits and its stats.
+const { test, beforeEach, afterEach, mock } = require('node:test');
 const assert = require('node:assert/strict');
-const { proxied, proxyUrl, _resetForTests } = require('./proxyLimiter');
+const {
+  proxiedRequest,
+  InvalidResponseError,
+  DIRECT_COOLDOWN_MS,
+  routeOrder,
+  scrapeopsUrl,
+  residentialProxyForBrowser,
+  getRouteStats,
+  _resetForTests,
+} = require('./proxyLimiter');
+
+const ENV_KEYS = [
+  'SCRAPEOPS_API_KEY',
+  'PROXY_URL',
+  'PROXY_ROUTES',
+  'PROXY_ROUTES_FWO',
+  'PROXY_MAX_CONCURRENCY',
+  'RESIDENTIAL_SITE_CONCURRENCY',
+  'RESIDENTIAL_MAX_CONCURRENCY',
+];
+let savedEnv;
+beforeEach(() => {
+  savedEnv = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
+  for (const k of ENV_KEYS) delete process.env[k];
+  _resetForTests();
+});
+afterEach(() => {
+  for (const k of ENV_KEYS) {
+    if (savedEnv[k] === undefined) delete process.env[k];
+    else process.env[k] = savedEnv[k];
+  }
+  mock.restoreAll();
+});
+
+const withScrapeOps = () => { process.env.SCRAPEOPS_API_KEY = 'k'; };
+const withResidential = () => { process.env.PROXY_URL = 'http://user:pa%3Ass@gw.example-proxy.net:7000'; };
 
 const noSleep = async () => {};
-const http429 = () => Object.assign(new Error('Request failed with status code 429'), { response: { status: 429 } });
+const GOOD = '<li class="search-result">x</li>';
+const BLOCK = '<title>Just a moment...</title>';
+const err = (status) => Object.assign(new Error(`HTTP ${status}`), { response: { status } });
 
-beforeEach(() => {
-  _resetForTests();
-  delete process.env.PROXY_MAX_CONCURRENCY;
-});
-
-test('proxied — never runs more than PROXY_MAX_CONCURRENCY calls at once', async () => {
-  process.env.PROXY_MAX_CONCURRENCY = '2';
-  let inFlight = 0;
-  let peak = 0;
-  const call = () =>
-    proxied(
-      async () => {
-        inFlight++;
-        peak = Math.max(peak, inFlight);
-        await new Promise((r) => setTimeout(r, 10));
-        inFlight--;
-        return 'ok';
-      },
-      { _enabled: true }
-    );
-
-  const results = await Promise.all(Array.from({ length: 7 }, call));
-  assert.deepEqual(results, Array(7).fill('ok'));
-  assert.equal(peak, 2);
-});
-
-test('proxied — defaults to 5 concurrent when the env var is unset or invalid', async () => {
-  process.env.PROXY_MAX_CONCURRENCY = 'not-a-number';
-  let inFlight = 0;
-  let peak = 0;
-  const call = () =>
-    proxied(
-      async () => {
-        inFlight++;
-        peak = Math.max(peak, inFlight);
-        await new Promise((r) => setTimeout(r, 10));
-        inFlight--;
-      },
-      { _enabled: true }
-    );
-  await Promise.all(Array.from({ length: 12 }, call));
-  assert.equal(peak, 5);
-});
-
-test('proxied — a slot is released when the call throws', async () => {
-  process.env.PROXY_MAX_CONCURRENCY = '1';
-  await assert.rejects(proxied(async () => { throw new Error('boom'); }, { _enabled: true }), /boom/);
-  // Would hang forever if the failed call had leaked its only slot.
-  assert.equal(await proxied(async () => 'next', { _enabled: true }), 'next');
-});
-
-test('proxied — retries exactly once on HTTP 429, then succeeds', async () => {
-  let calls = 0;
-  const result = await proxied(
-    async () => {
-      calls++;
-      if (calls === 1) throw http429();
-      return 'recovered';
-    },
-    { _enabled: true, _sleep: noSleep }
-  );
-  assert.equal(result, 'recovered');
-  assert.equal(calls, 2);
-});
-
-test('proxied — a second 429 propagates to the caller', async () => {
-  let calls = 0;
-  await assert.rejects(
-    proxied(async () => { calls++; throw http429(); }, { _enabled: true, _sleep: noSleep }),
-    (err) => err.response.status === 429
-  );
-  assert.equal(calls, 2);
-});
-
-test('proxied — non-429 errors are not retried', async () => {
-  let calls = 0;
-  const err500 = Object.assign(new Error('500'), { response: { status: 500 } });
-  await assert.rejects(proxied(async () => { calls++; throw err500; }, { _enabled: true, _sleep: noSleep }), /500/);
-  assert.equal(calls, 1);
-});
-
-test('proxied — bypasses the semaphore entirely when the proxy is disabled', async () => {
-  process.env.PROXY_MAX_CONCURRENCY = '1';
-  let inFlight = 0;
-  let peak = 0;
-  const call = () =>
-    proxied(
-      async () => {
-        inFlight++;
-        peak = Math.max(peak, inFlight);
-        await new Promise((r) => setTimeout(r, 10));
-        inFlight--;
-      },
-      { _enabled: false }
-    );
-  await Promise.all(Array.from({ length: 4 }, call));
-  assert.equal(peak, 4);
-});
-
-test('proxyUrl — wraps with the ScrapeOps API, keep_headers only when asked', () => {
-  const saved = process.env.SCRAPEOPS_API_KEY;
-  try {
-    process.env.SCRAPEOPS_API_KEY = 'k123';
-    const target = 'https://example.com/a?b=1&c=2';
-    assert.equal(
-      proxyUrl(target),
-      `https://proxy.scrapeops.io/v1/?api_key=k123&url=${encodeURIComponent(target)}`
-    );
-    assert.equal(
-      proxyUrl(target, { keepHeaders: true }),
-      `https://proxy.scrapeops.io/v1/?api_key=k123&keep_headers=true&url=${encodeURIComponent(target)}`
-    );
-    delete process.env.SCRAPEOPS_API_KEY;
-    assert.equal(proxyUrl(target), target);
-  } finally {
-    if (saved === undefined) delete process.env.SCRAPEOPS_API_KEY;
-    else process.env.SCRAPEOPS_API_KEY = saved;
-  }
-});
-
-// ---- priority tiers ----
-
-// Occupies the only slot until `release()` is called, so every later call queues.
-function holdOnlySlot() {
-  process.env.PROXY_MAX_CONCURRENCY = '1';
-  let release;
-  const held = proxied(() => new Promise((r) => { release = r; }), { _enabled: true });
-  return { held, release: () => release() };
-}
-
-const tick = () => new Promise((r) => setImmediate(r));
-
-test('proxied — a high-priority request takes the next slot ahead of queued normal ones', async () => {
-  const { held, release } = holdOnlySlot();
-  const order = [];
-  const queued = [
-    proxied(async () => order.push('normal-1'), { _enabled: true }),
-    proxied(async () => order.push('normal-2'), { _enabled: true }),
-    proxied(async () => order.push('high'), { _enabled: true, priority: 'high' }),
-  ];
-  await tick();
-  release();
-  await Promise.all([held, ...queued]);
-  assert.deepEqual(order, ['high', 'normal-1', 'normal-2']);
-});
-
-test('proxied — requests stay FIFO within a tier', async () => {
-  const { held, release } = holdOnlySlot();
-  const order = [];
-  const queued = ['h1', 'h2', 'h3'].map((id) =>
-    proxied(async () => order.push(id), { _enabled: true, priority: 'high' })
-  );
-  await tick();
-  release();
-  await Promise.all([held, ...queued]);
-  assert.deepEqual(order, ['h1', 'h2', 'h3']);
-});
-
-test('proxied — normal requests are not starved by a steady stream of high ones', async () => {
-  const { held, release } = holdOnlySlot();
-  const order = [];
-  const queued = [
-    proxied(async () => order.push('normal'), { _enabled: true }),
-    ...Array.from({ length: 8 }, (_, i) =>
-      proxied(async () => order.push(`high-${i}`), { _enabled: true, priority: 'high' })
-    ),
-  ];
-  await tick();
-  release();
-  await Promise.all([held, ...queued]);
-  // MAX_HIGH_STREAK (4) high grants, then the waiting normal request, then the rest.
-  assert.equal(order.indexOf('normal'), 4);
-  assert.equal(order.length, 9);
-});
-
-// ── fetchDirectFirst (DATA_SOURCES_PLAN.md Phase 2) ─────────────────────────────────────────
-const { fetchDirectFirst, InvalidResponseError, DIRECT_COOLDOWN_MS } = require('./proxyLimiter');
-
-const PROXY_HOST = 'proxy.scrapeops.io';
-// A fake HTTP client: `direct(url)` / `proxy(url)` decide each route's response; returning an
-// Error makes that request fail. Records which route each call took.
-function fakeRoutes({ direct, proxy }) {
+// A fake HTTP client. Each route's handler decides that route's response (an Error makes the
+// request fail; a function of the call count lets a route change over time). Records the route
+// every call took: a ScrapeOps URL → 'scrapeops', a request carrying the residential agent →
+// 'residential', anything else → 'direct'.
+function fakeRoutes(handlers) {
   const calls = [];
-  const answer = async (url) => {
-    const viaProxy = url.includes(PROXY_HOST);
-    calls.push(viaProxy ? 'proxy' : 'direct');
-    const out = viaProxy ? proxy(url) : direct(url);
+  const configs = [];
+  const answer = async (url, config = {}) => {
+    const route = url.includes('proxy.scrapeops.io') ? 'scrapeops' : config.httpsAgent ? 'residential' : 'direct';
+    calls.push(route);
+    configs.push({ url, ...config });
+    const handler = handlers[route] ?? (() => new Error(`no ${route} handler`));
+    const out = typeof handler === 'function' ? handler(calls.filter((c) => c === route).length, url) : handler;
     if (out instanceof Error) throw out;
     return { data: out };
   };
-  return { calls, get: (url) => answer(url), post: (url) => answer(url) };
+  return { calls, configs, get: (url, config) => answer(url, config), post: (url, _data, config) => answer(url, config) };
 }
-const GOOD = '<li class="search-result">x</li>';
-const BLOCK = '<title>Just a moment...</title>';
-const isGood = (d) => d === GOOD;
+
 const opts = (http, extra = {}) => ({
   site: 'test-site',
-  request: { url: 'https://example.gov.au/search?q=x' },
-  validate: isGood,
+  url: 'https://example.gov.au/search?q=x',
+  validate: (d) => d === GOOD,
   _http: http,
-  _enabled: true,
   _sleep: noSleep,
+  _agent: () => ({ fake: 'agent' }),
   ...extra,
 });
 
-test('fetchDirectFirst — a working site is fetched directly, never through the proxy', async () => {
-  process.env.SCRAPEOPS_API_KEY = 'k';
-  try {
-    const http = fakeRoutes({ direct: () => GOOD, proxy: () => GOOD });
-    assert.equal(await fetchDirectFirst(opts(http)), GOOD);
-    assert.deepEqual(http.calls, ['direct']);
-  } finally {
-    delete process.env.SCRAPEOPS_API_KEY;
-  }
+// ── Route order and configuration ─────────────────────────────────────────────────────────
+
+test('routeOrder — defaults to direct, residential twice, then ScrapeOps; env overrides, per site first', () => {
+  assert.deepEqual(routeOrder('fwo'), ['direct', 'residential', 'residential', 'scrapeops']);
+  process.env.PROXY_ROUTES = 'direct, scrapeops';
+  assert.deepEqual(routeOrder('fwo'), ['direct', 'scrapeops']);
+  process.env.PROXY_ROUTES_FWO = 'direct,scrapeops,residential,bogus';
+  assert.deepEqual(routeOrder('fwo'), ['direct', 'scrapeops', 'residential']);
+  assert.deepEqual(routeOrder('act-courts'), ['direct', 'scrapeops']);
+  process.env.PROXY_ROUTES = 'nonsense';
+  assert.deepEqual(routeOrder('act-courts'), ['direct', 'residential', 'residential', 'scrapeops']);
 });
 
-test('fetchDirectFirst — a blocked direct request falls back to the proxy, then skips direct during the cooldown', async () => {
-  process.env.SCRAPEOPS_API_KEY = 'k';
-  try {
-    let now = 1_000_000;
-    const http = fakeRoutes({ direct: () => Object.assign(new Error('403'), { response: { status: 403 } }), proxy: () => GOOD });
-    assert.equal(await fetchDirectFirst(opts(http, { _now: () => now })), GOOD);
-    assert.equal(await fetchDirectFirst(opts(http, { _now: () => now })), GOOD);
-    assert.deepEqual(http.calls, ['direct', 'proxy', 'proxy'], 'second request skips the direct attempt');
-    now += DIRECT_COOLDOWN_MS + 1;
-    await fetchDirectFirst(opts(http, { _now: () => now }));
-    assert.deepEqual(http.calls.slice(3), ['direct', 'proxy'], 'direct is retried once the cooldown ends');
-  } finally {
-    delete process.env.SCRAPEOPS_API_KEY;
-  }
-});
-
-test('fetchDirectFirst — a block page served with a 200 counts as a blocked direct request', async () => {
-  process.env.SCRAPEOPS_API_KEY = 'k';
-  try {
-    const http = fakeRoutes({ direct: () => BLOCK, proxy: () => GOOD });
-    assert.equal(await fetchDirectFirst(opts(http)), GOOD);
-    assert.deepEqual(http.calls, ['direct', 'proxy']);
-  } finally {
-    delete process.env.SCRAPEOPS_API_KEY;
-  }
-});
-
-test('fetchDirectFirst — a direct success clears the cooldown', async () => {
-  process.env.SCRAPEOPS_API_KEY = 'k';
-  try {
-    let now = 5_000_000;
-    let blocked = true;
-    const http = fakeRoutes({ direct: () => (blocked ? new Error('timeout') : GOOD), proxy: () => GOOD });
-    await fetchDirectFirst(opts(http, { _now: () => now }));
-    blocked = false;
-    now += DIRECT_COOLDOWN_MS + 1;
-    await fetchDirectFirst(opts(http, { _now: () => now }));
-    await fetchDirectFirst(opts(http, { _now: () => now }));
-    assert.deepEqual(http.calls, ['direct', 'proxy', 'direct', 'direct']);
-  } finally {
-    delete process.env.SCRAPEOPS_API_KEY;
-  }
-});
-
-test('fetchDirectFirst — a block page from the proxy throws; it is never returned as results', async () => {
-  process.env.SCRAPEOPS_API_KEY = 'k';
-  try {
-    const http = fakeRoutes({ direct: () => new Error('403'), proxy: () => BLOCK });
-    await assert.rejects(fetchDirectFirst(opts(http)), InvalidResponseError);
-  } finally {
-    delete process.env.SCRAPEOPS_API_KEY;
-  }
-});
-
-test('fetchDirectFirst — both routes failing throws the proxy error', async () => {
-  process.env.SCRAPEOPS_API_KEY = 'k';
-  try {
-    const http = fakeRoutes({ direct: () => new Error('403'), proxy: () => new Error('proxy down') });
-    await assert.rejects(fetchDirectFirst(opts(http)), /proxy down/);
-  } finally {
-    delete process.env.SCRAPEOPS_API_KEY;
-  }
-});
-
-test('fetchDirectFirst — with no proxy key, only the direct route runs, and a block page throws', async () => {
-  const http = fakeRoutes({ direct: () => BLOCK, proxy: () => GOOD });
-  await assert.rejects(fetchDirectFirst(opts(http, { _enabled: false })), InvalidResponseError);
+test('proxiedRequest — a working site is fetched directly, with no proxy call', async () => {
+  withScrapeOps();
+  withResidential();
+  const http = fakeRoutes({ direct: GOOD, residential: GOOD, scrapeops: GOOD });
+  assert.equal(await proxiedRequest(opts(http)), GOOD);
   assert.deepEqual(http.calls, ['direct']);
 });
 
-test('fetchDirectFirst — the proxy route keeps headers when asked (NSW)', async () => {
-  process.env.SCRAPEOPS_API_KEY = 'k';
-  try {
-    const urls = [];
-    const http = {
-      get: async (url) => {
-        urls.push(url);
-        if (!url.includes(PROXY_HOST)) throw new Error('403');
-        return { data: GOOD };
-      },
-    };
-    await fetchDirectFirst(opts(http, { keepHeaders: true }));
-    assert.match(urls[1], /keep_headers=true/);
-  } finally {
-    delete process.env.SCRAPEOPS_API_KEY;
-  }
+test('proxiedRequest — a blocked site goes to the residential proxy, not ScrapeOps', async () => {
+  withScrapeOps();
+  withResidential();
+  const http = fakeRoutes({ direct: err(403), residential: GOOD, scrapeops: GOOD });
+  assert.equal(await proxiedRequest(opts(http)), GOOD);
+  assert.deepEqual(http.calls, ['direct', 'residential']);
+  assert.equal(http.configs[1].proxy, false, 'axios must not apply its own proxy handling on top of the agent');
+});
+
+test('proxiedRequest — a failed residential attempt is retried once with a new agent, then ScrapeOps', async () => {
+  withScrapeOps();
+  withResidential();
+  let agents = 0;
+  const http = fakeRoutes({ direct: err(403), residential: (n) => (n === 1 ? err(502) : BLOCK), scrapeops: GOOD });
+  assert.equal(await proxiedRequest(opts(http, { _agent: () => ({ fake: ++agents }) })), GOOD);
+  assert.deepEqual(http.calls, ['direct', 'residential', 'residential', 'scrapeops']);
+  assert.equal(agents, 2, 'each residential attempt gets its own agent (a new connection, so a new IP)');
+});
+
+test('proxiedRequest — the second residential attempt can rescue the first', async () => {
+  withResidential();
+  const http = fakeRoutes({ direct: err(403), residential: (n) => (n === 1 ? err(407) : GOOD) });
+  assert.equal(await proxiedRequest(opts(http)), GOOD);
+  assert.deepEqual(http.calls, ['direct', 'residential', 'residential']);
+});
+
+test('proxiedRequest — with no residential proxy configured, the chain is Phase 2\'s direct → ScrapeOps', async () => {
+  withScrapeOps();
+  const http = fakeRoutes({ direct: err(403), scrapeops: GOOD });
+  assert.equal(await proxiedRequest(opts(http)), GOOD);
+  assert.deepEqual(http.calls, ['direct', 'scrapeops']);
+});
+
+test('proxiedRequest — with no proxy at all, only the direct route runs, and a block page throws', async () => {
+  const http = fakeRoutes({ direct: BLOCK });
+  await assert.rejects(proxiedRequest(opts(http)), InvalidResponseError);
+  assert.deepEqual(http.calls, ['direct']);
+});
+
+test('proxiedRequest — a per-site route order is honoured (FWO keeping ScrapeOps first)', async () => {
+  withScrapeOps();
+  withResidential();
+  process.env.PROXY_ROUTES_FWO = 'direct,scrapeops,residential';
+  const http = fakeRoutes({ direct: err(403), residential: GOOD, scrapeops: GOOD });
+  await proxiedRequest(opts(http, { site: 'fwo' }));
+  assert.deepEqual(http.calls, ['direct', 'scrapeops']);
+});
+
+test('proxiedRequest — a block page from every route throws; it is never returned as results', async () => {
+  withScrapeOps();
+  withResidential();
+  const http = fakeRoutes({ direct: BLOCK, residential: BLOCK, scrapeops: BLOCK });
+  await assert.rejects(proxiedRequest(opts(http)), InvalidResponseError);
+  assert.deepEqual(http.calls, ['direct', 'residential', 'residential', 'scrapeops']);
+});
+
+test('proxiedRequest — every route failing throws the last route\'s error', async () => {
+  withScrapeOps();
+  withResidential();
+  const http = fakeRoutes({ direct: err(403), residential: err(502), scrapeops: new Error('scrapeops down') });
+  await assert.rejects(proxiedRequest(opts(http)), /scrapeops down/);
+});
+
+// ── Direct cooldown (Phase 2 behaviour, unchanged) ──────────────────────────────────────
+
+test('proxiedRequest — after a failed direct attempt, direct is skipped for the cooldown, then retried', async () => {
+  withScrapeOps();
+  let now = 1_000_000;
+  const http = fakeRoutes({ direct: err(403), scrapeops: GOOD });
+  await proxiedRequest(opts(http, { _now: () => now }));
+  await proxiedRequest(opts(http, { _now: () => now }));
+  assert.deepEqual(http.calls, ['direct', 'scrapeops', 'scrapeops']);
+  now += DIRECT_COOLDOWN_MS + 1;
+  await proxiedRequest(opts(http, { _now: () => now }));
+  assert.deepEqual(http.calls.slice(3), ['direct', 'scrapeops']);
+});
+
+test('proxiedRequest — a direct success clears the cooldown', async () => {
+  withScrapeOps();
+  let now = 5_000_000;
+  let blocked = true;
+  const http = fakeRoutes({ direct: () => (blocked ? err(403) : GOOD), scrapeops: GOOD });
+  await proxiedRequest(opts(http, { _now: () => now }));
+  blocked = false;
+  now += DIRECT_COOLDOWN_MS + 1;
+  await proxiedRequest(opts(http, { _now: () => now }));
+  await proxiedRequest(opts(http, { _now: () => now }));
+  assert.deepEqual(http.calls, ['direct', 'scrapeops', 'direct', 'direct']);
+});
+
+test('proxiedRequest — a site in cooldown still goes direct when direct is the only route', async () => {
+  withScrapeOps();
+  const http = fakeRoutes({ direct: err(403), scrapeops: GOOD });
+  await proxiedRequest(opts(http));
+  delete process.env.SCRAPEOPS_API_KEY;
+  await assert.rejects(proxiedRequest(opts(http)), /403/);
+  assert.deepEqual(http.calls, ['direct', 'scrapeops', 'direct']);
+});
+
+// ── Deadline ─────────────────────────────────────────────────────────────────────────────
+
+test('proxiedRequest — every attempt shares one deadline; no route starts after it has passed', async () => {
+  withScrapeOps();
+  withResidential();
+  let now = 0;
+  const timeouts = [];
+  const http = fakeRoutes({
+    direct: () => { now += 5_000; return err(403); },
+    residential: () => { now += 12_000; return err(502); },
+    scrapeops: GOOD,
+  });
+  const record = (route) => (url, config) => { timeouts.push([route, config.timeout]); return http.get(url, config); };
+  const client = { get: (url, config) => record(url.includes('scrapeops') ? 'scrapeops' : config.httpsAgent ? 'residential' : 'direct')(url, config) };
+  await assert.rejects(proxiedRequest(opts(client, { deadlineMs: 17_000, directTimeoutMs: 5_000, _now: () => now })), /502/);
+  assert.deepEqual(http.calls, ['direct', 'residential'], 'the deadline passed during the first residential attempt');
+  assert.deepEqual(timeouts, [['direct', 5_000], ['residential', 12_000]]);
+});
+
+test('proxiedRequest — the last route gets whatever time is left', async () => {
+  withScrapeOps();
+  let now = 0;
+  const seen = [];
+  const http = {
+    get: async (url, config) => {
+      seen.push(config.timeout);
+      if (!url.includes('scrapeops')) { now += 4_000; throw err(403); }
+      return { data: GOOD };
+    },
+  };
+  await proxiedRequest(opts(http, { deadlineMs: 25_000, directTimeoutMs: 5_000, _now: () => now }));
+  assert.deepEqual(seen, [5_000, 21_000]);
+});
+
+// ── ScrapeOps specifics ──────────────────────────────────────────────────────────────────
+
+test('proxiedRequest — a ScrapeOps 429 is retried exactly once', async () => {
+  withScrapeOps();
+  const http = fakeRoutes({ direct: err(403), scrapeops: (n) => (n === 1 ? err(429) : GOOD) });
+  assert.equal(await proxiedRequest(opts(http)), GOOD);
+  assert.deepEqual(http.calls, ['direct', 'scrapeops', 'scrapeops']);
+});
+
+test('proxiedRequest — a second 429, or any other ScrapeOps error, propagates without more retries', async () => {
+  withScrapeOps();
+  const twice = fakeRoutes({ direct: err(403), scrapeops: err(429) });
+  await assert.rejects(proxiedRequest(opts(twice)), (e) => e.response.status === 429);
+  assert.equal(twice.calls.filter((c) => c === 'scrapeops').length, 2);
+  _resetForTests();
+  const once = fakeRoutes({ direct: err(403), scrapeops: err(500) });
+  await assert.rejects(proxiedRequest(opts(once)), /500/);
+  assert.equal(once.calls.filter((c) => c === 'scrapeops').length, 1);
+});
+
+test('scrapeopsUrl / proxiedRequest — keep_headers only when asked (NSW)', async () => {
+  withScrapeOps();
+  const target = 'https://example.com/a?b=1&c=2';
+  assert.equal(scrapeopsUrl(target), `https://proxy.scrapeops.io/v1/?api_key=k&url=${encodeURIComponent(target)}`);
+  assert.equal(scrapeopsUrl(target, { keepHeaders: true }), `https://proxy.scrapeops.io/v1/?api_key=k&keep_headers=true&url=${encodeURIComponent(target)}`);
+  const http = fakeRoutes({ direct: err(403), scrapeops: GOOD });
+  await proxiedRequest(opts(http, { keepHeaders: true, method: 'post', data: { q: 1 } }));
+  assert.match(http.configs[1].url, /keep_headers=true/);
+});
+
+// ── Concurrency limits ───────────────────────────────────────────────────────────────────
+
+function peakTracker(route) {
+  let inFlight = 0;
+  const state = { peak: 0 };
+  const http = {
+    get: async (url, config) => {
+      const r = url.includes('scrapeops') ? 'scrapeops' : config.httpsAgent ? 'residential' : 'direct';
+      if (r === 'direct') throw err(403);
+      if (r !== route) throw err(502);
+      inFlight++;
+      state.peak = Math.max(state.peak, inFlight);
+      await new Promise((res) => setTimeout(res, 10));
+      inFlight--;
+      return { data: GOOD };
+    },
+  };
+  return { http, state };
+}
+
+test('proxiedRequest — ScrapeOps never exceeds PROXY_MAX_CONCURRENCY', async () => {
+  withScrapeOps();
+  process.env.PROXY_MAX_CONCURRENCY = '2';
+  const { http, state } = peakTracker('scrapeops');
+  await Promise.all(Array.from({ length: 6 }, () => proxiedRequest(opts(http))));
+  assert.equal(state.peak, 2);
+});
+
+test('proxiedRequest — the residential route is limited per site and overall', async () => {
+  withResidential();
+  process.env.RESIDENTIAL_SITE_CONCURRENCY = '2';
+  process.env.RESIDENTIAL_MAX_CONCURRENCY = '3';
+  const perSite = peakTracker('residential');
+  await Promise.all(Array.from({ length: 6 }, () => proxiedRequest(opts(perSite.http, { site: 'a' }))));
+  assert.equal(perSite.state.peak, 2, 'one site is held to its per-site limit');
+
+  _resetForTests();
+  const overall = peakTracker('residential');
+  await Promise.all(
+    ['a', 'b', 'c'].flatMap((site) => Array.from({ length: 3 }, () => proxiedRequest(opts(overall.http, { site }))))
+  );
+  assert.equal(overall.state.peak, 3, 'all sites together are held to the overall limit');
+});
+
+// ── Stats and the ScrapeOps-share alert ──────────────────────────────────────────────────
+
+test('getRouteStats — counts outcomes per route and the share of proxied requests ScrapeOps served', async () => {
+  withScrapeOps();
+  withResidential();
+  const http = fakeRoutes({ direct: err(403), residential: (n) => (n <= 2 ? err(502) : GOOD), scrapeops: GOOD });
+  await proxiedRequest(opts(http)); // direct ✗, residential ✗ ✗, scrapeops ✓
+  await proxiedRequest(opts(http)); // (direct skipped) residential ✓
+  const stats = getRouteStats();
+  assert.deepEqual(stats.routes.direct, { ok: 0, failed: 1 });
+  assert.deepEqual(stats.routes.residential, { ok: 1, failed: 2 });
+  assert.deepEqual(stats.routes.scrapeops, { ok: 1, failed: 0 });
+  assert.equal(stats.scrapeopsShare, 0.5);
+  assert.equal(stats.scrapeopsShareSample, 2);
+  assert.deepEqual(stats.configured, { direct: true, residential: true, scrapeops: true });
+});
+
+test('getRouteStats — an alert is logged (at most hourly) once ScrapeOps serves over 5% with a residential proxy set', async () => {
+  withScrapeOps();
+  withResidential();
+  const logged = mock.method(console, 'error', () => {});
+  mock.method(console, 'warn', () => {});
+  let now = 0;
+  const http = fakeRoutes({ direct: err(403), residential: err(502), scrapeops: GOOD });
+  for (let i = 0; i < 25; i++) await proxiedRequest(opts(http, { _now: () => now }));
+  const alerts = logged.mock.calls.filter((c) => /ALERT: ScrapeOps served/.test(c.arguments[0]));
+  assert.equal(alerts.length, 1, 'one alert, not one per request');
+  now += 60 * 60 * 1000;
+  await proxiedRequest(opts(http, { _now: () => now }));
+  assert.equal(logged.mock.calls.filter((c) => /ALERT: ScrapeOps served/.test(c.arguments[0])).length, 2);
+});
+
+test('getRouteStats — no alert without a residential proxy (ScrapeOps is then the only proxy)', async () => {
+  withScrapeOps();
+  const logged = mock.method(console, 'error', () => {});
+  mock.method(console, 'warn', () => {});
+  const http = fakeRoutes({ direct: err(403), scrapeops: GOOD });
+  for (let i = 0; i < 25; i++) await proxiedRequest(opts(http));
+  assert.equal(logged.mock.calls.length, 0);
+  assert.equal(getRouteStats().scrapeopsShare, 1);
+});
+
+// ── Browser proxy settings ───────────────────────────────────────────────────────────────
+
+test('residentialProxyForBrowser — splits PROXY_URL into a server and decoded credentials', () => {
+  assert.equal(residentialProxyForBrowser(), null);
+  withResidential();
+  assert.deepEqual(residentialProxyForBrowser(), { server: 'http://gw.example-proxy.net:7000', username: 'user', password: 'pa:ss' });
+  process.env.PROXY_URL = 'not a url';
+  assert.equal(residentialProxyForBrowser(), null);
 });

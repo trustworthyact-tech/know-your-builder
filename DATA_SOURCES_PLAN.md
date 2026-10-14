@@ -250,8 +250,9 @@ Ordered by value for effort. Effort figures are rough.
 - [ ] **ScrapeOps credits:** 143 of 1,000 left on 2026-10-12, **27 left on 2026-10-13** (after
   Phase 2's 3-credit verification)
   (about one heavy search). Check the reset date; decide between a one-month $29 bridge or
-  ACT courts and FWO being unavailable until the new proxy route (Phase 4) or local copies
-  (Phase 3) ship.
+  ACT courts and FWO being unavailable until local copies (Phase 3) ship. **Still 27 left on
+  2026-10-14**, no reset yet. Phase 4's residential route can't replace ScrapeOps for now:
+  residential providers block government sites (see Phase 4).
 - [x] **Block-page checks** in `fwo.js` and the ACT court/ACAT fetchers: require a marker
   that appears only on a real results page, so a challenge page can't read as "no results".
   Add a regression test. **Moved into Phase 2 (2.2)**, which builds the response check into
@@ -579,31 +580,89 @@ doesn't stop it. Phase 4 (residential proxy) or Phase 3 (local copies of ACT and
 - [ ] Mark each result `stale` with its as-of date if its ingestion job is behind (the
   pattern already exists).
 
-### Phase 4 — proxy transport, now smaller
-This now serves ingestion jobs, any remaining live fallbacks, and Federal Court's browser,
-not every live search.
-- [ ] Before writing code: buy the smallest pay-as-you-go plan from two providers with
-  Australian IPs and a spending cap (candidates: Decodo, IPRoyal, DataImpulse). From inside
-  the Railway container, send 50 requests per site per provider. Pass bar: ≥98% valid
-  responses. FWO's Akamai may check Node's TLS fingerprint, which a plain proxy passes
-  through; if it fails, FWO keeps ScrapeOps as its first route.
-- [ ] Rewrite `proxyLimiter.js` as one call,
-  `proxiedRequest({ site, method, url, headers, data, validate, priority, deadline })`.
-  Route chain: residential (`HttpsProxyAgent(PROXY_URL)`) → residential again (new IP) →
-  ScrapeOps (keeping NSW's `keep_headers`). Order configurable via a `PROXY_ROUTES` env var.
-  - Each attempt has a short timeout, all within a deadline taken from the caller's budget.
-  - A response that fails the page-marker check moves to the next route.
-  - Per-site limits (about 4 each, about 12 overall), keeping NSW's priority tier and its
-    starvation bound.
-  - One log line per attempt.
-  - Add `https-proxy-agent` to `package.json` directly; it's only present today through
-    Puppeteer.
-  - Tests with injected fake routes.
-- [ ] Alert if the ScrapeOps fallback share goes above 5%. Set a spending cap with the
-  provider.
-- [ ] Route the headless browser through the residential proxy for Federal Court, and give
-  Federal Court top browser priority.
-- [ ] Bandwidth is now mostly daily crawls, likely well under 1GB/month.
+### Phase 4 — proxy transport (code built 2026-10-13; residential route on hold, see the trial result)
+Built ahead of Phase 3, so for now it serves the live searches (NSW, ACT courts/ACAT, FWO) and
+Federal Court's browser. Once Phase 3 lands it serves mainly the ingestion jobs.
+
+**Nothing changes in production until `PROXY_URL` is set.** With it unset, the route chain is
+exactly Phase 2's (direct → ScrapeOps) and the browser is unproxied. So the code merged
+without a provider.
+
+**Provider trial result (2026-10-14): residential proxies block government sites, so this
+route is on hold.**
+- [x] **The trial:** DataImpulse (standard residential, $1/GB) and Decodo ($4/GB pay-as-you-go),
+  run from the Railway container with `tests/proxy-trial.js`, 50 requests per site.
+  - Both gave 8 distinct Australian exit IPs on the IP check (ipinfo.io).
+  - Both failed **every** request to every site: 0/50 for NSW, ACT courts, ACAT and FWO (HTTP
+    403) and for Federal Court (`ERR_TUNNEL_CONNECTION_FAILED`). The proxies themselves
+    refused the connections. NSW answers Railway directly, so the sites weren't the cause.
+  - The script reported every refusal as a failure, never as a clean result.
+- **Cause: provider policy.** [DataImpulse](https://docs.dataimpulse.com/blocked-websites)
+  has blocked all government websites since December 2023. It will unblock named sites after
+  KYC verification if support approves the use case. [Decodo](https://decodo.com/questions/do-you-have-any-blocked-sites)
+  restricts government sites too, and its documentation suggests KYC doesn't lift that.
+  Oxylabs, Bright Data and Webshare publish similar restrictions, so switching providers is
+  unlikely to help. This plan assumed residential proxies could reach these sites; that
+  assumption was wrong, and it wasn't checked before the trial.
+- [ ] **Waiting on DataImpulse (asked 2026-10-14):** an unblock request for the five domains
+  (`verify.licence.nsw.gov.au`, `www.courts.act.gov.au`, `www.acat.act.gov.au`,
+  `www.fairwork.gov.au`, `search.judgments.fedcourt.gov.au`), with KYC. If approved, rerun the
+  trial against DataImpulse alone:
+  `PROXY_TRIAL_URLS="dataimpulse=http://LOGIN__cr.au:PASS@gw.dataimpulse.com:823" node tests/proxy-trial.js --n 50`.
+  If it passes the ≥98% bar, set `PROXY_URL` in Railway. If FWO fails on Node's TLS
+  fingerprint, also set `PROXY_ROUTES_FWO=direct,scrapeops,residential`.
+- [ ] **Decodo:** refund requested or account left unused. Not pursued further.
+- **Meanwhile:** Phase 3's local copies are now the main fix for ACT courts/ACAT and FWO, and
+  ScrapeOps stays the only proxy route.
+- **Running the trial again:** `tests/proxy-trial.js` is self-contained (it copies the page
+  checks rather than importing the scrapers), so it runs against whatever is deployed. If the
+  deployed copy is older, copy it into the container from a Mac first:
+  `railway ssh -- "echo $(base64 < server/tests/proxy-trial.js | tr -d '\n') | base64 -d > /app/tests/proxy-trial.js"`,
+  then run it with `railway ssh -- 'cd /app && PROXY_TRIAL_URLS="…" node tests/proxy-trial.js --n 50'`.
+
+- [x] `proxyLimiter.js` rewritten as one call, `proxiedRequest({ site, method, url, headers,
+  data, validate, priority, deadlineMs, directTimeoutMs, keepHeaders })`:
+  - Route chain: direct (Phase 2's 30-minute cooldown kept) → residential
+    (`HttpsProxyAgent(PROXY_URL)`) → residential again with a new agent (a new connection, so
+    a rotating gateway gives a new IP) → ScrapeOps (keeping NSW's `keep_headers`). The order
+    is configurable with `PROXY_ROUTES`, or per site with `PROXY_ROUTES_<SITE>`. Routes without
+    credentials are skipped.
+  - Every attempt shares one deadline from the caller's budget. Direct gets
+    `directTimeoutMs`, each residential attempt up to 12s, and the last route whatever time
+    is left. Time queued for a slot counts against the deadline.
+  - A response that fails the page check moves on to the next route. From the last route it
+    throws `InvalidResponseError`.
+  - Limits: residential is 4 per site (`RESIDENTIAL_SITE_CONCURRENCY`) and 12 overall
+    (`RESIDENTIAL_MAX_CONCURRENCY`); ScrapeOps stays at 5 (`PROXY_MAX_CONCURRENCY`) with its
+    429 retry. NSW's priority tier and starvation bound now live in a shared
+    `priorityGate.js`.
+  - Logging: one line per failed proxy attempt. Direct failures still log only when the
+    cooldown starts or ends (the Phase 2 change), not on every request.
+  - `https-proxy-agent` ^7 is now a direct dependency.
+  - Tests: `priorityGate.test.js` (6) and `proxyLimiter.test.js` (24), with fake routes.
+- [x] **ScrapeOps share alert:** per-route counts and ScrapeOps' share of the last 200
+  proxied requests appear on `/admin/scraper-health` (new "Proxy routes" table; also
+  `proxyRoutes` in `/api/admin/scraper-health/full`). With a residential proxy set, a share
+  above 5% (minimum 20 requests) logs `[proxyLimiter] ALERT: …`, at most hourly. Counts reset
+  when the server restarts.
+- [x] **Federal Court's browser:**
+  - Pages open in the browser pool's new high-priority tier (`browser.js` now uses
+    `priorityGate.js`, following the 2026-10-02 design principles).
+  - With `PROXY_URL` set, the page goes through the residential proxy in its own browser
+    context, so other scrapers' pages aren't proxied. Credentials are passed with
+    `page.authenticate`. A failed proxied attempt skips the proxy for 10 minutes, so the
+    existing per-term retry goes direct, as today. `PROXY_ROUTES_FEDERAL=direct` turns the
+    proxy off for this site.
+  - **Bug fixed along the way:** an uncleared Cloudflare challenge used to be parsed as "no
+    cases found" (a silent false clean). The page must now pass `isFedcourtResultsPage`.
+    Fixtures: `fed-hit.html`, `fed-none.html`.
+- [ ] **Bandwidth, if the residential route is ever enabled before Phase 3 ships.** Response sizes
+  measured through the stand-in proxy: FWO ~430KB per query, ACT courts ~96KB, ACAT ~60KB,
+  NSW ~1KB, Federal Court ~160KB of HTML (plus the page's scripts and images). A heavy search
+  with ~5 terms that needs a proxy for ACT and FWO is about 3MB. At 1,000 searches/month
+  that's about 3GB, roughly $6–12/month at typical residential prices: still inside the $30
+  target, but not "well under 1GB". Phase 3's local copies remove most of it. Blocking images
+  and fonts on proxied browser pages would cut Federal Court's share; that isn't built.
 
 ### Phase 5 — Federal Court long term (about 1 day plus waiting time)
 - [ ] Write to the Federal Court asking permission for a daily latest-judgments crawl and a
@@ -629,7 +688,7 @@ not every live search.
 |---|---|
 | ABR web services, ASIC companies dataset | $0 |
 | API.NSW Trades API, free tier (up to about 170–500 searches/month) | $0, then premium tier (price to be confirmed) |
-| Residential proxy, mostly for daily crawls | ~$2–5 |
+| Residential proxy (on hold: providers block government sites, see Phase 4) | $0 now; ~$6–12/month before Phase 3 or ~$2–5 after, if DataImpulse unblocks the domains |
 | ScrapeOps free tier, fallback only | $0 |
 | 2captcha | only `asicExtract` (searches for names we already have) still uses it once `asic` drops the CAPTCHA |
 | Database storage for the new copies | see Risks |
@@ -647,6 +706,10 @@ not every live search.
   a different activity from a user-triggered search, so check the terms for it specifically.
 - **Freshness.** Daily copies can be up to a day old. That's acceptable for court titles,
   media releases and notices, but every result shows its as-of date.
+- **Residential proxies and government sites.** Residential providers block government
+  websites by default (found in the Phase 4 trial, 2026-10-14). Any plan that routes a
+  `.gov.au` site through a residential proxy needs that provider's written unblock first.
+  ScrapeOps works for these sites today.
 - **Health-check blind spots.** CI runs from GitHub's IP addresses, which ACT and Federal
   Court block, so CI can't tell real breakage from IP noise for those sources. The ingestion
   jobs' own success logs become the better signal. Three legacy probe tests in `run-all.sh`
