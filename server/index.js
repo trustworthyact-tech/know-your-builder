@@ -15,6 +15,7 @@ const { SCRAPERS } = require('./scrapers/manifest');
 const scraperHealth = require('./scrapers/scraperHealth');
 const healthHistory = require('./scrapers/healthHistory');
 const { getRouteStats } = require('./scrapers/proxyLimiter');
+const { startIngestionJobs, getIngestionHealth } = require('./ingestion');
 const { startPaymentTimesRefresh } = require('./scrapers/paymentTimesRefresh');
 const { startAsicDpnDatasetRefresh } = require('./scrapers/asicDpnDatasetRefresh');
 const { startVicBpcDatasetRefresh } = require('./scrapers/vicBpcDatasetRefresh');
@@ -115,7 +116,8 @@ app.get('/api/admin/scraper-health/full', async (req, res) => {
   const rollup = await healthHistory.getRollup({ windowDays: 7 });
   // proxyRoutes (DATA_SOURCES_PLAN.md Phase 4): requests served/failed per route since this
   // process started, and ScrapeOps' share of proxied requests (alert threshold 5%).
-  res.json({ ...healthHistory.mergeHistory(report, rollup), proxyRoutes: getRouteStats() });
+  // ingestion (Phase 3): each local index's last success, error, readiness and size.
+  res.json({ ...healthHistory.mergeHistory(report, rollup), proxyRoutes: getRouteStats(), ingestion: getIngestionHealth() });
 });
 
 // The reliability dashboard page itself — a static shell with no embedded data (it prompts
@@ -203,3 +205,6 @@ if (SCRAPERS.find((s) => s.key === 'vicBpc')?.inScope) {
 }
 startAsicEuDatasetRefresh();
 startActLicencesDatasetRefresh();
+// Phase 3 facts-only indexes (ingestion/): each job starts only if one of its keys is in launch
+// scope, and its checks keep their live scrapers until the index is ready.
+startIngestionJobs(SCRAPERS);

@@ -142,6 +142,14 @@
       <tbody id="routeRows"></tbody>
     </table>
     <p class="note" id="routeNote"></p>
+    <h2>Local indexes <span class="sub">(daily copies searched instead of live sites)</span></h2>
+    <table>
+      <thead>
+        <tr><th>Index</th><th>Ready</th><th>Last success</th><th>Last error</th><th>Contents</th></tr>
+      </thead>
+      <tbody id="ingestionRows"></tbody>
+    </table>
+    <p class="note">An index is used for its checks once ready; until then they use their live scrapers. "Stale" means no successful run in the index's freshness window, and its checks are marked stale in reports.</p>
   </div>
 
 <script>
@@ -158,6 +166,7 @@
   var historyNoteEl = document.getElementById('historyNote');
   var routeRowsEl = document.getElementById('routeRows');
   var routeNoteEl = document.getElementById('routeNote');
+  var ingestionRowsEl = document.getElementById('ingestionRows');
 
   function fmtTime(iso) {
     if (!iso) return '—';
@@ -207,6 +216,25 @@
       ? '7-day success rate is computed from persisted health_check_event rows.'
       : 'No persisted history available yet (DATABASE_URL not configured, or no events logged since setup).';
     renderRoutes(report.proxyRoutes);
+    renderIngestion(report.ingestion);
+  }
+
+  function esc(text) {
+    return String(text == null ? '' : text).replace(/[&<>"]/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+    });
+  }
+
+  function renderIngestion(jobs) {
+    if (!jobs || jobs.length === 0) { ingestionRowsEl.innerHTML = ''; return; }
+    ingestionRowsEl.innerHTML = jobs.map(function (j) {
+      if (!j.available) return '<tr><td>' + esc(j.label) + '</td><td colspan="4" class="alert">index store unavailable — live checks in use</td></tr>';
+      var ready = j.ready ? (j.stale ? '<span class="alert">stale</span>' : 'yes') : 'not yet (live checks in use)';
+      if (!j.started && !j.ready) ready = 'off — crawls through the proxy; add to PROXY_INGESTION_JOBS to start';
+      if (j.running) ready += ' · running';
+      var error = j.lastError ? '<span class="alert">' + esc(j.lastError) + '</span> (' + j.consecutiveFailures + ' in a row)' : '—';
+      return '<tr><td>' + esc(j.label) + '</td><td>' + ready + '</td><td>' + fmtTime(j.lastSuccessAt) + '</td><td style="white-space:normal">' + error + '</td><td style="white-space:normal">' + esc(j.summary || '') + '</td></tr>';
+    }).join('');
   }
 
   // Which route served each request to a site that may block Railway (direct, the residential

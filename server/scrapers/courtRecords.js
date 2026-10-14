@@ -137,6 +137,14 @@ function stripCompanySuffix(name) {
 // company suffixes (e.g. "Multiplex", "Bunter") — there's no multi-word phrase to require
 // in that case, so word-boundary match on that one word is the strictest available check,
 // not a loosened substitute for the phrase match above.
+// Whether titleMatchesTerm can filter on `term` at all. A term with no distinctive words (e.g.
+// "Building", "The Builders" once suffixes are stripped) matches every title by design: harmless
+// for a live search, where the site's own search already narrowed the results, but it would match
+// every record in a local index (DATA_SOURCES_PLAN.md Phase 3), so the indexes skip such terms.
+function isFilterableTerm(term) {
+  return !titleMatchesTerm('', term);
+}
+
 function titleMatchesTerm(title, term) {
   const lower = title.toLowerCase();
   const allWords = term.toLowerCase().split(/\W+/).filter(Boolean);
@@ -737,6 +745,11 @@ module.exports = {
   searchCourtRecords,
   isFunnelbackResultsPage,
   isFedcourtResultsPage,
+  titleMatchesTerm,
+  isFilterableTerm,
+  stripCompanySuffix,
+  JURISDICTION_SOURCES,
+  ACAT_MANUAL_SEARCH_URL,
   fetchFederalPage,
   _resetFederalProxyForTests: () => { federalProxySkippedUntil = 0; },
   searchNswCaselaw,

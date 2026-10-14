@@ -2,7 +2,9 @@
 builder = "NIXPACKS"
 
 [deploy]
-startCommand = "node index.js"
+# --experimental-sqlite: the local indexes (ingestion/localIndex.js) use node:sqlite, which
+# Node 23.2 (the newest this Nixpacks snapshot has) only loads behind this flag.
+startCommand = "node --experimental-sqlite index.js"
 healthcheckPath = "/api/health"
 healthcheckTimeout = 100
 restartPolicyType = "ON_FAILURE"

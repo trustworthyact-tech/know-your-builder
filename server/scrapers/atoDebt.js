@@ -206,4 +206,4 @@ async function searchAtoDebt(companyName, abn, acn) {
   };
 }
 
-module.exports = { searchAtoDebt };
+module.exports = { searchAtoDebt, isAtoDebtNotice };

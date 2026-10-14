@@ -296,6 +296,7 @@ module.exports = {
   normaliseDigits,
   normaliseEntityName,
   searchableName,
+  significantWords,
   makeNameMatcher,
   parseTrustName,
   resolveEntityIdentity,

@@ -280,4 +280,4 @@ async function searchFWO(companyName, abn, directors) {
   };
 }
 
-module.exports = { searchFWO, isFwoSearchPage };
+module.exports = { searchFWO, isFwoSearchPage, isEnforcementOutcome };

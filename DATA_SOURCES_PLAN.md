@@ -556,29 +556,95 @@ minutes (ACT fails in under 0.3s; FWO's 5s timeout is paid at most once per cool
 search term) and FWO (1 per term) are most of the rest. So Phase 2 slows the credit drain but
 doesn't stop it. Phase 4 (residential proxy) or Phase 3 (local copies of ACT and FWO) does.
 
-### Phase 3 — our own copies of FWO, ACT courts/ACAT and ASIC notices (about 5–6 days, including the shared ingestion module)
-- [ ] One shared ingestion module (WS0.6), closing architecture gaps 1–7:
-  - append/upsert storage and a trigram name index;
-  - one request at a time, off-peak scheduling, low browser priority;
-  - ingestion health on the dashboard;
-  - manifest updates that keep 45s+ budgets for the dependency chain;
-  - scope-gated start;
-  - minimum-row and page-marker checks.
+### Phase 3 — facts-only indexes of ASIC notices, ACT courts/ACAT and FWO (built 2026-10-14, branch `feature/data-sources-phase3`, not merged)
 
-  Each job: a one-off backfill spread over several nights, then a daily crawl of new items,
-  run through the proxy (FWO, ACT) or one browser page (ASIC notices), retrying until it
-  completes.
-- [ ] **FWO:** media-release listing pages → title, summary, date, URL. Match locally with
-  the existing FWO matching code.
-- [ ] **ACT courts + ACAT:** date-sorted listings → case title, court, date, URL. Match with
-  `titleMatchesTerm`. (verify listings first)
-- [ ] **ASIC published notices** (insolvency + ATO): daily notices → notice type, company
-  name, ACN, date, URL. Match by ACN first, then name. Decide the backfill window, for
-  example 7 years. (verify volume and listing)
-- [ ] Remove the business-name caps for these sources (search rule 4). Add linked companies
-  to the insolvency search.
-- [ ] Mark each result `stale` with its as-of date if its ingestion job is behind (the
-  pattern already exists).
+**Decided 2026-10-14 (you):** build facts-only indexes (names, identifiers, dates, titles, links;
+never copied text) for all three; keep using ScrapeOps (or similar) to build the ACT and FWO
+copies; set the robots.txt question aside for now. Copyright protects expression, not facts
+(*IceTV v Nine Network*, 2009), so the licence terms below matter mainly if text were copied.
+
+**Terms and robots.txt check (2026-10-14), before any build.**
+
+| Source | Licence | robots.txt | Reachable from Railway |
+|---|---|---|---|
+| FWO media releases | [CC BY-**NC** 4.0](https://www.fairwork.gov.au/website-information/copyright): reuse only for non-commercial purposes; breach ends the licence | Disallows `/newsroom/news-and-media-search`, the page today's live check queries. Allows the media-release listing and release pages | No (Akamai); proxy needed |
+| ACT courts, ACAT | ACT Government default is CC BY 4.0 (not confirmed on these two sites) | **Disallows** `/judgment` and `/supreme/judgments…`/`/supreme/decisions…` (courts), and `/decisions/` and `/decisions2/` (ACAT), for every crawler except Funnelback. Today's live searches use these paths | No (Cloudflare); proxy needed |
+| ASIC published notices | Not among the 10 document classes ASIC licenses under CC BY 4.0; [reproducing other content needs permission](https://www.asic.gov.au/about-asic/dealing-with-asic/copyright-and-linking-to-our-websites/) (feedback@asic.gov.au) | Allows everything except `/my-notices`, and publishes a sitemap | **Yes, directly**: sitemap and notice pages return 200 with no WAF challenge. Only the search page is challenged |
+
+What this means:
+- **FWO and ACT:** a copy of either goes against the site's licence or robots.txt. Don't build
+  them without written permission. The same concerns apply to today's live searches.
+- **ASIC notices: a better design than planned.** Monthly sitemaps go back to October 2012
+  (`/sitemap/sitemap-MMYY.xml`, about 25,000 notices in September 2026, mostly deregistration).
+  Each notice URL contains the company name and ACN
+  (`/notice-details/<Name-Slug>-<ACN>/<id>`) and a `lastmod` date. So an index of name, ACN,
+  date and link can be built from the sitemaps alone, with no browser and no proxy, and matched
+  by ACN. At search time, only the matching notice pages are fetched (plain HTTP) to read the
+  notice type. The index stores facts and links, not notice text; whether that needs ASIC's
+  permission is still open.
+**What was built.** Every index switches its checks over only once it's ready; until then
+they keep their live scrapers. `LOCAL_INDEX_DISABLED=<job>` sends a ready index's checks back
+to the live scraper without a deploy.
+
+- [x] **Shared ingestion module** (`server/ingestion/`, the WS0.6 runner), closing gaps 1–7:
+  - storage: one SQLite file on the Railway volume (`node:sqlite`, which needs
+    `--experimental-sqlite` on the container's Node 23.2, now in `railway.toml`'s start
+    command). Not Postgres: the ASIC index alone is about 1GB, and search-time reads stay local;
+  - upsert by stable key (gap 1); exact ACN/name lookups and in-memory title matching instead
+    of trigram search (gap 2);
+  - one request at a time, paused while a search is running (gap 3);
+  - each job's readiness, last success, last error and size on `/admin/scraper-health`
+    (gap 4), and checks marked `stale` with `asOf` when a job falls behind;
+  - manifest unchanged: the keys keep their timeouts and live fallbacks (gap 5);
+  - scope-gated start (gap 6); jobs that crawl through the proxy (ACT, FWO) start only when
+    named in `PROXY_INGESTION_JOBS`, so a deploy can't drain ScrapeOps credits;
+  - page-marker and count checks: a block page fails a run and never ends a copy early or
+    shrinks it.
+- [x] **ASIC published notices** (`asicInsolvency`, `atoDebt`): from ASIC's monthly sitemaps
+  (no proxy, no browser), about 2.7 million notices since October 2012, each notice's page read
+  once for its type, every company and ACN, status and date. Matched by ACN (and linked
+  companies' ACNs); an exact legal-name match without an ACN is "name only — verify".
+  Linked companies' notices raise the report's "associated company" finding, never the
+  entity's own. Live-checked: two months copied in 17s, lookups about 1ms; an end-to-end search
+  answered both checks in 0.1–0.2s (today's browser searches: 20–120s).
+  - Pages read: every new notice (500–800 a day), and history back two years
+    (`ASIC_NOTICES_READ_BACK_DAYS`, default 730: about 400,000 pages, ten days at one every
+    2 seconds). Reading all 2.7 million would mean ~60,000 requests a day to ASIC for weeks.
+  - Known gap: a company named only as the *second* company on a notice older than the
+    read-back window can't be found (about 1% of notices are joint). Such notices are still
+    found under their main company, and their type is read at search time. A "nothing found"
+    summary says from when joint notices are covered in full.
+- [x] **ACT courts + ACAT** (`courts_act`): every Supreme Court judgment (11,010, from 1963) and
+  ACAT decision (1,732, from 2009), from Funnelback listings at 500 per page: about 27 requests
+  for a full copy, then 2 a day. Matched with `titleMatchesTerm` on the title plus the URL slug
+  (which restores ACAT's shortened titles), plus ACNs in titles. Compared with the live search
+  for 10 names: the index found every case the live search did, and one more.
+- [x] **FWO** (`fwo`): every media release since January 2014 (about 2,133). Each release is
+  read once for the names it mentions and whether it reports an enforcement outcome. About
+  2,350 requests for a full copy, then a few a week. A name matches when all its significant
+  words appear within one mentioned name; names mentioned in more than 20 releases (officials,
+  courts) are ignored unless they're company names.
+  - [x] **Compared with the live search (2026-10-14), from a full local copy (2,133 releases):**
+    35 names (19 companies and 10 people sampled from the releases themselves, 6 builders).
+    - The live search found **1 result in total**; the index found **45**. The live search
+      misses almost every FWO outcome today. Its one result was a false positive: for "Z
+      Transport Pty Ltd", "Z" is too short to count, so it matched a release about "transport".
+    - Spot checks of the index's results were genuine (e.g. Starbucks' EU, NewKlean's EU and a
+      second release naming NewKlean, the bike-courier penalty under both the company and its
+      director).
+    - Weaknesses shared with the live check: it matches any mention, not only the party
+      penalised (Orica appears in two AWU releases as the workplace), and a one-word name can
+      match a place (Hindmarsh, a suburb).
+- [x] Business-name caps removed for these indexes (rule 4); linked companies added to the
+  notices search.
+- [x] A name too generic to match on (e.g. "Building") is skipped and makes the result
+  `partial`, never a clean "nothing found" (a full copy would otherwise match it everywhere).
+
+**To switch on after merging:**
+1. ASIC notices start by themselves; the first full sitemap copy takes about 10 minutes, then
+   both checks use the index.
+2. ACT and FWO need ScrapeOps credits for their first copy (about 27 and 2,350). Once credits
+   are available, set `PROXY_INGESTION_JOBS=actJudgments,fwoReleases` in Railway.
 
 ### Phase 4 — proxy transport (code built 2026-10-13; residential route on hold, see the trial result)
 Built ahead of Phase 3, so for now it serves the live searches (NSW, ACT courts/ACAT, FWO) and

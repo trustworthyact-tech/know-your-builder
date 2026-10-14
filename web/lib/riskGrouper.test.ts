@@ -78,6 +78,24 @@ test('linked-company records raise one associated-company trigger, at findings s
   );
 });
 
+// DATA_SOURCES_PLAN.md Phase 3: the ASIC notices index also searches linked companies' ACNs.
+test("a linked company's ASIC notices raise an associated-company trigger, never an insolvency finding", () => {
+  const linked = { MatchedBy: 'Linked company — via Frank Walmsley', LinkedCompany: 'OLD BUILDS PTY LTD', LinkedVia: 'Frank Walmsley (Director)' };
+  const groups = riskGrouper(
+    findings(
+      result('asicInsolvency', [
+        { title: 'OLD BUILDS PTY LTD — APPOINTMENT OF LIQUIDATOR', metadata: linked },
+        { title: 'OLD BUILDS PTY LTD — MEETING OF CREDITORS', metadata: linked },
+      ]),
+      result('atoDebt', [{ title: 'OLD BUILDS PTY LTD — ATO', metadata: linked }])
+    )
+  );
+  assert.deepEqual(groups.map((g) => g.id), ['CORPORATE']);
+  assert.deepEqual(groups[0].triggers.map((t) => t.finding), [
+    'Associated company OLD BUILDS PTY LTD (linked via Frank Walmsley (Director)): 2 ASIC insolvency or deregistration notice(s), 1 ATO tax debt disclosure(s)',
+  ]);
+});
+
 test('a name-only linked company raises nothing', () => {
   const groups = riskGrouper(
     findings(result('courts_federal', [court('X v Maybe Co', { MatchedBy: NAME_ONLY, LinkedCompany: 'Maybe Co Pty Ltd' })]))
