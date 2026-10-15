@@ -65,6 +65,22 @@ function makeContext(job, state, { _sleep = sleep } = {}) {
   };
 }
 
+// Retries one request inside a job: a slow or failed page through the proxy shouldn't fail a
+// whole run, since a failed run only retries at the job's next interval (found 2026-10-15: FWO's
+// listing through ScrapeOps hit a single 60s timeout every ten pages or so, failing each run).
+// Pauses through ctx.pace, so tests don't wait.
+async function retrying(ctx, fn, { attempts = 3, delayMs = 10_000 } = {}) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (attempt >= attempts) throw err;
+      ctx.log(`request failed (${err?.response?.status || err?.code || err?.message}), retry ${attempt} of ${attempts - 1}`);
+      await ctx.pace(delayMs * attempt);
+    }
+  }
+}
+
 // Runs a job once. Resolves with { ok, error? }; never throws, so a failing job can't crash the
 // long-lived server process.
 async function runJobOnce(key, options = {}) {
@@ -197,6 +213,7 @@ function _resetForTests() {
 
 module.exports = {
   registerJob,
+  retrying,
   runJobOnce,
   startIngestionJobs,
   freshness,

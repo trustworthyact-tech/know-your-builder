@@ -113,7 +113,7 @@ it. **Best approach** is the recommended replacement.
 
 | Source | Now | Problem | Best approach |
 |---|---|---|---|
-| `courts_nsw` | Plain HTTP, NSW Caselaw; 100% | Works. NSW Caselaw has a robots-exclusion policy (noted in CLAUDE.md) | Keep. Review the site's terms before raising volume |
+| `courts_nsw` | Plain HTTP, NSW Caselaw; 100% | Works. NSW Caselaw has a robots-exclusion policy (noted in CLAUDE.md). **Fixed 2026-10-15:** each name read only the first 20 results, and names ran one after another | Keep live. Now reads up to 5 pages per name (stopping at the site's own total), 4 names at a time, and a page without the site's results line fails rather than reading as "no cases". Page 1 vs 5 pages, cases matched: BHP 20 → 91, Westpac 19 → 99, Multiplex 19 → 48. People's names gain little, since titles usually name people by surname only |
 | `courts_act` | ScrapeOps proxy, ACT courts + ACAT; 89% | Proxy queueing (up to 20s), 429s, credits nearly exhausted; a block page can read as clean | **Our own database of case titles**: a daily crawl through the proxy plus a one-off backfill (ACT is CC-BY 4.0). Equivalent to today's results because matching is title-only. (verify: date-sorted listing on both sites) |
 | `fwo` | ScrapeOps proxy; 95% | Same proxy problems; Akamai blocks Railway | **Our own database of FWO media releases**: a daily crawl plus a backfill of about 70 listing pages. Low volume, a few releases a week |
 | `courts_federal` | Browser through Cloudflare; **74%** | Cloudflare challenges hold browser pages, and those pages are shared with other checks | Short term: route the browser through the residential proxy (Phase 4) and make it the browser's top-priority job. Long term: a database of case titles built from the Open Australian Legal Corpus (CC-BY, to about 2024) plus a daily "latest judgments" crawl, **but only after asking the Federal Court for permission**, since its scraping permission is negotiated case by case |
@@ -640,7 +640,17 @@ to the live scraper without a deploy.
 - [x] A name too generic to match on (e.g. "Building") is skipped and makes the result
   `partial`, never a clean "nothing found" (a full copy would otherwise match it everywhere).
 
-**To switch on after merging:**
+**Switched on 2026-10-15** (ScrapeOps $9 plan: 25,000 credits, 5 concurrent). ASIC was ready
+from the first deploy (2,576,022 notices). ACT was ready the same day: 11,011 Supreme Court
+judgments and 1,733 ACAT decisions, about 34 credits. Two problems found on the way, both fixed:
+- `PROXY_MAX_CONCURRENCY=1` (set on the mistaken belief that the paid plan allowed one request at
+  a time) made both jobs and a real user search queue for one slot, and that search's ACT and
+  FWO checks timed out as unavailable. Removed; the plan allows 5.
+- FWO listing pages (~430KB) sometimes took over 60s through ScrapeOps, and one timeout failed
+  the whole run, which only retried 6 hours later. Each page now gets up to 3 attempts
+  (`runner.retrying`) with a 90s deadline; ACT's listing too.
+
+**To switch on after merging (as first planned):**
 1. ASIC notices start by themselves; the first full sitemap copy takes about 10 minutes, then
    both checks use the index.
 2. ACT and FWO need ScrapeOps credits for their first copy (about 27 and 2,350). Once credits

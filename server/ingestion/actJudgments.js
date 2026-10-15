@@ -24,7 +24,7 @@
 // Each run: for each site, a full copy if none has completed yet or the last is over 7 days old
 // (pages resume across runs and restarts); otherwise just the newest 500.
 
-const { registerJob, freshness, isReady } = require('./runner');
+const { registerJob, freshness, isReady, retrying } = require('./runner');
 const { transaction, getState } = require('./localIndex');
 const { proxiedRequest } = require('../scrapers/proxyLimiter');
 const {
@@ -162,7 +162,7 @@ function makeRun(_request = proxiedRequest, { pageDelayMs = PAGE_DELAY_MS, minTo
       const p = (ctx.progress[source] ??= { backfillComplete: false, nextStart: 1, lastFullAt: null, total: 0 });
       const due = !p.backfillComplete || !p.lastFullAt || Date.now() - new Date(p.lastFullAt).getTime() > FULL_REFRESH_MS;
       if (!due) {
-        const { rows: newest } = await fetchPage(source, 1, _request);
+        const { rows: newest } = await retrying(ctx, () => fetchPage(source, 1, _request));
         if (newest.length < minNewest) throw new Error(`${source}: newest page had ${newest.length} decisions (expected at least ${minNewest})`);
         upsert(db, newest);
         continue;
@@ -175,7 +175,7 @@ function makeRun(_request = proxiedRequest, { pageDelayMs = PAGE_DELAY_MS, minTo
       let siteTotal = null;
       for (;;) {
         await ctx.yieldToSearches();
-        const { rows, total } = await fetchPage(source, p.nextStart, _request);
+        const { rows, total } = await retrying(ctx, () => fetchPage(source, p.nextStart, _request));
         siteTotal = total ?? siteTotal;
         if (rows.length === 0) break;
         upsert(db, rows);
