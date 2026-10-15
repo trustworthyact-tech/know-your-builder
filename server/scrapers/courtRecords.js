@@ -195,12 +195,45 @@ function makeTermCache(fetchFn) {
   };
 }
 
-const fetchNswTermResults = makeTermCache(async (term) => {
-  const searchUrl = `https://www.caselaw.nsw.gov.au/search?query=${encodeURIComponent(term)}`;
-  const { data } = await axios.get(searchUrl, {
-    timeout: 30_000,
+// NSW Caselaw shows 20 results a page, ranked by relevance. One page per name missed cases for
+// common names and much-litigated companies ("BHP" has about 1,908 hits), so up to
+// NSW_MAX_PAGES pages are read per name, stopping as soon as the site's own total is reached
+// (2026-10-15). Pages are `page=0, 1, 2…`. Every real results page — including an empty one —
+// says "Displaying 1 - 20 of 1908 results"; a page without that line (a block or error page)
+// fails the name instead of reading as "no cases".
+const NSW_PAGE_SIZE = 20;
+const NSW_MAX_PAGES = 5;
+const NSW_TOTAL_RE = /Displaying\s+[\d,]+\s*-\s*[\d,]+\s+of\s+([\d,]+)\s+results/;
+
+function nswResultsTotal(html) {
+  const m = typeof html === 'string' ? cheerio.load(html)('body').text().replace(/\s+/g, ' ').match(NSW_TOTAL_RE) : null;
+  return m ? Number(m[1].replace(/,/g, '')) : null;
+}
+
+async function fetchNswPage(term, page, _http) {
+  const searchUrl = `https://www.caselaw.nsw.gov.au/search?query=${encodeURIComponent(term)}${page > 0 ? `&page=${page}` : ''}`;
+  const { data } = await _http.get(searchUrl, {
+    timeout: 15_000,
     headers: { 'User-Agent': 'Mozilla/5.0 (compatible; know-your-builder/1.0)' },
   });
+  const total = nswResultsTotal(data);
+  if (total == null) throw new Error(`NSW Caselaw page ${page} for "${term}" was not a results page`);
+  return { results: parseNswResults(data, term), total };
+}
+
+async function fetchNswAllPages(term, _http = axios) {
+  const results = [];
+  for (let page = 0; page < NSW_MAX_PAGES; page++) {
+    const { results: pageResults, total } = await fetchNswPage(term, page, _http);
+    results.push(...pageResults);
+    if (pageResults.length < NSW_PAGE_SIZE || (page + 1) * NSW_PAGE_SIZE >= total) break;
+  }
+  return results;
+}
+
+const fetchNswTermResults = makeTermCache((term) => fetchNswAllPages(term));
+
+function parseNswResults(data, term) {
   const $ = cheerio.load(data);
   const results = [];
 
@@ -224,7 +257,7 @@ const fetchNswTermResults = makeTermCache(async (term) => {
   });
 
   return results;
-});
+}
 
 // Supreme Court of Victoria's own judgment-summaries listing — a Drupal Views exposed
 // filter with a real server-side `?query=` keyword search (confirmed live 2026-09-11:
@@ -505,7 +538,7 @@ const fetchNtTermResults = makeTermCache(async (term) => {
 // would just add redundant wall-clock latency without reducing total Puppeteer load.
 // NSW/ACT (plain axios, no shared resource to queue for) stay sequential — there's no
 // gate downstream for a sequential loop to be redundant with.
-async function runJurisdictionSearch(companyName, directors, { fetchFn, jurisdiction, source, searchUrlFor, sourcesKey, concurrent = false }) {
+async function runJurisdictionSearch(companyName, directors, { fetchFn, jurisdiction, source, searchUrlFor, sourcesKey, concurrent = false, concurrency = null }) {
   const strippedCompanyName = stripCompanySuffix(companyName);
   const terms = [strippedCompanyName, ...(directors || []).filter(Boolean).map(stripCompanySuffix)].filter(Boolean);
 
@@ -541,7 +574,18 @@ async function runJurisdictionSearch(companyName, directors, { fetchFn, jurisdic
   };
 
   let gathered;
-  if (concurrent) {
+  if (concurrency) {
+    // A few names at a time, results kept in term order.
+    gathered = new Array(terms.length);
+    let next = 0;
+    const worker = async () => {
+      while (next < terms.length) {
+        const i = next++;
+        gathered[i] = await fetchOne(terms[i]);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(concurrency, terms.length) }, worker));
+  } else if (concurrent) {
     gathered = await Promise.all(terms.map(fetchOne));
   } else {
     gathered = [];
@@ -613,6 +657,10 @@ function searchNswCaselaw(companyName, directors = []) {
     source: 'NSW Caselaw',
     sourcesKey: 'nsw',
     searchUrlFor: (term) => `https://www.caselaw.nsw.gov.au/search?query=${encodeURIComponent(term)}`,
+    // Names were searched one after another; with many names (business names are uncapped for
+    // NSW, since it costs no credits) that risked the 45s budget on a slow day and losing every
+    // result. Four at a time keeps the load on NSW Caselaw modest (2026-10-15).
+    concurrency: 4,
   });
 }
 
@@ -747,6 +795,8 @@ module.exports = {
   isFedcourtResultsPage,
   titleMatchesTerm,
   isFilterableTerm,
+  fetchNswAllPages,
+  nswResultsTotal,
   stripCompanySuffix,
   JURISDICTION_SOURCES,
   ACAT_MANUAL_SEARCH_URL,
