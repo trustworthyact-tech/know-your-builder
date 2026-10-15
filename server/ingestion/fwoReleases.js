@@ -28,7 +28,7 @@
 // release can't be matched before its names are known.
 
 const cheerio = require('cheerio');
-const { registerJob, freshness, isReady } = require('./runner');
+const { registerJob, freshness, isReady, retrying } = require('./runner');
 const { transaction, getState } = require('./localIndex');
 const { proxiedRequest } = require('../scrapers/proxyLimiter');
 const { isEnforcementOutcome } = require('../scrapers/fwo');
@@ -141,8 +141,10 @@ function parseRelease(html) {
 
 // ── The job ───────────────────────────────────────────────────────────────────────────────
 
-async function fetchHtml(_request, url, validate, label) {
-  return _request({ site: 'fwo', url, headers: HEADERS, validate, label, deadlineMs: 60_000, directTimeoutMs: 5_000 });
+// Each page gets up to 3 attempts (see runner.retrying); listing pages are ~430KB and can take
+// over a minute through ScrapeOps.
+async function fetchHtml(ctx, _request, url, validate, label, attempts = 3) {
+  return retrying(ctx, () => _request({ site: 'fwo', url, headers: HEADERS, validate, label, deadlineMs: 90_000, directTimeoutMs: 5_000 }), { attempts });
 }
 
 function insertListed(db, items) {
@@ -177,7 +179,7 @@ function makeRun(_request = proxiedRequest, { pageDelayMs = PAGE_DELAY_MS, minRe
       p.nextPage ??= 0;
       for (;;) {
         await ctx.yieldToSearches();
-        const items = parseListing(await fetchHtml(_request, LISTING_URL(p.nextPage), isListingPage, 'fwoReleases listing'));
+        const items = parseListing(await fetchHtml(ctx, _request, LISTING_URL(p.nextPage), isListingPage, 'fwoReleases listing'));
         if (items.length === 0) break;
         insertListed(db, items);
         p.nextPage++;
@@ -194,7 +196,7 @@ function makeRun(_request = proxiedRequest, { pageDelayMs = PAGE_DELAY_MS, minRe
       ctx.log(`listing complete: ${listed} releases`);
     } else {
       for (const page of [0, 1]) {
-        const items = parseListing(await fetchHtml(_request, LISTING_URL(page), isListingPage, 'fwoReleases listing'));
+        const items = parseListing(await fetchHtml(ctx, _request, LISTING_URL(page), isListingPage, 'fwoReleases listing'));
         if (page === 0 && items.length === 0) throw new Error('newest listing page had no releases');
         insertListed(db, items);
         await ctx.pace(pageDelayMs);
@@ -208,7 +210,7 @@ function makeRun(_request = proxiedRequest, { pageDelayMs = PAGE_DELAY_MS, minRe
     for (const { url } of batch) {
       await ctx.yieldToSearches();
       try {
-        const facts = parseRelease(await fetchHtml(_request, url, (html) => parseRelease(html) != null, 'fwoReleases release'));
+        const facts = parseRelease(await fetchHtml(ctx, _request, url, (html) => parseRelease(html) != null, 'fwoReleases release', 2));
         saveRead(db, url, facts);
         read++;
         failures = 0;

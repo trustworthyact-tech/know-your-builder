@@ -640,7 +640,17 @@ to the live scraper without a deploy.
 - [x] A name too generic to match on (e.g. "Building") is skipped and makes the result
   `partial`, never a clean "nothing found" (a full copy would otherwise match it everywhere).
 
-**To switch on after merging:**
+**Switched on 2026-10-15** (ScrapeOps $9 plan: 25,000 credits, 5 concurrent). ASIC was ready
+from the first deploy (2,576,022 notices). ACT was ready the same day: 11,011 Supreme Court
+judgments and 1,733 ACAT decisions, about 34 credits. Two problems found on the way, both fixed:
+- `PROXY_MAX_CONCURRENCY=1` (set on the mistaken belief that the paid plan allowed one request at
+  a time) made both jobs and a real user search queue for one slot, and that search's ACT and
+  FWO checks timed out as unavailable. Removed; the plan allows 5.
+- FWO listing pages (~430KB) sometimes took over 60s through ScrapeOps, and one timeout failed
+  the whole run, which only retried 6 hours later. Each page now gets up to 3 attempts
+  (`runner.retrying`) with a 90s deadline; ACT's listing too.
+
+**To switch on after merging (as first planned):**
 1. ASIC notices start by themselves; the first full sitemap copy takes about 10 minutes, then
    both checks use the index.
 2. ACT and FWO need ScrapeOps credits for their first copy (about 27 and 2,350). Once credits

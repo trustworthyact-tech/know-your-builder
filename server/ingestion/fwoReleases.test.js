@@ -98,11 +98,33 @@ test('job — copies the listing, reads every release, then becomes ready', asyn
 });
 
 test('job — not ready while any listed release is still unread', async () => {
-  let n = 0;
-  const site = fakeFwo({ release: () => (++n === 3 ? new Error('ETIMEDOUT') : RELEASE) });
+  const stuck = fwo.parseListing(LISTING)[2].url;
+  const site = fakeFwo({ release: (url) => (url === stuck ? new Error('ETIMEDOUT') : RELEASE) });
   assert.deepEqual(await runJob(site.request), { ok: true });
   assert.equal(fwo.indexReady(), false);
   assert.equal(localIndex.getState(db, fwo.JOB_KEY).progress.unread, 1);
+});
+
+test('job — a listing page that times out once is retried, and the copy carries on (found live 2026-10-15)', async () => {
+  let tries = 0;
+  const flaky = fakeFwo({ listing: [LISTING] });
+  const request = async (args) => {
+    if (!args.url.includes('/media-releases/20') && ++tries === 1) throw Object.assign(new Error('timeout of 60000ms exceeded'), { code: 'ECONNABORTED' });
+    return flaky.request(args);
+  };
+  assert.deepEqual(await runJob(request), { ok: true });
+  assert.equal(fwo.indexReady(), true);
+});
+
+test('job — a listing page that keeps failing still fails the run after three attempts', async () => {
+  let calls = 0;
+  const request = async () => {
+    calls++;
+    throw Object.assign(new Error('timeout'), { code: 'ECONNABORTED' });
+  };
+  const out = await runJob(request);
+  assert.equal(out.ok, false);
+  assert.equal(calls, 3);
 });
 
 test('job — a block page fails the listing; it never ends the copy early', async () => {
