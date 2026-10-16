@@ -252,3 +252,17 @@ model EmailSequenceState {
 
   @@index([nextSendAt, completed])
 }
+
+// Marketing-site waitlists (website redesign, 2026-10): FundSight, Digital
+// Retention Trust, and "tell me when KYB covers my state". Upsert on
+// (email, product) so a repeat signup is a no-op. Applied with `prisma db push`
+// like the rest of this schema (no migrations folder).
+model WaitlistSignup {
+  id        String   @id @default(cuid())
+  email     String
+  product   String // fundsight | retention_trust | kyb_qld | kyb_vic | kyb_wa | kyb_sa | kyb_tas | kyb_nt
+  persona   String? // owner_builder | subcontractor | developer | other
+  createdAt DateTime @default(now())
+
+  @@unique([email, product])
+}

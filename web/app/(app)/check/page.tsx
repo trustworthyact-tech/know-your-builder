@@ -9,7 +9,7 @@ const CHECKLIST = [
   ['🏛', 'ABR business register & ASIC company notices'],
   ['💳', 'Payment Times Reporting Register'],
   ['⚖️', 'Federal, NSW & ACT courts and tribunals'],
-  ['🏗', 'NSW Fair Trading & ACT builder licence registers'],
+  ['🏗', 'NSW (Verify licence) & ACT builder licence registers'],
   ['🔍', 'Modern Slavery Statements Register'],
   ['📋', 'ASIC disqualified persons, insolvency notices & enforceable undertakings'],
 ] as const;

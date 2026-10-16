@@ -49,7 +49,7 @@ const jsonLd = {
 const TRUST_SOURCES = [
   'ABR',
   'ASIC',
-  'NSW Fair Trading',
+  'Verify NSW licences',
   'Access Canberra',
   'Payment Times Register',
   'Federal, NSW & ACT courts',
@@ -65,16 +65,19 @@ const STEPS = [
 const AUDIENCES = [
   {
     title: 'Owner-builders and homeowners',
+    href: '/for/owner-builders',
     body: 'About to sign a contract or pay a deposit? Check the builder’s licence, insolvency notices and court history first.',
     size: 'lg',
   },
   {
     title: 'Subcontractors',
+    href: '/for/subcontractors',
     body: 'Before you take on work, check whether the head contractor has insolvency notices, tax-debt notices or a history of payment disputes.',
     size: 'lg',
   },
   {
     title: 'Developers',
+    href: '/for/developers',
     body: 'Vet every builder at tender with the same report, so you compare like with like.',
     size: 'sm',
   },
@@ -87,6 +90,7 @@ const STAGES = [
     body: 'A free due-diligence report on any NSW or ACT builder.',
     status: 'Available now',
     live: true,
+    href: '/check',
   },
   {
     when: 'During the build',
@@ -94,6 +98,7 @@ const STAGES = [
     body: 'Real-time visibility of project funds, so progress payments arrive when milestones are met.',
     status: 'Coming soon',
     live: false,
+    href: '/fundsight',
   },
   {
     when: 'After completion',
@@ -101,6 +106,7 @@ const STAGES = [
     body: 'Retention money held in trust and released automatically when the defects period ends.',
     status: 'Coming soon',
     live: false,
+    href: '/retention-trust',
   },
 ] as const;
 
@@ -212,10 +218,10 @@ export default function HomePage() {
                 <h3 className="text-xl font-bold text-brand-navy">{a.title}</h3>
                 <p className="leading-relaxed text-brand-slate">{a.body}</p>
                 <Link
-                  href="#check"
+                  href={a.href}
                   className="mt-1 w-fit rounded font-semibold text-brand-navy underline decoration-brand-ochre decoration-2 underline-offset-4 hover:decoration-brand-navy focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-navy"
                 >
-                  Check a builder
+                  Read the guide
                 </Link>
               </article>
             ))}
@@ -244,13 +250,24 @@ export default function HomePage() {
               </p>
               <h3 className={`text-xl font-bold ${s.live ? 'text-white' : 'text-brand-navy'}`}>{s.product}</h3>
               <p className={`leading-relaxed ${s.live ? 'text-[#C9D3E0]' : 'text-brand-slate'}`}>{s.body}</p>
-              <span
-                className={`mt-1 w-fit rounded-full px-3 py-1 text-xs font-bold ${
-                  s.live ? 'bg-brand-ochre text-brand-navy' : 'bg-brand-paper text-brand-slate'
-                }`}
-              >
-                {s.status}
-              </span>
+              <div className="mt-1 flex flex-wrap items-center gap-3">
+                <span
+                  className={`w-fit rounded-full px-3 py-1 text-xs font-bold ${
+                    s.live ? 'bg-brand-ochre text-brand-navy' : 'bg-brand-paper text-brand-slate'
+                  }`}
+                >
+                  {s.status}
+                </span>
+                <Link
+                  href={s.href}
+                  className={`rounded text-sm font-semibold underline underline-offset-4 focus:outline-none focus-visible:ring-2 ${
+                    s.live ? 'text-white decoration-brand-ochre focus-visible:ring-white' : 'text-brand-navy decoration-brand-ochre focus-visible:ring-brand-navy'
+                  }`}
+                >
+                  {s.live ? 'Check a builder' : 'Join the waitlist'}
+                  <span className="sr-only"> for {s.product}</span>
+                </Link>
+              </div>
             </li>
           ))}
         </ol>
@@ -264,7 +281,13 @@ export default function HomePage() {
             <h2 id="check-heading" className={h2}>
               {SOURCE_COUNT} sources, six kinds of risk.
             </h2>
-            <p className="leading-relaxed text-brand-slate">Open a card to see the registers behind it and what they can’t tell you.</p>
+            <p className="leading-relaxed text-brand-slate">
+              Open a card to see the registers behind it and what they can’t tell you, or read{' '}
+              <Link href="/how-it-works" className="font-semibold text-brand-navy underline decoration-brand-ochre decoration-2 underline-offset-4">
+                how it works
+              </Link>
+              .
+            </p>
           </div>
           <div className="mt-10 grid gap-4 md:grid-cols-2">
             {SOURCE_GROUPS.map((g) => (

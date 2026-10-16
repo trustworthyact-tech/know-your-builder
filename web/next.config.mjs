@@ -15,6 +15,17 @@ const nextConfig = {
   // point, so its root keeps serving the tool. At cutover, replace this rewrite
   // with a permanent redirect: check.trustworthypayments.com/:path* →
   // https://trustworthypayments.com/check (root) or /:path* (everything else).
+  // Old WordPress URLs (trustworthypayments.com before the redesign) → new pages,
+  // so existing links and search results keep working after the DNS cutover.
+  async redirects() {
+    return [
+      { source: '/tools', destination: '/how-it-works', permanent: true },
+      { source: '/media', destination: '/resources', permanent: true },
+      { source: '/legal', destination: '/terms', permanent: true },
+      { source: '/contact', destination: '/about', permanent: true },
+      { source: '/home', destination: '/', permanent: true },
+    ];
+  },
   async rewrites() {
     return {
       beforeFiles: [

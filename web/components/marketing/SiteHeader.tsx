@@ -1,12 +1,13 @@
 import Link from 'next/link';
 
-// In-page anchors until the dedicated pages (/how-it-works, /for/*, /resources)
-// ship in later PRs; the leading `/` keeps them working from any marketing page.
+// "Who it's for" stays a homepage anchor: the section links out to each
+// /for/* page, which keeps the nav at five items.
 const NAV_LINKS = [
-  { href: '/#how-it-works', label: 'How it works' },
+  { href: '/check-builder-licence', label: 'Licence checks' },
+  { href: '/how-it-works', label: 'How it works' },
   { href: '/#who-its-for', label: "Who it's for" },
-  { href: '/#what-we-check', label: 'What we check' },
-  { href: '/#faq', label: 'FAQ' },
+  { href: '/resources', label: 'Resources' },
+  { href: '/about', label: 'About' },
 ] as const;
 
 const linkClass =
@@ -24,7 +25,7 @@ export function SiteHeader() {
           <img src="/brand/trustworthy-logo.svg" alt="Trustworthy Payments" width={147} height={32} />
         </Link>
 
-        <nav aria-label="Main" className="hidden items-center gap-7 md:flex">
+        <nav aria-label="Main" className="hidden items-center gap-7 lg:flex">
           {NAV_LINKS.map((l) => (
             <a key={l.href} href={l.href} className={linkClass}>
               {l.label}
@@ -42,7 +43,7 @@ export function SiteHeader() {
           </Link>
 
           {/* No-JS mobile menu */}
-          <details className="group relative md:hidden">
+          <details className="group relative lg:hidden">
             <summary className="flex h-11 w-11 cursor-pointer list-none items-center justify-center rounded-lg text-brand-navy focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-navy [&::-webkit-details-marker]:hidden">
               <span className="sr-only">Menu</span>
               <svg aria-hidden="true" viewBox="0 0 24 24" className="h-6 w-6" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">

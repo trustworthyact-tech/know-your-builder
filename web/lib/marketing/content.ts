@@ -20,7 +20,7 @@ export const SOURCE_GROUPS: SourceGroup[] = [
     summary:
       'Whether the builder holds a current licence, its class and expiry, and any disciplinary action or compliance history recorded against it.',
     sources: [
-      'NSW Fair Trading contractor licence register',
+      'NSW contractor licence register (Verify licence)',
       'Access Canberra builder licence register',
       'Access Canberra register of disciplinary actions',
     ],
@@ -80,7 +80,7 @@ export const SOURCE_COUNT = SOURCE_GROUPS.reduce((n, g) => n + g.sources.length,
 export const FAQS = [
   {
     q: 'How do I check a builder’s licence in NSW?',
-    a: 'NSW Fair Trading publishes contractor licences on its public register, where you can search by name or licence number. Know Your Builder checks that register for you, includes any compliance history recorded against the licence, and adds ASIC, insolvency and court checks in the same report.',
+    a: 'Building Commission NSW publishes contractor licences on the NSW Government’s Verify licence service, where you can search by name or licence number. Know Your Builder checks that register for you, includes any compliance history recorded against the licence, and adds ASIC, insolvency and court checks in the same report.',
   },
   {
     q: 'How do I check a builder’s licence in the ACT?',
