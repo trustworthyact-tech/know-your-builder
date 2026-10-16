@@ -379,6 +379,11 @@ releases). They store names, identifiers, dates, titles and links, never copied 
   (`isFilterableTerm` in `courtRecords.js`).
 - Details and live results: `DATA_SOURCES_PLAN.md` Phase 3. Any new index should be a job in
   `ingestion/`, not a new refresh file.
+- **Never scan a large local table on the server's thread.** `node:sqlite` is synchronous, so
+  a slow query freezes every request. Found 2026-10-16: the dashboard's `COUNT(*)` over the
+  2.6M-row ASIC notices table took 33.6s on Railway's volume, freezing the server each time
+  `/api/admin/scraper-health/full` was called. Keep running totals in the job's progress
+  instead, and keep large writes in small chunks with a yield between them.
 
 **Phase 0 merged and deployed** (PR #30):
 - **Never-run checks are no longer "complete":** `paymentTimes`/`asicDisqualified` with no

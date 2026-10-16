@@ -168,7 +168,12 @@ function parseNoticePage(html) {
 
 // ── Storage ───────────────────────────────────────────────────────────────────────────────
 
-function upsertSitemapEntries(db, entries) {
+// Written in chunks, handing control back to the server between them: one 25,000-row transaction
+// on Railway's volume could hold the (synchronous) SQLite call, and every request, for seconds.
+const UPSERT_CHUNK = 2_000;
+const yieldToServer = () => new Promise((resolve) => setImmediate(resolve));
+
+async function upsertSitemapEntries(db, entries) {
   const notice = db.prepare(
     `INSERT INTO asic_notice (id, url, listed_date) VALUES (?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET url = excluded.url, listed_date = COALESCE(asic_notice.listed_date, excluded.listed_date)`
@@ -177,12 +182,15 @@ function upsertSitemapEntries(db, entries) {
     `INSERT INTO asic_notice_company (notice_id, acn, name, name_norm) VALUES (?, ?, ?, ?)
      ON CONFLICT(notice_id, acn) DO NOTHING`
   );
-  transaction(db, () => {
-    for (const e of entries) {
-      notice.run(e.id, shortUrl(e.url), e.listedDate);
-      company.run(e.id, e.acn, e.name, normaliseEntityName(e.name));
-    }
-  });
+  for (let i = 0; i < entries.length; i += UPSERT_CHUNK) {
+    transaction(db, () => {
+      for (const e of entries.slice(i, i + UPSERT_CHUNK)) {
+        notice.run(e.id, shortUrl(e.url), e.listedDate);
+        company.run(e.id, e.acn, e.name, normaliseEntityName(e.name));
+      }
+    });
+    await yieldToServer();
+  }
 }
 
 function saveEnrichment(db, id, facts) {
@@ -222,7 +230,7 @@ async function syncSitemaps(ctx, _http, { minSitemaps = MIN_SITEMAPS, minUrls = 
     if (!newest.has(s.name) && entries.length < minUrls) {
       throw new Error(`sitemap ${s.name} had ${entries.length} notices (expected at least ${minUrls}) — stopped`);
     }
-    upsertSitemapEntries(db, entries);
+    await upsertSitemapEntries(db, entries);
     for (const e of entries) {
       if (e.listedDate && (!ctx.progress.coveredFrom || e.listedDate < ctx.progress.coveredFrom)) ctx.progress.coveredFrom = e.listedDate;
     }
@@ -260,6 +268,7 @@ async function enrichBatch(ctx, _http) {
       if (!facts) throw new Error('not a notice page');
       saveEnrichment(db, id, facts);
       read++;
+      ctx.progress.pagesRead = (ctx.progress.pagesRead ?? 0) + 1;
       failures = 0;
     } catch (err) {
       failures++;
@@ -287,12 +296,15 @@ function makeRun(_http = axios, limits = {}) {
   };
 }
 
+// Never counts the notices table: on Railway's volume a COUNT(*) over its 2.6M rows took 33.6s,
+// freezing the server, each time the dashboard asked (found 2026-10-16). The figures come from
+// the small sitemap table (entries per month; a notice listed in two months counts twice) and
+// the job's own running count of pages read in the background.
 function describe(db) {
   ensureSchema(db);
-  const notices = db.prepare('SELECT COUNT(*) AS n FROM asic_notice').get().n;
-  const read = db.prepare('SELECT COUNT(*) AS n FROM asic_notice WHERE enriched_at IS NOT NULL').get().n;
-  const sitemaps = db.prepare('SELECT COUNT(*) AS n FROM asic_sitemap').get().n;
-  return `${notices.toLocaleString()} notices from ${sitemaps} monthly sitemaps; ${read.toLocaleString()} pages read`;
+  const { sitemaps, entries } = db.prepare('SELECT COUNT(*) AS sitemaps, SUM(url_count) AS entries FROM asic_sitemap').get();
+  const { pagesRead } = getState(db, JOB_KEY).progress;
+  return `${(entries ?? 0).toLocaleString()} sitemap entries from ${sitemaps} monthly sitemaps; ${(pagesRead ?? 0).toLocaleString()} pages read in the background`;
 }
 
 function register(_http, limits) {

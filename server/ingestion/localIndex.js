@@ -41,8 +41,15 @@ function indexPath() {
   return process.env.LOCAL_INDEX_PATH || path.join(process.env.RAILWAY_VOLUME_MOUNT_PATH || os.tmpdir(), 'local-indexes.db');
 }
 
+// node:sqlite calls are synchronous: while one runs, the whole server waits. Found in
+// production 2026-10-16 on Railway's network volume: a COUNT(*) over the 2.6M-row ASIC notices
+// table took 33.6s, freezing every request (see asicNotices.describe). So: a 256MB page cache
+// (default 2MB) keeps lookups off the slow disk; journal_size_limit lets the write-ahead log
+// shrink after checkpoints (it had grown to 515MB); and no code here may scan a large table.
 function configure(database) {
-  database.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000;');
+  database.exec(
+    'PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000; PRAGMA cache_size = -262144; PRAGMA journal_size_limit = 67108864;'
+  );
   database.exec(STATE_SCHEMA);
   return database;
 }

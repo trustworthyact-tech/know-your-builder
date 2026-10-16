@@ -144,7 +144,21 @@ test('job — copies every sitemap, reads every page, and becomes ready', async 
   const health = runner.getIngestionHealth()[0];
   assert.equal(health.ready, true);
   assert.equal(health.lastError, null);
-  assert.match(health.summary, /3 notices from 2 monthly sitemaps; 3 pages read/);
+  assert.match(health.summary, /3 sitemap entries from 2 monthly sitemaps; 3 pages read in the background/);
+});
+
+test('describe — never scans the notices table (a COUNT(*) over 2.6M rows froze production for 33s)', async () => {
+  await runJob(standardSite());
+  const queries = [];
+  const prepare = db.prepare.bind(db);
+  db.prepare = (sql) => { queries.push(sql); return prepare(sql); };
+  try {
+    runner.getIngestionHealth();
+  } finally {
+    db.prepare = prepare;
+  }
+  assert.ok(queries.length > 0);
+  assert.ok(queries.every((q) => !/FROM\s+asic_notice(\s|$)|FROM\s+asic_notice_company/i.test(q)), queries.join('\n'));
 });
 
 test('job — a joint notice makes its second company findable by ACN', async () => {
