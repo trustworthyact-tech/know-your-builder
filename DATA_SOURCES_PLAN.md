@@ -247,7 +247,8 @@ that the phases below must close. Gaps 1 and 2 correct this plan's earlier assum
 Ordered by value for effort. Effort figures are rough.
 
 ### Phase 0 — urgent fixes (built 2026-10-13, branch `feature/data-sources-phase0`)
-- [ ] **ScrapeOps credits:** 143 of 1,000 left on 2026-10-12, **27 left on 2026-10-13** (after
+- [x] **ScrapeOps credits:** resolved 2026-10-15 with the $9 plan (25,000 credits, 5 concurrent).
+  143 of 1,000 left on 2026-10-12, **27 left on 2026-10-13** (after
   Phase 2's 3-credit verification)
   (about one heavy search). Check the reset date; decide between a one-month $29 bridge or
   ACT courts and FWO being unavailable until local copies (Phase 3) ship. **Still 27 left on
@@ -444,13 +445,16 @@ no new dependency, so the weekly-copy design is **not built**. It stays the fall
     fault injection 49/49, launch scope 3/3, licence matching 12/12, ASIC company 6/6.
 - [x] Before deploying, end to end through `runSearchRequest` for Turnkey and Universal
   Property Group: `asic` about 1.1s, correct status and former names, all 16 keys reported.
-- [ ] Deploy. Confirm in the logs: `asic` succeeds and stays fast under real load, and
-  2captcha calls drop (only `asicExtract` should still make them).
-- [ ] Check the dashboard after 7 days: `abn` and `asic` complete rates ≥95%.
+- [x] Deploy. Confirm in the logs: `asic` succeeds and stays fast under real load, and
+  2captcha calls drop (only `asicExtract` should still make them). Confirmed 2026-10-16 in three
+  real production searches: `asic` 1.2–2.5s, complete each time.
+- [ ] Check the dashboard after 7 days: `abn` and `asic` complete rates ≥95%. **Due about
+  2026-10-20 to 22**, together with the whole plan's 7-day review (see "Status" below).
 
 #### 1.7 Record
-- [ ] Update CLAUDE.md (scraper conventions, `asic`/`abn` entries, the volume-storage
-  deviation and why), tick these boxes, and note anything that differed from this plan.
+- [x] Update CLAUDE.md (scraper conventions, `asic`/`abn` entries), tick these boxes, and note
+  anything that differed from this plan. (`asic` ended up on the live CKAN DataStore API, so the
+  volume-storage deviation didn't apply to it; the volume now holds Phase 3's indexes.)
 
 **Done when:** identity comes from the ABR API with honest failure reporting; `asic` reads
 the local dataset with no CAPTCHA; former names reach the search terms; "Not active" and
@@ -543,8 +547,9 @@ minutes (ACT fails in under 0.3s; FWO's 5s timeout is paid at most once per cool
   - FWO timed out directly at 5s, then succeeded through the proxy.
 
   3 credits spent (970 → 973).
-- [ ] **After deploy:** ScrapeOps `used_api_credits` should stop rising for NSW requests, and
-  logs should show no "nsw: direct request failed" lines.
+- [x] **After deploy:** ScrapeOps `used_api_credits` should stop rising for NSW requests, and
+  logs should show no "nsw: direct request failed" lines. Confirmed 2026-10-15: credits unchanged
+  at 973 with real NSW lookups going direct.
 
 #### 2.6 API.NSW Trades API: not needed now
 - [ ] Revisit only if Verify NSW blocks Railway again **and** the proxy route proves
@@ -740,7 +745,10 @@ route is on hold.**
   target, but not "well under 1GB". Phase 3's local copies remove most of it. Blocking images
   and fonts on proxied browser pages would cut Federal Court's share; that isn't built.
 
-### Phase 5 — Federal Court long term (about 1 day plus waiting time)
+### Phase 5 — Federal Court long term (decided 2026-10-15: stay live)
+Decided (you): keep Federal Court on its live browser search, improved in Phase 4 (no false clean
+from a challenge page; first place in the browser queue). Revisit only if the 7-day review shows
+it well short of target. The items below are kept for that case.
 - [ ] Write to the Federal Court asking permission for a daily latest-judgments crawl and a
   one-off index of case titles.
 - [ ] If granted: backfill from the Open Australian Legal Corpus (to about 2024) plus a crawl
@@ -748,7 +756,7 @@ route is on hold.**
 - [ ] If not: stay on Phase 4's improved browser path and measure the result.
 
 ### Phase 6 — directors from public sources only (gap, revisit 2027)
-- [ ] Record the gap plainly in the report: without a typed or licence-register-discovered
+- [x] Record the gap plainly in the report: without a typed or licence-register-discovered
   name, director-based checks (phoenix detection, disqualified persons) can't run, and the
   report already marks them `partial` with the reason. Keep that wording accurate.
 - [ ] Check whether more public registers expose people linked to a company (for example
@@ -757,6 +765,31 @@ route is on hold.**
   `ASIC_DATA_API_KEY` code paths already exist and are tested.
 - [ ] Deep Check currently returns the same as a free search. That's a product decision
   outside this plan, and it can't be solved with paid data.
+
+## Status (2026-10-16)
+
+All phases are built and deployed except Phase 5, which was decided against for now. One check
+remains: the 7-day review against the target (≥95% complete per source), due about
+2026-10-20 to 22.
+
+Verified 2026-10-16 in production, after the last deploy (PR #34):
+- **Indexes:** ASIC notices, ACT courts/ACAT and FWO all ready and current, with no errors.
+- **Dashboard:** `/api/admin/scraper-health/full` answers in 1.5s; it took 33–60s and froze the
+  server before PR #34 (see CLAUDE.md, "Never scan a large local table").
+- **Real searches**, through the same endpoint the website uses:
+  - Universal Property Group: all 16 checks complete in 39s. The four indexes answered in
+    1.5–3.9s. NSW courts found 96 cases (94 with the company as a party, 2 under its business
+    names), against at most 20 before. NSW licences found 2 records, ASIC EU 1, ASIC notices 2.
+  - Geocon Constructors (ACT), name only: all 16 complete in 31s; ACT courts found the expected
+    6 cases from the index.
+  - Showtime Concrete Pumping, by ACN: all 16 reported in 3.7s; ASIC notices found its winding-up
+    application. Five checks were partial because no directors could be found from public
+    sources (the Phase 6 gap, reported as designed).
+- **Tests:** server 324/324, web 10/10, `tsc` clean; live court-records, launch-scope,
+  fault-injection, NSW licence, licence-matching and ASIC company tests pass.
+- **Two older problems found in the logs and fixed (PR after #34):** schema.sql deadlocked on every
+  startup (several jobs applied it at once), and the search rate limit didn't see users'
+  own addresses behind Railway's proxy.
 
 ## Cost (recurring, at about 1,000 searches/month)
 

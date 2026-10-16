@@ -2,7 +2,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { getPool, isConfigured, _resetForTests } = require('./db');
+const { getPool, isConfigured, ensureSchema, _resetForTests, _setPoolForTests } = require('./db');
 
 // Regression guard for the 2026-09-14 production incident: DATABASE_URL was added in
 // Railway for the first time and the entire container crashed immediately. Root cause —
@@ -55,6 +55,69 @@ test('getPool — connectionTimeoutMillis is set, so a stuck connection attempt 
   try {
     const pool = getPool();
     assert.ok(pool.options.connectionTimeoutMillis > 0);
+  } finally {
+    _resetForTests();
+    delete process.env.DATABASE_URL;
+  }
+});
+
+// Found 2026-10-16: "[db] failed to apply schema.sql: deadlock detected" on every startup, from
+// several refresh jobs applying schema.sql at once on separate pooled connections.
+function fakePool(responses) {
+  const calls = [];
+  return {
+    calls,
+    query: async (sql) => {
+      calls.push(sql);
+      await new Promise((r) => setTimeout(r, 5));
+      const next = responses.shift();
+      if (next instanceof Error) throw next;
+      return { rows: [] };
+    },
+  };
+}
+const deadlock = () => Object.assign(new Error('deadlock detected'), { code: '40P01' });
+const noSleep = { _sleep: async () => {} };
+
+test('ensureSchema — concurrent callers share one attempt instead of racing each other', async () => {
+  process.env.DATABASE_URL = 'postgresql://fake:fake@localhost:5432/fake';
+  const fake = fakePool([undefined]);
+  _setPoolForTests(fake);
+  try {
+    const results = await Promise.all(Array.from({ length: 5 }, () => ensureSchema(noSleep)));
+    assert.deepEqual(results, [true, true, true, true, true]);
+    assert.equal(fake.calls.length, 1);
+    assert.equal(await ensureSchema(noSleep), true);
+    assert.equal(fake.calls.length, 1, 'applied once per process');
+  } finally {
+    _resetForTests();
+    delete process.env.DATABASE_URL;
+  }
+});
+
+test('ensureSchema — a deadlock (e.g. the other container during a deploy) is retried once', async () => {
+  process.env.DATABASE_URL = 'postgresql://fake:fake@localhost:5432/fake';
+  const fake = fakePool([deadlock(), undefined]);
+  _setPoolForTests(fake);
+  try {
+    assert.equal(await ensureSchema(noSleep), true);
+    assert.equal(fake.calls.length, 2);
+  } finally {
+    _resetForTests();
+    delete process.env.DATABASE_URL;
+  }
+});
+
+test('ensureSchema — a failure is logged and returns false, and a later call tries again', async (t) => {
+  process.env.DATABASE_URL = 'postgresql://fake:fake@localhost:5432/fake';
+  t.mock.method(console, 'error', () => {});
+  const fake = fakePool([deadlock(), deadlock(), new Error('connection refused'), undefined]);
+  _setPoolForTests(fake);
+  try {
+    assert.equal(await ensureSchema(noSleep), false, 'two deadlocks in a row give up');
+    assert.equal(await ensureSchema(noSleep), false);
+    assert.equal(await ensureSchema(noSleep), true);
+    assert.equal(fake.calls.length, 4);
   } finally {
     _resetForTests();
     delete process.env.DATABASE_URL;
