@@ -36,12 +36,12 @@ function LoginForm() {
     if (result?.error) {
       setError('Invalid email or password.');
     } else {
-      router.push('/');
+      router.push('/check');
     }
   }
 
   async function handleGoogle() {
-    await signIn('google', { callbackUrl: '/' });
+    await signIn('google', { callbackUrl: '/check' });
   }
 
   return (

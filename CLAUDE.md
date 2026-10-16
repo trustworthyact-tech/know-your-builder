@@ -133,6 +133,47 @@ rather than being discovered only at re-enable time.
 
 ---
 
+## Marketing site (website redesign, 2026-10)
+
+The public site (replacing the old WordPress site at trustworthypayments.com) lives in this
+same Next.js app, in route groups that don't change URLs:
+
+- `web/app/(marketing)/` — public pages (`/` today; state licence pages, `/resources` etc. to
+  follow). Layout loads Schibsted Grotesk and `SiteHeader`/`SiteFooter` from
+  `web/components/marketing/`. **No `SessionProvider` here** — marketing pages must not make
+  next-auth's session request. Keep them static (Server Components); interactive bits are small
+  client islands (`HeroSearch`).
+- `web/app/(app)/` — Know Your Builder itself (`/check`, `/search`, `/report`, `/account`,
+  `/auth`, `/compare`). Layout loads DM Sans, `Providers`, `NavBar`, `Footer`. The old `/` search
+  form is now `/check`; in-app "new search" links point there.
+- Root `web/app/layout.tsx` is bare (html/body/metadata only).
+
+**Brand tokens** are the `brand-*` colours in `tailwind.config.ts`, separate from the app's
+tokens so the app's look is unchanged until it's re-skinned. Ochre (`brand-ochre`) fails
+contrast with white text — ochre buttons always use `text-brand-navy`, hover is
+`brand-ochre-hover`, and small ochre text uses `brand-ochre-text`. Logo files are in
+`web/public/brand/` (outlined SVGs — no font dependency).
+
+**Coverage claims stay NSW + ACT only** (see "Launch scope"). `web/lib/marketing/content.ts`'s
+`SOURCE_GROUPS` must list exactly the in-scope searches; `SOURCE_COUNT` is derived from it and
+shown on the homepage.
+
+**Search entry points share `useBuilderSearch()`** (`web/lib/useBuilderSearch.ts`) — the
+`/check` form (`HomeSearch`) and the marketing one-box search (`HeroSearch`) run the same
+ABR-disambiguation flow. Marketing searches fire `marketing_search_started` (`source`, `kind`).
+
+**check.trustworthypayments.com** keeps serving the tool at its root via a host-based rewrite
+in `next.config.mjs` until the root domain's DNS moves off the WordPress host (IONOS). At
+cutover, swap it for a permanent redirect to `trustworthypayments.com/check`.
+
+**Performance budget** (`.github/workflows/lighthouse.yml` + `web/lighthouserc.json`): every PR
+touching `web/` builds the app and runs Lighthouse CI (mobile) against `/`. Fails below 95 in
+any category, LCP > 2.5s, CLS > 0.1 or TBT > 200ms. The marketing font is `preload: false` on
+purpose (see the comment in `(marketing)/layout.tsx`). Avoid `backdrop-filter`, client
+components above the fold, and new third-party scripts on marketing pages.
+
+---
+
 ## Universal conventions
 
 **Server vs client components**: `page.tsx` files are always Server Components. Extract all interactive logic into `'use client'` components in `web/components/`. This applies everywhere — spec notes that list `page.tsx` as an edit target are wrong.

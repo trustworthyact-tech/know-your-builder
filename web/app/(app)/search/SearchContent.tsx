@@ -312,7 +312,7 @@ export function SearchContent() {
               {errorMsg}
             </p>
             <button
-              onClick={() => router.push('/')}
+              onClick={() => router.push('/check')}
               className="mt-8 bg-primary text-white text-sm font-semibold px-6 py-3 rounded-xl shadow-md hover:bg-primary-light transition"
             >
               ← Go Back

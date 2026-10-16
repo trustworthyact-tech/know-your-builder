@@ -112,7 +112,7 @@ export function WatchlistContent({
             Add builders to your watchlist from any report to quickly re-check them later.
           </p>
           <Link
-            href="/"
+            href="/check"
             className="mt-4 inline-block text-sm font-semibold text-primary hover:underline"
           >
             Run a search →

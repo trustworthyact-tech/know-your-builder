@@ -35,7 +35,7 @@ export default function RegisterPage() {
   }
 
   async function handleGoogle() {
-    await signIn('google', { callbackUrl: '/' });
+    await signIn('google', { callbackUrl: '/check' });
   }
 
   if (sent) {

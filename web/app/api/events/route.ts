@@ -6,6 +6,7 @@ const ALLOWED_EVENTS = new Set([
   'persona_selected',
   'email_captured',
   'partner_link_clicked',
+  'marketing_search_started',
 ]);
 
 export async function POST(req: Request) {

@@ -25,7 +25,7 @@ export function NavBar() {
             </span>
           </a>
           <span className="bg-border w-px h-4" aria-hidden="true" />
-          <Link href="/" className="text-sm font-bold text-primary tracking-tight">
+          <Link href="/check" className="text-sm font-bold text-primary tracking-tight">
             Know Your Builder
           </Link>
         </div>
@@ -43,7 +43,7 @@ export function NavBar() {
                 {session.user.email}
               </span>
               <button
-                onClick={() => signOut({ callbackUrl: '/' })}
+                onClick={() => signOut({ callbackUrl: '/check' })}
                 className="text-xs font-semibold text-text-secondary hover:text-primary transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 rounded"
               >
                 Sign out

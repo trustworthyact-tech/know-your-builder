@@ -16,7 +16,7 @@ function ErrorPage({ message }: { message: string }) {
       <div className="text-center max-w-sm">
         <p className="text-text-secondary mb-4">{message}</p>
         <Link
-          href="/"
+          href="/check"
           className="text-sm font-semibold text-primary hover:underline"
         >
           ← New search
@@ -92,7 +92,7 @@ export default async function ComparePage({ searchParams }: Props) {
       <nav className="sticky top-0 z-20 bg-primary shadow-md" aria-label="Compare navigation">
         <div className="max-w-5xl mx-auto px-4 py-2">
           <Link
-            href="/"
+            href="/check"
             className="text-white/70 hover:text-white text-xs font-semibold py-1.5 px-2 rounded transition"
           >
             ← New search

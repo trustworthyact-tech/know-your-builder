@@ -18,8 +18,16 @@ html {
   scroll-behavior: smooth;
 }
 
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+}
+
+/* Each route-group layout sets its own font (DM Sans for the app, Schibsted
+   Grotesk for the marketing site); this is only the fallback. */
 body {
   background-color: var(--color-background);
   color: var(--color-text-primary);
-  font-family: var(--font-dm-sans), system-ui, -apple-system, sans-serif;
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
 }

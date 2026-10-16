@@ -29,6 +29,21 @@ const config: Config = {
         'info-bg': '#E3F2FD',
         border: '#D1D9E0',
         'border-light': '#EEF1F6',
+        // Marketing-site brand tokens (2026-10 redesign). Kept separate from the app
+        // tokens above so the KYB app's look is unchanged until it's re-skinned.
+        // Ochre fails contrast with white text (2.8:1): ochre buttons always take
+        // brand-navy text (5.5:1).
+        'brand-navy': '#0B2545',
+        'brand-ochre': '#D88A00',
+        'brand-ochre-hover': '#E89A14', // hover fill, navy text 6.7:1
+        'brand-ochre-text': '#8A5700', // ochre for small text on white/paper, 6.1:1
+        'brand-wash': '#FBEFD9',
+        'brand-paper': '#F6F8FB',
+        'brand-slate': '#5A6578',
+        'brand-line': '#DDE3EC',
+      },
+      fontFamily: {
+        brand: ['var(--font-schibsted)', 'system-ui', '-apple-system', 'Segoe UI', 'sans-serif'],
       },
     },
   },

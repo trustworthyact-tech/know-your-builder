@@ -1,62 +1,11 @@
 'use client';
 
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
-import { SearchBar, SearchFormData } from '@/components/SearchBar';
-import { DisambiguationCard, EntityMatch } from '@/components/DisambiguationCard';
-import { SERVER_URL } from '@/lib/api';
-
-type View = 'search' | 'disambiguating' | 'disambiguate';
+import { SearchBar } from '@/components/SearchBar';
+import { DisambiguationCard } from '@/components/DisambiguationCard';
+import { useBuilderSearch } from '@/lib/useBuilderSearch';
 
 export function HomeSearch() {
-  const router = useRouter();
-  const [view, setView] = useState<View>('search');
-  const [pendingSearch, setPendingSearch] = useState<SearchFormData | null>(null);
-  const [disambigMatches, setDisambigMatches] = useState<EntityMatch[]>([]);
-
-  const navigateToSearch = (companyName: string, abn: string, directorName: string, acn = '') => {
-    const params = new URLSearchParams();
-    if (companyName) params.set('companyName', companyName);
-    if (abn) params.set('abn', abn);
-    if (acn) params.set('acn', acn);
-    if (directorName) params.set('directorName', directorName);
-    router.push(`/search?${params.toString()}`);
-  };
-
-  const handleSearch = async (data: SearchFormData) => {
-    // ABN or ACN provided — identity is unambiguous, skip disambiguation
-    if (data.abn || data.acn) {
-      navigateToSearch(data.companyName, data.abn, data.directorName, data.acn);
-      return;
-    }
-    // Director-only search bypasses disambiguation (no company to disambiguate)
-    if (!data.companyName && data.directorName) {
-      navigateToSearch('', '', data.directorName);
-      return;
-    }
-    setPendingSearch(data);
-    setView('disambiguating');
-    try {
-      const res = await fetch(`${SERVER_URL}/api/search/disambiguate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ companyName: data.companyName }),
-      });
-      const json = res.ok ? await res.json() : { matches: [] };
-      const matches: EntityMatch[] = json.matches ?? [];
-      if (matches.length > 1) {
-        setDisambigMatches(matches);
-        setView('disambiguate');
-      } else if (matches.length === 1) {
-        navigateToSearch(matches[0].name, matches[0].abn, data.directorName);
-      } else {
-        navigateToSearch(data.companyName, '', data.directorName);
-      }
-    } catch {
-      // disambiguation failure is non-fatal — proceed with name-only search
-      navigateToSearch(data.companyName, '', data.directorName);
-    }
-  };
+  const { view, pendingSearch, matches, handleSearch, navigateToSearch } = useBuilderSearch();
 
   if (view === 'disambiguating') {
     return (
@@ -95,7 +44,7 @@ export function HomeSearch() {
     return (
       <DisambiguationCard
         companyName={pendingSearch.companyName}
-        matches={disambigMatches}
+        matches={matches}
         onSelect={(match) =>
           navigateToSearch(match.name, match.abn, pendingSearch.directorName)
         }

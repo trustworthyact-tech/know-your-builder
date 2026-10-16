@@ -185,7 +185,7 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
           <span className="text-4xl mb-4 block" aria-hidden="true">📋</span>
           <p className="text-text-secondary mb-6">{loadError}</p>
           <Link
-            href="/"
+            href="/check"
             className="inline-block bg-primary text-white text-sm font-semibold px-6 py-3 rounded-xl hover:bg-primary-light transition"
           >
             ← New Search
@@ -656,7 +656,7 @@ export function ReportContent({ searchId, shareToken, readOnly = false }: Props)
               </span>
             ) : (
               <Link
-                href="/"
+                href="/check"
                 className="text-white/70 hover:text-white text-xs font-semibold py-1.5 px-2 rounded transition shrink-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-1 focus-visible:ring-offset-primary"
               >
                 ← New search

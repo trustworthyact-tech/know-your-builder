@@ -70,7 +70,7 @@ export default async function AccountReportsPage({
           )}
         </div>
         <Link
-          href="/"
+          href="/check"
           className="text-sm font-semibold bg-primary text-white rounded-lg px-4 py-2 hover:bg-primary-light transition-colors"
         >
           New check
@@ -81,7 +81,7 @@ export default async function AccountReportsPage({
         <div className="text-center py-16 bg-surface rounded-xl border border-border-light">
           <p className="text-text-muted text-sm">Run your first check to see reports here.</p>
           <Link
-            href="/"
+            href="/check"
             className="mt-4 inline-block text-sm font-semibold text-primary hover:underline"
           >
             Search a builder →
