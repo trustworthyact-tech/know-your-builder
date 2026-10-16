@@ -13,6 +13,7 @@ const path = require('path');
 // no DB setup step) without `pg` even needing to resolve/connect.
 let pool = null;
 let schemaEnsured = false;
+let schemaPromise = null;
 
 function isConfigured() {
   return Boolean(process.env.DATABASE_URL);
@@ -59,19 +60,45 @@ function getPool() {
 // Idempotent — safe to call on every startup. Non-fatal on failure: callers (datasetStore.js)
 // already fall back to disk-cache behavior if the DB is unreachable, so a schema-apply
 // failure here should log loudly, not crash the process.
-async function ensureSchema() {
+//
+// Single flight (found 2026-10-16: "[db] failed to apply schema.sql: deadlock detected" on
+// every startup): several refresh jobs call this at once on boot, and each applied schema.sql
+// on its own pooled connection, so their ALTER TABLE statements deadlocked each other. Now
+// concurrent callers share one attempt. A deadlock can still come from the other container
+// during a deploy (Railway briefly runs old and new side by side), so a deadlock is retried
+// once after a short pause. A failed attempt is forgotten, so a later call tries again.
+const DEADLOCK = '40P01';
+
+async function applySchema(p, _sleep) {
+  const schemaSql = fs.readFileSync(path.join(__dirname, '..', 'db', 'schema.sql'), 'utf8');
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await p.query(schemaSql);
+      return;
+    } catch (err) {
+      if (err?.code !== DEADLOCK || attempt >= 2) throw err;
+      await _sleep(1_000 + Math.random() * 1_000);
+    }
+  }
+}
+
+async function ensureSchema({ _sleep = (ms) => new Promise((r) => setTimeout(r, ms)) } = {}) {
   if (schemaEnsured) return true;
   const p = getPool();
   if (!p) return false;
-  try {
-    const schemaSql = fs.readFileSync(path.join(__dirname, '..', 'db', 'schema.sql'), 'utf8');
-    await p.query(schemaSql);
-    schemaEnsured = true;
-    return true;
-  } catch (err) {
-    console.error('[db] failed to apply schema.sql:', err.message);
-    return false;
-  }
+  schemaPromise ??= applySchema(p, _sleep)
+    .then(() => {
+      schemaEnsured = true;
+      return true;
+    })
+    .catch((err) => {
+      console.error('[db] failed to apply schema.sql:', err.message);
+      return false;
+    })
+    .finally(() => {
+      schemaPromise = null;
+    });
+  return schemaPromise;
 }
 
 // Test-only: resets module state between test files (node --test runs each file in its
@@ -80,6 +107,14 @@ async function ensureSchema() {
 function _resetForTests() {
   pool = null;
   schemaEnsured = false;
+  schemaPromise = null;
 }
 
-module.exports = { getPool, ensureSchema, isConfigured, _resetForTests };
+// Test-only: installs a fake pool so ensureSchema can be tested without a database.
+function _setPoolForTests(fake) {
+  pool = fake;
+  schemaEnsured = false;
+  schemaPromise = null;
+}
+
+module.exports = { getPool, ensureSchema, isConfigured, _resetForTests, _setPoolForTests };

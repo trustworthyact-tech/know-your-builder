@@ -36,6 +36,11 @@ for (const key of ['CAPTCHA_API_KEY', 'SCRAPEOPS_API_KEY']) {
 const app = express();
 const PORT = process.env.PORT ?? 3001;
 
+// Railway's edge proxy sits in front of this server and sets X-Forwarded-For. Without trusting
+// it, express-rate-limit can't see each user's own address (it logged
+// ERR_ERL_UNEXPECTED_X_FORWARDED_FOR, 2026-10-16), so the search limit could apply to every user
+// together. One hop: Railway's proxy.
+app.set('trust proxy', 1);
 app.use(cors({ origin: process.env.WEB_APP_ORIGIN }));
 app.use(express.json());
 
