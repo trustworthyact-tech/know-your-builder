@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import type { SearchFormData } from '@/components/SearchBar';
 import type { EntityMatch } from '@/components/DisambiguationCard';
 import { SERVER_URL } from '@/lib/api';
+import { KYB_APP_URL, STATIC_PREVIEW } from '@/lib/marketing/preview';
 
 export type BuilderSearchView = 'search' | 'disambiguating' | 'disambiguate';
 
@@ -24,6 +25,10 @@ export function useBuilderSearch() {
     if (abn) params.set('abn', abn);
     if (acn) params.set('acn', acn);
     if (directorName) params.set('directorName', directorName);
+    if (KYB_APP_URL) {
+      window.location.assign(`${KYB_APP_URL}/search?${params.toString()}`);
+      return;
+    }
     router.push(`/search?${params.toString()}`);
   };
 
@@ -36,6 +41,12 @@ export function useBuilderSearch() {
     // Director-only search bypasses disambiguation (no company to disambiguate)
     if (!data.companyName && data.directorName) {
       navigateToSearch('', '', data.directorName);
+      return;
+    }
+    // A static preview can't reach the search server (CORS), so hand the name
+    // straight to the KYB app's search.
+    if (STATIC_PREVIEW) {
+      navigateToSearch(data.companyName, '', data.directorName);
       return;
     }
     setPendingSearch(data);

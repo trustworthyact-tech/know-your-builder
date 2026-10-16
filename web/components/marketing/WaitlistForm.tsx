@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import type { WaitlistProduct } from '@/lib/marketing/waitlist';
 import { trackEvent } from '@/lib/analytics';
+import { STATIC_PREVIEW } from '@/lib/marketing/preview';
 
 interface Props {
   product: WaitlistProduct;
@@ -16,6 +17,14 @@ export function WaitlistForm({ product, buttonLabel = 'Join the waitlist' }: Pro
   const [status, setStatus] = useState<Status>('idle');
   const [message, setMessage] = useState('');
   const id = `waitlist-${product}`;
+
+  if (STATIC_PREVIEW) {
+    return (
+      <p className="rounded-xl border border-brand-line bg-white px-4 py-3 text-sm text-brand-slate">
+        The waitlist opens when the site launches.
+      </p>
+    );
+  }
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();

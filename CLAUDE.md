@@ -183,6 +183,17 @@ left out of the sitemap) until the owner and a lawyer finalise it.
 **Old WordPress URLs** (`/tools`, `/media`, `/legal`, `/contact`, `/home`) 301 to their new pages
 via `redirects()` in `next.config.mjs`.
 
+**Shareable pre-launch preview** (Cloudflare Pages project `trustworthy-preview`,
+https://trustworthy-preview.pages.dev, first deployed 2026-10-16): a static snapshot of the
+marketing pages. Build with `NEXT_PUBLIC_STATIC_PREVIEW=1`,
+`NEXT_PUBLIC_KYB_APP_URL=https://check.trustworthypayments.com` and
+`NEXT_PUBLIC_SITE_URL=https://trustworthy-preview.pages.dev` (see `web/lib/marketing/preview.ts`),
+`next start`, then `node web/scripts/snapshot-preview.mjs <webDir> <outDir> <port> <liveToolOrigin>`
+and `wrangler pages deploy <outDir> --project-name trustworthy-preview --branch main` with a
+Pages-only API token. In the snapshot, searches hand off to the live tool (the search server's
+CORS only admits `WEB_APP_ORIGIN`), waitlists say "opens at launch", and every page is
+`X-Robots-Tag: noindex`. Normal builds leave both preview variables unset.
+
 **check.trustworthypayments.com** keeps serving the tool at its root via a host-based rewrite
 in `next.config.mjs` until the root domain's DNS moves off the WordPress host (IONOS). At
 cutover, swap it for a permanent redirect to `trustworthypayments.com/check`.
