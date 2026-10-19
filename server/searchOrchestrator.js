@@ -25,6 +25,7 @@ const {
   labelResultsByTerm,
   normaliseDigits,
   normaliseEntityName,
+  isDistinctiveName,
 } = require('./scrapers/licenceMatching');
 const scraperHealth = require('./scrapers/scraperHealth');
 const { searchPaymentTimes } = require('./scrapers/paymentTimes');
@@ -103,6 +104,12 @@ async function runSearch({ abn, acn, companyName, tradingName, directors }, { se
     ? withTimeout(abnPromise, 5_000)
         .catch(() => null)
         .then((abnResult) => resolveEntityIdentity({ abn, acn, companyName }, abnResult))
+        .then((identity) => {
+          if (identity.skippedBusinessNames.length > 0) {
+            console.log(`[identity] not searching single-word ABR name(s): ${identity.skippedBusinessNames.join(', ')}`);
+          }
+          return identity;
+        })
         .then((identity) =>
           identity.legalName
             ? identity
@@ -161,9 +168,10 @@ async function runSearch({ abn, acn, companyName, tradingName, directors }, { se
   // licence or QBCC adjudication decision is often filed under a business name
   // rather than their personal name. `cap` limits how many are returned for proxy-backed
   // per-name searches, which spend a ScrapeOps credit per name (see licenceMatching.js).
+  // Names with fewer than two significant words are skipped (isDistinctiveName).
   async function resolveAlternateNames(cap = Infinity) {
     const abnResult = await abnPromise;
-    return [...new Set([...(abnResult.businessNames ?? []), ...(abnResult.tradingNames ?? [])])].slice(0, cap);
+    return [...new Set([...(abnResult.businessNames ?? []), ...(abnResult.tradingNames ?? [])])].filter(isDistinctiveName).slice(0, cap);
   }
 
   // Merges request-supplied director names with what NSW/ACT's own licence registers surface
