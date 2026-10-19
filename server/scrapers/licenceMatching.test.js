@@ -6,6 +6,7 @@ const {
   normaliseEntityName,
   searchableName,
   makeNameMatcher,
+  isDistinctiveName,
   parseTrustName,
   resolveEntityIdentity,
   entityNames,
@@ -350,4 +351,33 @@ test('normaliseEntityName — zero-width characters are removed, even inside a w
   assert.equal(normaliseEntityName('​​Imam Holdings Pty Ltd​'), 'imam holdings pty ltd');
   assert.equal(normaliseEntityName('Im​am Hold﻿ings P/L'), 'imam holdings pty ltd');
   assert.ok(makeNameMatcher('Imam Holdings Pty Ltd')('IM​AM HOLDINGS PTY LTD'));
+});
+
+// ---- single-word ABR names (2026-10-19) ----
+
+test('isDistinctiveName — needs two significant words after the suffix and short words are dropped', () => {
+  assert.equal(isDistinctiveName('Kennedy B Pty Ltd'), false);
+  assert.equal(isDistinctiveName('Hutchies'), false);
+  assert.equal(isDistinctiveName('The Kennedy Pty Limited'), false);
+  assert.equal(isDistinctiveName('Canberra Granny Flat Builders'), true);
+  assert.equal(isDistinctiveName('Kennedy Constructions'), true);
+});
+
+test('resolveEntityIdentity — a single-word ABR trading name is not searched (Morris Property Group / "Kennedy B Pty Ltd")', () => {
+  const id = resolveEntityIdentity(
+    { abn: '28130897522', companyName: 'Morris Property Group' },
+    abr('MORRIS PROPERTY GROUP PTY LIMITED', 'Australian Private Company', ['Kennedy B Pty Ltd', 'Morris Homes Canberra'])
+  );
+  assert.deepEqual(id.businessNames, ['Morris Homes Canberra']);
+  assert.deepEqual(id.skippedBusinessNames, ['Kennedy B Pty Ltd']);
+  assert.deepEqual(entityNames(id), ['MORRIS PROPERTY GROUP PTY LIMITED', 'Morris Property Group', 'Morris Homes Canberra']);
+  const matchers = entityNames(id).map(makeNameMatcher);
+  for (const person of ['B O & K S Kennedy', 'A D KENNEDY AND J A BECCHIO', 'KENNEDY BRIAN']) {
+    assert.equal(classifyMatch({ identifiers: [], names: [person] }, id, matchers).match, null, person);
+  }
+});
+
+test('resolveEntityIdentity — a single-word typed or legal name is still searched', () => {
+  const id = resolveEntityIdentity({ abn: '12345678901', companyName: 'Hutchies' }, abr('HUTCHIES PTY LTD', 'Australian Private Company'));
+  assert.deepEqual(entityNames(id), ['HUTCHIES PTY LTD', 'Hutchies']);
 });

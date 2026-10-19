@@ -248,7 +248,9 @@ normalisation, name caps) — every licence register uses them rather than its o
   `licenceMatching.js` — and trust name): a material share of records carry no
   identifier at all (mostly legacy NSW records, trusts, partnerships, "P/L"-style names).
   Normalise suffixes (P/L, Pty Limited, Proprietary Limited → Pty Ltd), bracketed words, and
-  `&`/and before matching.
+  `&`/and before matching. ABR business/trading names that keep fewer than two significant
+  words (`isDistinctiveName`) are not searched at all: "Kennedy B Pty Ltd" reduces to "kennedy"
+  and matched every Kennedy in the ACT register (2026-10-19). Typed and legal names always are.
 - **Classify every hit**: identifiers match → confirmed; identifiers present but different
   → reject even if the name matches; no identifiers + name match → keep as **"matched by
   name only — verify"**, which is shown but never drives a `riskGrouper` finding.

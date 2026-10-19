@@ -82,6 +82,17 @@ function makeNameMatcher(query) {
   };
 }
 
+// An ABR business or trading name is only searched when it keeps at least two significant
+// words. One word left is too weak to match on: "Kennedy B Pty Ltd" (an ABR trading name for
+// Morris Property Group Pty Limited, recorded 2008) reduces to "kennedy", which matched every
+// individual surnamed Kennedy in the ACT licence register and courts as "name only — verify"
+// (found 2026-10-19). Single-word brand names ("Hutchies") are lost too, which qbcc.js already
+// flagged as a false-match risk (2026-09-02). Applies to ABR names only; the typed name, legal
+// name and trust name are always searched.
+function isDistinctiveName(name) {
+  return significantWords(name).length >= 2;
+}
+
 // "The Trustee for the Smith Family Trust" → "Smith Family Trust"; anything else → ''.
 function parseTrustName(legalName) {
   const m = /^\s*the\s+trustee\s+for\s+(?:the\s+)?(.+?)\s*$/i.exec(legalName || '');
@@ -122,11 +133,12 @@ function resolveEntityIdentity({ abn, acn, companyName } = {}, abnResult = null)
   const primaryName = legalName || typedName;
   const seen = new Set([normaliseEntityName(primaryName)]);
   const businessNames = [];
+  const skippedBusinessNames = [];
   for (const n of [...(abnResult?.businessNames ?? []), ...(abnResult?.tradingNames ?? [])]) {
     const key = normaliseEntityName(n);
     if (!key || seen.has(key)) continue;
     seen.add(key);
-    businessNames.push(n);
+    (isDistinctiveName(n) ? businessNames : skippedBusinessNames).push(n);
   }
 
   return {
@@ -136,6 +148,7 @@ function resolveEntityIdentity({ abn, acn, companyName } = {}, abnResult = null)
     possibleAcn,
     entityType,
     businessNames,
+    skippedBusinessNames,
     trustName: parseTrustName(legalName),
     typedName,
   };
@@ -298,6 +311,7 @@ module.exports = {
   searchableName,
   significantWords,
   makeNameMatcher,
+  isDistinctiveName,
   parseTrustName,
   resolveEntityIdentity,
   withAsicIdentityFallback,
